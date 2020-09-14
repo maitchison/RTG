@@ -1,2 +1,4 @@
-# RTG
-Rescue the General Game
+# Rescue the General 
+
+A mixed Multi-Agent Reinforcment Learning Environment for Gym
+   
