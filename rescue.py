@@ -34,10 +34,6 @@ class MultiAgentEnv(gym.Env):
     def reset(self):
         pass
 
-    def render(self, mode='human'):
-        """ render environment """
-        pass
-
 class RescueTheGeneralEnv(MultiAgentEnv):
     """
     The rescue the general game.
@@ -59,6 +55,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     TEAM_RED = 0
     TEAM_GREEN = 1
     TEAM_BLUE = 2
+
+    TEAM_COLOR = [
+        (255,25,25),
+        (25,255,25),
+        (25,25,255)
+    ]
 
     ACTION_NOOP = 0
     ACTION_MOVE_UP = 1
@@ -100,7 +102,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         px, py = self.player_location[player_id]
 
-        return abs(px - x) + abs(py - y) < self.player_view_distance
+        return abs(int(px) - x) + abs(int(py) - y) < self.player_view_distance
 
     def _move_player(self, player_id, dx, dy):
         """
@@ -236,18 +238,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.general_location = (np.random.randint(1, self.map_width - 2), np.random.randint(1, self.map_height - 2))
 
         # create map
-        self.map = np.zeros((self.map_width, self.map_height), dtype=np.uint8)
+        self.map = np.zeros((self.map_width, self.map_height), dtype=np.uint8) + 1
+
         all_locations = list(itertools.product(range(self.map_width), range(self.map_height)))
-        for i in range(self.n_trees):
-            idxs = np.random.choice(len(all_locations), self.n_trees, replace=False)
-            for loc in [all_locations[idx] for idx in idxs]:
-                self.map[loc] = 1
+        idxs = np.random.choice(len(all_locations), size=self.n_trees, replace=False)
+        for loc in [all_locations[idx] for idx in idxs]:
+            self.map[loc] = 2
 
         # initialize players to random start locations, and assign initial health
-        general_filter = lambda p: p[0] - self.general_location[0] > 3 and p[1] - self.general_location[1] > 3
+        general_filter = lambda p: abs(p[0] - self.general_location[0]) > 3 and abs(p[1] - self.general_location[1]) > 3
 
         valid_start_locations = list(filter(general_filter, all_locations))
-        start_locations = [valid_start_locations[idx] for idx in np.random.choice(len(valid_start_locations), self.n_players, replace=False)]
+        start_locations = [valid_start_locations[idx] for idx in np.random.choice(len(valid_start_locations), size=self.n_players, replace=False)]
 
         self.player_location *= 0
         self.player_health *= 0
@@ -270,6 +272,48 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         return self._get_observations()
 
+    def _render_human(self):
+        raise NotImplemented("Sorry tilemap rendering not implemented yet")
+
+    def _render_rgb(self):
+        """ Renders game in RGB using very simple colored tiles."""
+
+        image = np.zeros((self.map_width, self.map_height, 3), dtype=np.uint8)
+
+        for x in range(self.map_width):
+            for y in range(self.map_height):
+
+                c = [0,0,0]
+
+                # first get color from terrain
+                if self.map[x,y] == self.MAP_GRASS:
+                    c = (150,75,0)
+                elif self.map[x, y] == self.MAP_TREE:
+                    c = (125,255,150)
+
+                # general location
+                if self.general_location == (x, y):
+                    c = (25,255,255)
+
+                # next get players color.. this is not ideal if they overlap
+                for i in range(self.n_players):
+                    if tuple(self.player_location[i]) == (x, y):
+                        if self.player_health[i] > 0:
+                            c = self.TEAM_COLOR[self.player_team[i]]
+                        else:
+                            # dead body
+                            c = (0, 0, 0)
+
+                image[x,y,::-1] = c
+
+        return image
+
     def render(self, mode='human'):
-        pass
+        """ render environment """
+        if mode == 'human':
+            return self._render_human()
+        elif mode == 'rgb_array':
+            return self._render_rgb()
+        else:
+            raise ValueError(f"Invalid render mode {mode}")
 
