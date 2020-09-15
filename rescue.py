@@ -39,9 +39,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     The rescue the general game.
 
     Rules:
-    Players may occupy the same square.
-    Red team and green team do not know the location of the general until they come within vision range
-    Rescuing and killing the general simultaneously counts as the general being killed.
+    * Players may occupy the same square (stacking).
+    * Red team and green team do not know the location of the general until they come within vision range
+    * Rescuing and killing the general simultaneously counts as the general being killed.
+    * Players may shoot in any direction, but gun has limited range (usually less than vision)
+    * If players are stacked and are hit by a bullet a random  player on tile is hit
+    * If a player shoots but other players are stacked ontop then a random player at the shooters location is hit (other
+       than the shooter themselves)
 
     Action Space:
     (see below)
@@ -73,6 +77,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     ACTION_SHOOT_RIGHT = 8
     ACTION_ACT = 9
 
+    SHOOT_ACTIONS = [ACTION_SHOOT_UP, ACTION_SHOOT_DOWN, ACTION_SHOOT_LEFT, ACTION_SHOOT_RIGHT]
+
     DX = [0, 0, -1, +1]
     DY = [-1, 1, 0, 0]
 
@@ -80,11 +86,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         super().__init__()
 
         self.n_trees = 10
-        self.map_width = 64
-        self.map_height = 64
+        self.map_width = 32
+        self.map_height = 32
         self.n_players = 12
         self.map_layers = self.n_players + 2
-        self.player_view_distance = 3
+        self.player_view_distance = 5
+        self.player_shoot_range = 12
         self.timeout = 1000
         self.counter = 0
 
@@ -92,6 +99,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.player_health = np.zeros((self.n_players), dtype=np.uint8)
         self.player_seen_general = np.zeros((self.n_players), dtype=np.uint8)
         self.player_team = np.zeros((self.n_players), dtype=np.uint8)
+        self.player_last_action = np.zeros((self.n_players), dtype=np.uint8)
 
     def _in_vision(self, player_id, x, y):
         """
@@ -145,9 +153,27 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # moving + acting
 
         for i in range(self.n_players):
-            if i in range(self.n_players) in [self.ACTION_SHOOT_UP, self.ACTION_SHOOT_DOWN, self.ACTION_SHOOT_LEFT, self.ACTION_SHOOT_RIGHT]:
+            if actions[i] in self.SHOOT_ACTIONS:
                 # shooting is not implemented yet...
-                pass
+                indx = actions[i] - self.ACTION_SHOOT_UP
+                x, y = self.player_location[i]
+                target_hit = False
+                for j in range(self.player_shoot_range):
+                    # check location
+                    for k in range(self.n_players):
+                        if k == i:
+                            continue
+                        if (x,y) == tuple(self.player_location[k]) and self.player_health[k] > 0:
+                            # this player got hit
+                            # todo: randomize who gets hit if players are stacked
+                            self._damage_player(k, np.random.randint(1,6) + np.random.randint(1,6))
+                            target_hit = True
+
+                    x += self.DX[indx]
+                    y += self.DY[indx]
+
+                    if target_hit:
+                        break
 
         for i in range(self.n_players):
             if actions[i] in [self.ACTION_MOVE_UP, self.ACTION_MOVE_DOWN, self.ACTION_MOVE_LEFT, self.ACTION_MOVE_RIGHT]:
@@ -195,8 +221,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         infos = [{} for _ in range(self.n_players)]
 
         self.counter += 1
+        self.player_last_action = actions
 
         return obs, rewards, dones, infos
+
+    def _damage_player(self, player_id, damage):
+        """
+        Causes player to receive given damage.
+        :param player_id:
+        :param damage:
+        :return:
+        """
+        self.player_health[player_id] = np.clip(self.player_health[player_id] - damage, 0, PLAYER_MAX_HEALTH)
 
     def _get_observations(self):
         return [self._get_player_observation(player_id) for player_id in range(self.n_players)]
@@ -225,6 +261,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             px, py = self.player_location[i]
             if self._in_vision(player_id, px, py):
                 obs[i+2, px, py] = self.player_health[i]
+                if self.player_last_action[i] in self.SHOOT_ACTIONS:
+                    indx = self.player_last_action[i] - self.ACTION_SHOOT_UP
+                    px += self.DX[indx]
+                    py += self.DY[indx]
+                    # not sure this is the best way to indicate a player shooting?
+                    # maybe I should draw the marker on the spot hit...
+                    if 0 <= px < self.map_width and 0 <= py < self.map_height:
+                        obs[i + 2, px, py] = 1
 
         return obs
 
@@ -273,7 +317,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         return self._get_observations()
 
     def _render_human(self):
-        raise NotImplemented("Sorry tilemap rendering not implemented yet")
+        raise NotImplemented("Sorry tile-map rendering not implemented yet")
 
     def _render_rgb(self):
         """ Renders game in RGB using very simple colored tiles."""
@@ -303,6 +347,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                         else:
                             # dead body
                             c = (0, 0, 0)
+
+                # bullet flares
+                for i in range(self.n_players):
+                    if self.player_last_action[i] in self.SHOOT_ACTIONS:
+                        indx = self.player_last_action[i] - self.ACTION_SHOOT_UP
+                        fx, fy = self.player_location[i]
+                        fx += self.DX[indx]
+                        fy += self.DY[indx]
+                        if (fx, fy) == (x,y):
+                            c = (255,255,128)
 
                 image[x,y,::-1] = c
 
