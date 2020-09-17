@@ -5,11 +5,20 @@ Author: Matthew Aitchison
 
 """
 
-from rescue import RescueTheGeneralEnv
+
+from rescue import RescueTheGeneralEnv, MultAgentEnvAdapter
+
 import numpy as np
 import cv2
+import pickle
 
-def export_movie(filename):
+import gym
+
+from stable_baselines.common.policies import CnnLstmPolicy, CnnPolicy
+from stable_baselines.common import make_vec_env
+from stable_baselines import PPO2
+
+def export_movie(filename, model):
 
     """ Exports a movie with agents playing randomly.
         which_frames: model, real, or both
@@ -18,7 +27,7 @@ def export_movie(filename):
     scale = 8
 
     env = RescueTheGeneralEnv()
-    obs = env.reset()
+    states = env.reset()
     frame = env.render("rgb_array")
 
     # work out our height
@@ -31,11 +40,21 @@ def export_movie(filename):
 
     dones = [False] * env.n_players
 
+    team_scores = np.zeros([3], dtype=np.int)
+
     # play the game...
     while not np.all(dones):
 
-        actions = np.random.randint(0, 10, size=[env.n_players])
+        # todo: implement LSTM
+        actions, _, _, _ = model.step(np.asarray(states), None, None)
+
         states, rewards, dones, infos = env.step(actions)
+
+        for i in range(env.n_players):
+            team_scores[env.player_team[i]] += rewards[i]
+
+        if np.sum(np.asarray(rewards)) != 0:
+            print(rewards)
 
         frame = env.render("rgb_array")
         if frame.shape[0] != width or frame.shape[1] != height:
@@ -47,7 +66,12 @@ def export_movie(filename):
 
     video_out.release()
 
-def play_test_game():
+    return team_scores
+
+def play_random_game():
+    """
+    Simple test of the environment using random actions...
+    """
 
     print("Starting environment")
 
@@ -62,9 +86,43 @@ def play_test_game():
         if np.all(dones):
             break
 
+
+def play_simple_game():
+    """
+    Train PPO on the environment using the "other agents are environment" method.
+    :return:
+    """
+
+    print("Starting environment")
+
+
+    env = RescueTheGeneralEnv()
+    env = MultAgentEnvAdapter(env)
+
+    # create model
+    model = PPO2(CnnPolicy, env, verbose=1)
+
+    env.model = model
+
+    scores = []
+
+    scores.append(export_movie(f"ppo_run-initial.mp4", model))
+    pickle.dump(scores, open("results.dat", "wb"))
+
+    for epoch in range(100):
+
+        model.learn(100000)
+
+        print("Finished training.")
+        model.save(f"model-{epoch}")
+        print("Generating movie...")
+        scores.append(export_movie(f"ppo_run-{epoch}.mp4", model))
+
+        pickle.dump(scores, open("results.dat", "wb"))
+
 def main():
     print("Rendering movie...")
-    export_movie("test.mp4")
+    play_simple_game()
     print("Done.")
 
 

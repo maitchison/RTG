@@ -5,6 +5,7 @@ Rescue the General Environment
 """
 
 import gym
+from gym import spaces
 import numpy as np
 import itertools
 
@@ -24,15 +25,59 @@ class MultiAgentEnv(gym.Env):
         'render.modes': ['human', 'rgb_array']
     }
 
-    def __init__(self):
+    def __init__(self, n_players):
         super().__init__()
-        pass
+        self.n_players = n_players
 
     def step(self, actions):
-        pass
+        return [], [], [], []
 
     def reset(self):
-        pass
+        return []
+
+class MultAgentEnvAdapter(gym.Env):
+    """
+    Adapter for multi-agent environments. Trains a single agent an a muti-agent environment where all other agents
+    are played by froozen copies of the agent.
+
+    This allows multi-agent environments to be played by single-agent algorithms
+
+    """
+
+    def __init__(self, env:MultiAgentEnv):
+        """
+        :param multi_env: The multi-agent environment to use.
+        """
+        super().__init__()
+        self.env = env
+        self.model = None
+        self.next_actions = np.zeros([self.env.n_players], dtype=np.uint8)
+
+        self.action_space = env.action_space
+        self.observation_space = env.observation_space
+
+
+    def step(self, action):
+
+        assert self.model is not None, "Must assign model for other actors before using environment"
+
+        actions = self.next_actions[:]
+        actions[0] = action
+
+        obs, rewards, dones, infos = self.env.step(actions)
+
+        # todo: implement LSTM
+        self.next_actions, _, _, _ = self.model.step(np.asarray(obs), None, None)
+
+        return obs[0], rewards[0], dones[0], infos[0]
+
+    def reset(self):
+        return self.env.reset()[0]
+
+    def render(self, mode='human'):
+        return self.env.render(mode)
+
+
 
 class RescueTheGeneralEnv(MultiAgentEnv):
     """
@@ -46,6 +91,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     * If players are stacked and are hit by a bullet a random  player on tile is hit
     * If a player shoots but other players are stacked ontop then a random player at the shooters location is hit (other
        than the shooter themselves)
+    * If game times out then any green players still alive are awared 5 points
 
     Action Space:
     (see below)
@@ -83,13 +129,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     DY = [-1, 1, 0, 0]
 
     def __init__(self):
-        super().__init__()
+        super().__init__(n_players=12)
 
         self.n_trees = 10
-        self.map_width = 32
-        self.map_height = 32
-        self.n_players = 12
-        self.map_layers = self.n_players + 2
+        self.map_width = 48
+        self.map_height = 48
+        self.map_layers = self.n_players + 3
         self.player_view_distance = 5
         self.player_shoot_range = 12
         self.timeout = 1000
@@ -100,6 +145,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.player_seen_general = np.zeros((self.n_players), dtype=np.uint8)
         self.player_team = np.zeros((self.n_players), dtype=np.uint8)
         self.player_last_action = np.zeros((self.n_players), dtype=np.uint8)
+
+        self.action_space = spaces.Discrete(10)
+        self.observation_space = spaces.Box(
+            low=0, high=255, shape=(self.map_width, self.map_height, self.map_layers), dtype=np.uint8
+        )
 
     def _in_vision(self, player_id, x, y):
         """
@@ -207,7 +257,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     rewards[i] -= 10
             elif game_timeout:
                 if self.player_team[i] == self.TEAM_GREEN:
-                    rewards[i] += 10
+                    if self.player_health[i] > 0:
+                        rewards[i] += 5
 
         # send done notifications to players who are dead
         for i in range(self.n_players):
@@ -259,8 +310,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         for i in range(self.n_players):
             px, py = self.player_location[i]
+
+            # rotate so this player is always in the first spot.
+            destination_layer = ((i + self.n_players - player_id) % self.n_players) + 2
+
             if self._in_vision(player_id, px, py):
-                obs[i+2, px, py] = self.player_health[i]
+                obs[destination_layer, px, py] = self.player_health[i]
                 if self.player_last_action[i] in self.SHOOT_ACTIONS:
                     indx = self.player_last_action[i] - self.ACTION_SHOOT_UP
                     px += self.DX[indx]
@@ -268,7 +323,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     # not sure this is the best way to indicate a player shooting?
                     # maybe I should draw the marker on the spot hit...
                     if 0 <= px < self.map_width and 0 <= py < self.map_height:
-                        obs[i + 2, px, py] = 1
+                        obs[destination_layer, px, py] = 1
+
+        # final layer is just our team, this would be better feed in as non-spatial data...
+        obs[-1,:,:] = self.player_team[player_id]
+
+        # I really don't like this, we are shifting from CWH to WHC, which is slow, and pytorch
+        # should expect channels first, but for some reason baselines wants them last
+        # oh.. wait.. yeah this is in tensorflow... hmm ok.
+        obs = obs.swapaxes(0, 2)
+        obs = obs.swapaxes(0, 1)
 
         return obs
 
