@@ -149,6 +149,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.player_team = np.zeros((self.n_players), dtype=np.uint8)
         self.player_last_action = np.zeros((self.n_players), dtype=np.uint8)
 
+        self.easy_rewards = True # enables some easy rewards, such as killing enemy players.
+
         self.action_space = spaces.Discrete(10)
         self.observation_space = spaces.Box(
             low=0, high=255, shape=(self.map_width, self.map_height, self.map_layers), dtype=np.uint8
@@ -205,6 +207,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # shooting
         # moving + acting
 
+        red_team_good_kills = 0
+        blue_team_good_kills = 0
+
         for i in range(self.n_players):
             if actions[i] in self.SHOOT_ACTIONS:
                 indx = actions[i] - self.ACTION_SHOOT_UP
@@ -222,6 +227,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                             # this player got hit
                             # todo: randomize who gets hit if players are stacked
                             self._damage_player(k, np.random.randint(1,6) + np.random.randint(1,6))
+                            if self.player_health[k] <= 0:
+                                # we killed the target player
+                                if self.player_team[i] == self.TEAM_RED and self.player_team[k] == self.TEAM_BLUE:
+                                    red_team_good_kills += 1
+                                elif self.player_team[i] == self.TEAM_BLUE and self.player_team[k] == self.TEAM_RED:
+                                    blue_team_good_kills += 1
+
                             target_hit = True
 
                     x += self.DX[indx]
@@ -247,9 +259,17 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         general_rescued = rescue_counter >= 2 and not general_killed
         game_timeout = self.counter >= self.timeout
 
+
         for i in range(self.n_players):
             if self.player_team[i] == self.TEAM_GREEN:
                 rewards[i] += tree_counter
+
+            if self.easy_rewards:
+                if self.player_team[i] == self.TEAM_RED:
+                    rewards[i] += red_team_good_kills
+                if self.player_team[i] == self.TEAM_BLUE:
+                    rewards[i] += blue_team_good_kills
+
             if general_killed:
                 if self.player_team[i] == self.TEAM_RED:
                     rewards[i] += 10
@@ -288,7 +308,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :param damage:
         :return:
         """
-        self.player_health[player_id] = np.clip(self.player_health[player_id] - damage, 0, PLAYER_MAX_HEALTH)
+        self.player_health[player_id] -= damage
 
     def _get_observations(self):
         return [self._get_player_observation(player_id) for player_id in range(self.n_players)]
