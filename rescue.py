@@ -140,6 +140,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.timeout = 1000
         self.counter = 0
 
+        self.general_location = (0,0)
+        self.general_health = 10
+
         self.player_location = np.zeros((self.n_players, 2), dtype=np.uint8)
         self.player_health = np.zeros((self.n_players), dtype=np.uint8)
         self.player_seen_general = np.zeros((self.n_players), dtype=np.uint8)
@@ -204,7 +207,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         for i in range(self.n_players):
             if actions[i] in self.SHOOT_ACTIONS:
-                # shooting is not implemented yet...
                 indx = actions[i] - self.ACTION_SHOOT_UP
                 x, y = self.player_location[i]
                 target_hit = False
@@ -213,6 +215,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     for k in range(self.n_players):
                         if k == i:
                             continue
+                        if (x,y) == self.general_location:
+                            # general was hit
+                            self.general_health -= (np.random.randint(1,6) + np.random.randint(1,6))
                         if (x,y) == tuple(self.player_location[k]) and self.player_health[k] > 0:
                             # this player got hit
                             # todo: randomize who gets hit if players are stacked
@@ -238,7 +243,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     self.map[(px, py)] = self.MAP_GRASS
 
         # generate points
-        general_killed = False
+        general_killed = self.general_health <= 0
         general_rescued = rescue_counter >= 2 and not general_killed
         game_timeout = self.counter >= self.timeout
 
@@ -344,6 +349,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # general location
         self.general_location = (np.random.randint(1, self.map_width - 2), np.random.randint(1, self.map_height - 2))
+        self.general_health = 10
 
         # create map
         self.map = np.zeros((self.map_width, self.map_height), dtype=np.uint8) + 1
