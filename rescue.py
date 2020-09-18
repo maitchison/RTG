@@ -9,6 +9,8 @@ from gym import spaces
 import numpy as np
 import itertools
 
+from stable_baselines.common.misc_util import mpi_rank_or_zero
+
 # the initial health of each player
 PLAYER_MAX_HEALTH = 10
 
@@ -131,6 +133,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     def __init__(self):
         super().__init__(n_players=12)
 
+        self.id = mpi_rank_or_zero()
         self.n_trees = 10
         self.map_width = 48
         self.map_height = 48
@@ -139,6 +142,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.player_shoot_range = 12
         self.timeout = 1000
         self.counter = 0
+        self.game_counter = 0
 
         self.general_location = (0,0)
         self.general_health = 10
@@ -149,7 +153,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.player_team = np.zeros((self.n_players), dtype=np.uint8)
         self.player_last_action = np.zeros((self.n_players), dtype=np.uint8)
 
+        self.team_scores = np.zeros([3], dtype=np.int)
+
         self.easy_rewards = True # enables some easy rewards, such as killing enemy players.
+        self.reward_logging = True # logs rewards to txt file
+
 
         self.action_space = spaces.Discrete(10)
         self.observation_space = spaces.Box(
@@ -259,39 +267,43 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         general_rescued = rescue_counter >= 2 and not general_killed
         game_timeout = self.counter >= self.timeout
 
+        team_rewards = np.zeros([3], dtype=np.int)
+
+        team_rewards[self.TEAM_GREEN] += tree_counter
+        if self.easy_rewards:
+            team_rewards[self.TEAM_RED] += red_team_good_kills
+            team_rewards[self.TEAM_BLUE] += blue_team_good_kills
+            team_rewards[self.TEAM_RED] -= blue_team_good_kills
+            team_rewards[self.TEAM_BLUE] -= red_team_good_kills
+        if general_killed:
+            team_rewards[self.TEAM_RED] += 10
+            team_rewards[self.TEAM_BLUE] -= 10
+        elif general_rescued:
+            team_rewards[self.TEAM_RED] -= 10
+            team_rewards[self.TEAM_BLUE] += 10
+        elif game_timeout:
+            team_rewards[self.TEAM_GREEN] += 5
 
         for i in range(self.n_players):
-            if self.player_team[i] == self.TEAM_GREEN:
-                rewards[i] += tree_counter
+            rewards[i] = team_rewards[self.player_team[i]]
 
-            if self.easy_rewards:
-                if self.player_team[i] == self.TEAM_RED:
-                    rewards[i] += red_team_good_kills
-                if self.player_team[i] == self.TEAM_BLUE:
-                    rewards[i] += blue_team_good_kills
+        self.team_scores += team_rewards
 
-            if general_killed:
-                if self.player_team[i] == self.TEAM_RED:
-                    rewards[i] += 10
-                elif self.player_team[i] == self.TEAM_BLUE:
-                    rewards[i] -= 10
-            elif general_rescued:
-                if self.player_team[i] == self.TEAM_BLUE:
-                    rewards[i] += 10
-                elif self.player_team[i]== self.TEAM_RED:
-                    rewards[i] -= 10
-            elif game_timeout:
-                if self.player_team[i] == self.TEAM_GREEN:
-                    if self.player_health[i] > 0:
-                        rewards[i] += 5
+        all_players_dead = all(self.player_health[i] <= 0 for i in range(self.n_players))
 
         # send done notifications to players who are dead
-        for i in range(self.n_players):
-            dones[i] = self.player_health[i] <= 0
+        # for the moment just end everything once everyone's dead...
+        # for i in range(self.n_players):
+        #   dones[i] = self.player_health[i] <= 0
 
-        # game ends for everyone under these outcome decisions
-        if general_killed or general_rescued or game_timeout:
+        # game ends for everyone under these outcomes
+        if general_killed or general_rescued or game_timeout or all_players_dead:
             dones[:] = True
+            # append outcome to a log
+            with open(f"env.{self.id}.txt", "a+") as f:
+                f.write(",".join(str(x) for x in
+                    [self.game_counter, self.counter, *self.team_scores]
+                )+"\n")
 
         obs = self._get_observations()
         infos = [{} for _ in range(self.n_players)]
@@ -389,6 +401,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.player_health *= 0
         self.player_seen_general *= 0
         self.player_team *= 0
+
+        self.counter = 0
+        self.game_counter += 1
+
+        self.team_scores *= 0
 
         # for the moment hardcode 4,4,4 teams
         assert self.n_players == 12

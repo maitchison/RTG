@@ -14,6 +14,7 @@ import pickle
 
 import gym
 
+from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines.common.policies import CnnLstmPolicy, CnnPolicy
 from stable_baselines.common import make_vec_env
 from stable_baselines import PPO2
@@ -87,6 +88,11 @@ def play_random_game():
             break
 
 
+def make_env():
+    env = RescueTheGeneralEnv()
+    env = MultAgentEnvAdapter(env)
+    return env
+
 def play_simple_game():
     """
     Train PPO on the environment using the "other agents are environment" method.
@@ -95,14 +101,15 @@ def play_simple_game():
 
     print("Starting environment")
 
-
-    env = RescueTheGeneralEnv()
-    env = MultAgentEnvAdapter(env)
+    # mutli-processor not supported yet. Would require sending the model to each process, and I don't know if
+    # tensorflow allows instances running accross processes like that.
+    vec_env = DummyVecEnv([make_env for _ in range(16)])
 
     # create model
-    model = PPO2(CnnPolicy, env, verbose=1)
+    model = PPO2(CnnPolicy, vec_env, verbose=1)
 
-    env.model = model
+    for sub_env in vec_env.envs:
+        sub_env.model = model
 
     scores = []
 
@@ -111,7 +118,7 @@ def play_simple_game():
 
     for epoch in range(100):
 
-        model.learn(100000)
+        model.learn(1000000, reset_num_timesteps=epoch==0, log_interval=10)
 
         print("Finished training.")
         model.save(f"model-{epoch}")
