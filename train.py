@@ -105,7 +105,7 @@ def play_simple_game():
     # mutli-processor not supported yet. Would require sending the model to each process, and I don't know if
     # tensorflow allows instances running accross processes like that.
     vec_env = DummyVecEnv([make_env for _ in range(16)])
-    vec_env = VecNormalize(vec_env, norm_obs=False, clip_obs=False, norm_reward=True, clip_reward=False)
+    #vec_env = VecNormalize(vec_env, norm_obs=False, clip_obs=False, norm_reward=True, clip_reward=False)
 
     # create model
     model = PPO2(CnnPolicy, vec_env, verbose=1)

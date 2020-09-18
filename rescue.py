@@ -8,6 +8,7 @@ import gym
 from gym import spaces
 import numpy as np
 import itertools
+import os
 
 from stable_baselines.common.misc_util import mpi_rank_or_zero
 
@@ -141,7 +142,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.map_height = 48
         self.map_layers = self.n_players + 3
         self.player_view_distance = 5
-        self.player_shoot_range = 12
+        self.player_shoot_range = 4
         self.timeout = 1000
         self.counter = 0
         self.game_counter = 0
@@ -160,6 +161,15 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.easy_rewards = True # enables some easy rewards, such as killing enemy players.
         self.reward_logging = True # logs rewards to txt file
 
+        self.stats_player_hit = np.zeros((3,3), dtype=np.int) # which teams killed who
+        self.stats_deaths = np.zeros((3), dtype=np.int)  # how many players died
+        self.stats_kills = np.zeros((3), dtype=np.int)  # how many players died
+        self.stats_general_shot = np.zeros((3), dtype=np.int)  # which teams shot general
+        self.stats_tree_harvested = np.zeros((3), dtype=np.int)  # which teams harvested trees
+        self.stats_shots_fired = np.zeros((3), dtype=np.int)  # how many times each team shot
+        self.stats_times_moved = np.zeros((3), dtype=np.int)  # how many times each team moved
+        self.stats_times_acted = np.zeros((3), dtype=np.int)  # how many times each team acted
+        self.stats_actions = np.zeros((3), dtype=np.int)  # how actions this team could have performed (sum_t(agents_alive))
 
         self.action_space = spaces.Discrete(10)
         self.observation_space = spaces.Box(
@@ -209,9 +219,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         dones = np.zeros([self.n_players], dtype=np.bool)
 
         # dead men can't act
-        for i in range(self.n_players):
-            if self.player_health[i] <= 0:
-                actions[i] = self.ACTION_NOOP
+        for player_id in range(self.n_players):
+            if self.player_health[player_id] <= 0:
+                actions[player_id] = self.ACTION_NOOP
+            else:
+                self.stats_actions[self.player_team[player_id]] += 1
 
         # apply actions, we process actions in the following order..
         # shooting
@@ -220,30 +232,40 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         red_team_good_kills = 0
         blue_team_good_kills = 0
 
-        for i in range(self.n_players):
-            if actions[i] in self.SHOOT_ACTIONS:
-                indx = actions[i] - self.ACTION_SHOOT_UP
-                x, y = self.player_location[i]
+        for player_id in range(self.n_players):
+
+            if actions[player_id] in self.SHOOT_ACTIONS:
+
+                self.stats_shots_fired[self.player_team[player_id]] += 1
+
+                indx = actions[player_id] - self.ACTION_SHOOT_UP
+                x, y = self.player_location[player_id]
                 target_hit = False
                 for j in range(self.player_shoot_range):
                     # check location
-                    for k in range(self.n_players):
-                        if k == i:
+                    for other_player_id in range(self.n_players):
+                        if other_player_id == player_id:
                             continue
                         if (x,y) == self.general_location:
                             # general was hit
                             self.general_health -= (np.random.randint(1,6) + np.random.randint(1,6))
-                        if (x,y) == tuple(self.player_location[k]) and self.player_health[k] > 0:
+                            self.stats_general_shot[self.player_team[player_id]] += 1
+                            target_hit = True
+
+                        if (x,y) == tuple(self.player_location[other_player_id]) and self.player_health[other_player_id] > 0:
                             # this player got hit
                             # todo: randomize who gets hit if players are stacked
-                            self._damage_player(k, np.random.randint(1,6) + np.random.randint(1,6))
-                            if self.player_health[k] <= 0:
+                            self._damage_player(other_player_id, np.random.randint(1,6) + np.random.randint(1,6))
+                            if self.player_health[other_player_id] <= 0:
+                                self.stats_deaths[self.player_team[other_player_id]] += 1
+                                self.stats_kills[self.player_team[player_id]] += 1
                                 # we killed the target player
-                                if self.player_team[i] == self.TEAM_RED and self.player_team[k] == self.TEAM_BLUE:
+                                if self.player_team[player_id] == self.TEAM_RED and self.player_team[other_player_id] == self.TEAM_BLUE:
                                     red_team_good_kills += 1
-                                elif self.player_team[i] == self.TEAM_BLUE and self.player_team[k] == self.TEAM_RED:
+                                elif self.player_team[player_id] == self.TEAM_BLUE and self.player_team[other_player_id] == self.TEAM_RED:
                                     blue_team_good_kills += 1
 
+                            self.stats_player_hit[self.player_team[player_id], self.player_team[other_player_id]] += 1
                             target_hit = True
 
                     x += self.DX[indx]
@@ -252,15 +274,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     if target_hit:
                         break
 
-        for i in range(self.n_players):
-            if actions[i] in [self.ACTION_MOVE_UP, self.ACTION_MOVE_DOWN, self.ACTION_MOVE_LEFT, self.ACTION_MOVE_RIGHT]:
-                indx = actions[i] - self.ACTION_MOVE_UP
-                self._move_player(i, self.DX[indx], self.DY[indx])
-            elif actions[i] == self.ACTION_ACT:
-                px, py = self.player_location[i]
+        for player_id in range(self.n_players):
+            if actions[player_id] in [self.ACTION_MOVE_UP, self.ACTION_MOVE_DOWN, self.ACTION_MOVE_LEFT, self.ACTION_MOVE_RIGHT]:
+                self.stats_times_moved[self.player_team[player_id]] += 1
+                indx = actions[player_id] - self.ACTION_MOVE_UP
+                self._move_player(player_id, self.DX[indx], self.DY[indx])
+            elif actions[player_id] == self.ACTION_ACT:
+                self.stats_times_acted[self.player_team[player_id]] += 1
+                px, py = self.player_location[player_id]
                 if self.general_location == (px, py):
                     rescue_counter += 1
                 if self.map[(px, py)] == self.MAP_TREE:
+                    self.stats_tree_harvested[self.player_team[player_id]] += 1
                     tree_counter += 1
                     self.map[(px, py)] = self.MAP_GRASS
 
@@ -286,8 +311,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         elif game_timeout:
             team_rewards[self.TEAM_GREEN] += 5
 
-        for i in range(self.n_players):
-            rewards[i] = team_rewards[self.player_team[i]]
+        for player_id in range(self.n_players):
+            rewards[player_id] = team_rewards[self.player_team[player_id]]
 
         self.team_scores += team_rewards
 
@@ -301,10 +326,30 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # game ends for everyone under these outcomes
         if general_killed or general_rescued or game_timeout or all_players_dead:
             dones[:] = True
+            stats = [
+                self.stats_player_hit,
+                self.stats_deaths,
+                self.stats_kills,
+                self.stats_general_shot,
+                self.stats_tree_harvested,
+                self.stats_shots_fired,
+                self.stats_times_moved,
+                self.stats_times_acted,
+                self.stats_actions
+            ]
+
             # append outcome to a log
-            with open(f"env.{self.id}.txt", "a+") as f:
+            log_filename = f"env.{self.id}.csv"
+
+            if not os.path.exists(log_filename):
+                with open(log_filename, "w") as f:
+                    f.write("game_counter, game_length, score_red, score_green, score_blue, " +
+                            "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, " +
+                            "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions\n")
+
+            with open(log_filename, "a+") as f:
                 f.write(",".join(str(x) for x in
-                    [self.game_counter, self.counter, *self.team_scores]
+                    [self.game_counter, self.counter, *self.team_scores, *stats]
                 )+"\n")
 
         obs = self._get_observations()
@@ -394,6 +439,17 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         idxs = np.random.choice(len(all_locations), size=self.n_trees, replace=False)
         for loc in [all_locations[idx] for idx in idxs]:
             self.map[loc] = 2
+
+        # reset stats
+        self.stats_player_hit *= 0
+        self.stats_deaths *= 0
+        self.stats_kills *= 0
+        self.stats_general_shot *= 0
+        self.stats_tree_harvested *= 0
+        self.stats_shots_fired *= 0
+        self.stats_times_moved *= 0
+        self.stats_times_acted *= 0
+        self.stats_actions *= 0
 
         # initialize players to random start locations, and assign initial health
         general_filter = lambda p: abs(p[0] - self.general_location[0]) > 3 and abs(p[1] - self.general_location[1]) > 3
