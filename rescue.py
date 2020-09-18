@@ -243,14 +243,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 target_hit = False
                 for j in range(self.player_shoot_range):
                     # check location
+
+                    if (x, y) == self.general_location:
+                        # general was hit
+                        self.general_health -= (np.random.randint(1, 6) + np.random.randint(1, 6))
+                        self.stats_general_shot[self.player_team[player_id]] += 1
+                        break
+
                     for other_player_id in range(self.n_players):
                         if other_player_id == player_id:
                             continue
-                        if (x,y) == self.general_location:
-                            # general was hit
-                            self.general_health -= (np.random.randint(1,6) + np.random.randint(1,6))
-                            self.stats_general_shot[self.player_team[player_id]] += 1
-                            target_hit = True
 
                         if (x,y) == tuple(self.player_location[other_player_id]) and self.player_health[other_player_id] > 0:
                             # this player got hit
@@ -267,6 +269,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
                             self.stats_player_hit[self.player_team[player_id], self.player_team[other_player_id]] += 1
                             target_hit = True
+                            break
 
                     x += self.DX[indx]
                     y += self.DY[indx]
@@ -348,9 +351,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                             "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions\n")
 
             with open(log_filename, "a+") as f:
-                f.write(",".join(str(x) for x in
-                    [self.game_counter, self.counter, *self.team_scores, *stats]
-                )+"\n")
+                output_string = ",".join(
+                    str(x) for x in [self.game_counter, self.counter, *self.team_scores, *(nice_print(x) for x in stats)]
+                )
+                f.write(output_string + "\n")
 
         obs = self._get_observations()
         infos = [{} for _ in range(self.n_players)]
@@ -538,3 +542,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         else:
             raise ValueError(f"Invalid render mode {mode}")
 
+
+def nice_print(x):
+    return " ".join(str(i) for i in x.reshape(-1))
