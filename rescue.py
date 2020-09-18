@@ -101,6 +101,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     Observational Space
     """
 
+    REWARD_SCALE = 10 # some algorithms work better if value is
+
     MAP_GRASS = 1
     MAP_TREE = 2
 
@@ -310,6 +312,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.counter += 1
         self.player_last_action = actions
+
+        rewards *= self.REWARD_SCALE
 
         return obs, rewards, dones, infos
 

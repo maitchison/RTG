@@ -17,6 +17,7 @@ import gym
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines.common.policies import CnnLstmPolicy, CnnPolicy
 from stable_baselines.common import make_vec_env
+from stable_baselines.common.vec_env.vec_normalize import VecNormalize
 from stable_baselines import PPO2
 
 def export_movie(filename, model):
@@ -104,6 +105,7 @@ def play_simple_game():
     # mutli-processor not supported yet. Would require sending the model to each process, and I don't know if
     # tensorflow allows instances running accross processes like that.
     vec_env = DummyVecEnv([make_env for _ in range(16)])
+    vec_env = VecNormalize(vec_env, norm_obs=False, clip_obs=False, norm_reward=True, clip_reward=False)
 
     # create model
     model = PPO2(CnnPolicy, vec_env, verbose=1)
@@ -113,17 +115,14 @@ def play_simple_game():
 
     scores = []
 
-    scores.append(export_movie(f"ppo_run-initial.mp4", model))
-    pickle.dump(scores, open("results.dat", "wb"))
-
     for epoch in range(100):
 
         model.learn(1000000, reset_num_timesteps=epoch==0, log_interval=10)
 
         print("Finished training.")
-        model.save(f"model-{epoch}")
+        model.save(f"model-{epoch+1}")
         print("Generating movie...")
-        scores.append(export_movie(f"ppo_run-{epoch}.mp4", model))
+        scores.append(export_movie(f"ppo_run-{epoch+1}.mp4", model))
 
         pickle.dump(scores, open("results.dat", "wb"))
 
