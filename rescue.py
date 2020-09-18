@@ -9,6 +9,7 @@ from gym import spaces
 import numpy as np
 import itertools
 import os
+import matplotlib.pyplot as plt
 
 from stable_baselines.common.misc_util import mpi_rank_or_zero
 
@@ -80,8 +81,6 @@ class MultAgentEnvAdapter(gym.Env):
     def render(self, mode='human'):
         return self.env.render(mode)
 
-
-
 class RescueTheGeneralEnv(MultiAgentEnv):
     """
     The rescue the general game.
@@ -95,6 +94,15 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     * If a player shoots but other players are stacked ontop then a random player at the shooters location is hit (other
        than the shooter themselves)
     * If game times out then any green players still alive are awared 5 points
+
+
+    ---- new rules
+
+    * players can not move onto trees, or the general
+    * act now selects an adjacent object of interest, tree or general, automatically
+    * if two of more players try to occupy the same square none of them move
+    * unsure about blocking at the moment, I think I'll allow players to pass through.
+
 
     Action Space:
     (see below)
@@ -111,11 +119,21 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     TEAM_GREEN = 1
     TEAM_BLUE = 2
 
-    TEAM_COLOR = [
+    COLOR_FIRE = np.asarray([255, 255, 0], dtype=np.uint8)
+    COLOR_GENERAL = np.asarray([255, 255, 255], dtype=np.uint8)
+    COLOR_NEUTRAL = np.asarray([64, 64, 64], dtype=np.uint8)
+    COLOR_GRASS = np.asarray([0, 128, 0], dtype=np.uint8)
+    COLOR_TREE = np.asarray([125, 255, 150], dtype=np.uint8)
+
+    PLAYER_COLOR = np.asarray(
+        [np.asarray(plt.cm.tab20(i)[:3])*255 for i in range(12)]
+    , dtype=np.uint8)
+
+    TEAM_COLOR = np.asarray([
         (255,25,25),
         (25,255,25),
         (25,25,255)
-    ]
+    ], dtype=np.uint8)
 
     ACTION_NOOP = 0
     ACTION_MOVE_UP = 1
@@ -138,9 +156,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.id = mpi_rank_or_zero()
         self.n_trees = 10
-        self.map_width = 48
-        self.map_height = 48
-        self.map_layers = self.n_players + 3
+        self.map_width = 24
+        self.map_height = 24
         self.player_view_distance = 5
         self.player_shoot_range = 4
         self.timeout = 1000
@@ -173,7 +190,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.action_space = spaces.Discrete(10)
         self.observation_space = spaces.Box(
-            low=0, high=255, shape=(self.map_width, self.map_height, self.map_layers), dtype=np.uint8
+            low=0, high=255, shape=(self.map_width*3+6, self.map_height*3+6, 3), dtype=np.uint8
         )
 
     def _in_vision(self, player_id, x, y):
@@ -291,6 +308,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     self.stats_tree_harvested[self.player_team[player_id]] += 1
                     tree_counter += 1
                     self.map[(px, py)] = self.MAP_GRASS
+                    self._needs_repaint = True
 
         # generate points
         general_killed = self.general_health <= 0
@@ -378,9 +396,89 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     def _get_observations(self):
         return [self._get_player_observation(player_id) for player_id in range(self.n_players)]
 
+    def _draw_tile(self, obs, x, y, c):
+        dx, dy = 3+x*3, 3+y*3
+        obs[dx:dx+3, dy:dy+3] = c
+
+    def _draw_soldier(self, obs, player_id, team_colors=False):
+        ring_color = self.COLOR_NEUTRAL
+        fire_color = self.COLOR_FIRE
+        inner_color = self.TEAM_COLOR[self.player_team[player_id]] if team_colors else self.PLAYER_COLOR[player_id]
+
+        x,y = self.player_location[player_id]
+        dx, dy = 3 + x * 3 + 1, 3 + y * 3 + 1
+
+        obs[dx, dy] = inner_color
+        obs[dx - 1, dy - 1] = ring_color
+        obs[dx + 0, dy - 1] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_UP else ring_color
+        obs[dx + 1, dy - 1] = ring_color
+        obs[dx - 1, dy + 0] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_LEFT else ring_color
+        obs[dx + 1, dy + 0] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_RIGHT else ring_color
+        obs[dx - 1, dy + 1] = ring_color
+        obs[dx + 0, dy + 1] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_DOWN else ring_color
+        obs[dx + 1, dy + 1] = ring_color
+
+    def _draw_general(self, obs):
+        x, y = self.general_location
+        dx, dy = 3 + x * 3, 3 + y * 3
+        c = self.COLOR_GENERAL
+
+        obs[dx + 1, dy + 1] = c
+        obs[dx + 2, dy + 1] = c
+        obs[dx + 0, dy + 1] = c
+        obs[dx + 1, dy + 2] = c
+        obs[dx + 1, dy + 0] = c
+
+    def _get_map(self):
+
+        if not self._needs_repaint:
+            return self._map_cache.copy()
+
+        obs = np.zeros((self.map_width * 3 + 6, self.map_height * 3 + 6, 3), dtype=np.uint8)
+        obs[:, :, :] = self.COLOR_GRASS
+
+        # paint trees
+        for x in range(self.map_width):
+            for y in range(self.map_height):
+                if self.map[x, y] == self.MAP_TREE:
+                    self._draw_tile(obs, x, y, self.COLOR_TREE)
+        self._map_cache = obs.copy()
+        self._needs_repaint = False
+        return obs
+
     def _get_player_observation(self, player_id):
         """
+        Generates a copy of the map with local observations given given player.
+        :param player_id: player's perspective, -1 is all vision
+        :return:
+        """
+
+        # todo: implement limited vision
+
+        if player_id >= 0:
+            team_color = self.TEAM_COLOR[self.player_team[player_id]]
+        else:
+            team_color = np.asarray([128, 128, 128], dtype=np.uint8)
+
+        obs = self._get_map()
+
+        obs[:3, :] = team_color
+        obs[:-3, :] = team_color
+
+        # paint general
+        self._draw_general(obs)
+
+        # paint soldiers
+        for player_id in range(self.n_players):
+            self._draw_soldier(obs, player_id, team_colors=True) # stub: for the moment...
+
+        return obs
+
+    def _get_player_observation_layered(self, player_id):
+        """
         Returns the player observation. Non-visible parts of map will be masked with 0.
+
+        This method puts each player on a seperate layer
 
         :param player_id:
         :return: Numpy array containing player observation of dims [map_layers, width, height],
@@ -435,6 +533,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # general location
         self.general_location = (np.random.randint(1, self.map_width - 2), np.random.randint(1, self.map_height - 2))
         self.general_health = 10
+
+        self._needs_repaint = True
 
         # create map
         self.map = np.zeros((self.map_width, self.map_height), dtype=np.uint8) + 1
@@ -491,6 +591,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         raise NotImplemented("Sorry tile-map rendering not implemented yet")
 
     def _render_rgb(self):
+        return self._get_player_observation(-1)
+
+    def _render_rgb_old(self):
         """ Renders game in RGB using very simple colored tiles."""
 
         image = np.zeros((self.map_width, self.map_height, 3), dtype=np.uint8)

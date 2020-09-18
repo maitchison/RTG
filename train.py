@@ -26,7 +26,7 @@ def export_movie(filename, model):
         which_frames: model, real, or both
     """
 
-    scale = 8
+    scale = 4
 
     env = RescueTheGeneralEnv()
     states = env.reset()
@@ -54,9 +54,6 @@ def export_movie(filename, model):
 
         for i in range(env.n_players):
             team_scores[env.player_team[i]] += rewards[i]
-
-        if np.sum(np.asarray(rewards)) != 0:
-            print(rewards)
 
         frame = env.render("rgb_array")
         if frame.shape[0] != width or frame.shape[1] != height:
@@ -114,6 +111,8 @@ def play_simple_game():
         sub_env.model = model
 
     scores = []
+
+    scores.append(export_movie(f"ppo_run-0.mp4", model))
 
     for epoch in range(100):
 
