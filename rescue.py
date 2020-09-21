@@ -136,7 +136,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     Observational Space
     """
 
-    REWARD_SCALE = 3 # some algorithms work better if value is higher
+    REWARD_SCALE = 1 # some algorithms work better if value is higher
 
     MAP_GRASS = 1
     MAP_TREE = 2

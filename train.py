@@ -5,7 +5,7 @@ Author: Matthew Aitchison
 
 """
 
-LOG_FOLDER = "Experiment_6"
+LOG_FOLDER = "Experiment_6b"
 
 from rescue import RescueTheGeneralEnv, MultiAgentEnvAdapter
 
@@ -68,6 +68,7 @@ def export_movie(filename, model):
             frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 
         assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format((width, height, 3), frame.shape)
+        video_out.write(frame)
 
     for _ in range(4):
         # this just makes it easier to see the last frame
@@ -96,7 +97,7 @@ def play_simple_game():
     #vec_env = VecNormalize(vec_env, norm_obs=False, clip_obs=False, norm_reward=True, clip_reward=False)
 
     # create model
-    model = PPO2(CnnPolicy, vec_env, verbose=1, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
+    model = PPO2(CnnPolicy, vec_env, verbose=1, learning_rate=1e-4, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
 
     for sub_env in vec_env.envs:
         sub_env.model = model
