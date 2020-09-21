@@ -6,7 +6,7 @@ Author: Matthew Aitchison
 """
 
 
-from rescue import RescueTheGeneralEnv, MultAgentEnvAdapter
+from rescue import RescueTheGeneralEnv, MultiAgentEnvAdapter
 
 import numpy as np
 import cv2
@@ -55,7 +55,11 @@ def export_movie(filename, model):
         for i in range(env.n_players):
             team_scores[env.player_team[i]] += rewards[i]
 
-        frame = env.render("rgb_array")
+        frame = env.render("rgb_array", player_id=0) # stub, view from player 0's perspective.
+
+        # for some reason cv2 wants BGR instead of RGB
+        frame[:, :, :] = frame[:, :, ::-1]
+
         if frame.shape[0] != width or frame.shape[1] != height:
             frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 
@@ -88,7 +92,7 @@ def play_random_game():
 
 def make_env():
     env = RescueTheGeneralEnv()
-    env = MultAgentEnvAdapter(env)
+    env = MultiAgentEnvAdapter(env)
     return env
 
 def play_simple_game():
@@ -114,16 +118,16 @@ def play_simple_game():
 
     scores.append(export_movie(f"ppo_run-0.mp4", model))
 
-    for epoch in range(100):
+    for epoch in range(1000):
 
-        model.learn(1000000, reset_num_timesteps=epoch==0, log_interval=10)
+        model.learn(100000, reset_num_timesteps=epoch==0, log_interval=10)
 
-        print("Finished training.")
-        model.save(f"model-{epoch+1}")
         print("Generating movie...")
         scores.append(export_movie(f"ppo_run-{epoch+1}.mp4", model))
 
         pickle.dump(scores, open("results.dat", "wb"))
+
+    print("Finished training.")
 
 def main():
     print("Rendering movie...")

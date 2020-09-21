@@ -29,9 +29,9 @@ class MultiAgentEnv(gym.Env):
         'render.modes': ['human', 'rgb_array']
     }
 
-    def __init__(self, n_players):
+    def __init__(self):
         super().__init__()
-        self.n_players = n_players
+        pass
 
     def step(self, actions):
         return [], [], [], []
@@ -39,7 +39,7 @@ class MultiAgentEnv(gym.Env):
     def reset(self):
         return []
 
-class MultAgentEnvAdapter(gym.Env):
+class MultiAgentEnvAdapter(gym.Env):
     """
     Adapter for multi-agent environments. Trains a single agent an a muti-agent environment where all other agents
     are played by froozen copies of the agent.
@@ -65,8 +65,8 @@ class MultAgentEnvAdapter(gym.Env):
 
         assert self.model is not None, "Must assign model for other actors before using environment"
 
-        actions = self.next_actions[:]
-        actions[0] = action
+        actions = self.next_actions.copy()
+        actions[0] = action # learning agent is always agent 0
 
         obs, rewards, dones, infos = self.env.step(actions)
 
@@ -120,6 +120,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     TEAM_BLUE = 2
 
     COLOR_FIRE = np.asarray([255, 255, 0], dtype=np.uint8)
+    COLOR_HIGHLIGHT = np.asarray([180, 180, 50], dtype=np.uint8)
     COLOR_GENERAL = np.asarray([255, 255, 255], dtype=np.uint8)
     COLOR_NEUTRAL = np.asarray([64, 64, 64], dtype=np.uint8)
     COLOR_GRASS = np.asarray([0, 128, 0], dtype=np.uint8)
@@ -152,7 +153,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     DY = [-1, 1, 0, 0]
 
     def __init__(self):
-        super().__init__(n_players=12)
+        super().__init__()
+
+        self.n_players_red, self.n_players_green, self.n_players_blue = 4, 0, 0
 
         self.id = mpi_rank_or_zero()
         self.n_trees = 10
@@ -230,7 +233,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         assert len(actions) == self.n_players, "Invalid number of players"
 
         rescue_counter = 0
-        tree_counter = 0
+        green_tree_harvest_counter = 0
 
         rewards = np.zeros([self.n_players], dtype=np.float)
         dones = np.zeros([self.n_players], dtype=np.bool)
@@ -306,7 +309,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     rescue_counter += 1
                 if self.map[(px, py)] == self.MAP_TREE:
                     self.stats_tree_harvested[self.player_team[player_id]] += 1
-                    tree_counter += 1
+                    if self.player_team[player_id] == self.TEAM_GREEN:
+                        green_tree_harvest_counter += 1
                     self.map[(px, py)] = self.MAP_GRASS
                     self._needs_repaint = True
 
@@ -317,7 +321,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         team_rewards = np.zeros([3], dtype=np.int)
 
-        team_rewards[self.TEAM_GREEN] += tree_counter
+        team_rewards[self.TEAM_GREEN] += green_tree_harvest_counter
         if self.easy_rewards:
             team_rewards[self.TEAM_RED] += red_team_good_kills
             team_rewards[self.TEAM_BLUE] += blue_team_good_kills
@@ -400,8 +404,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         dx, dy = 3+x*3, 3+y*3
         obs[dx:dx+3, dy:dy+3] = c
 
-    def _draw_soldier(self, obs, player_id, team_colors=False):
-        ring_color = self.COLOR_NEUTRAL
+    def _draw_soldier(self, obs, player_id, team_colors=False, hilight=False):
+        ring_color = self.COLOR_HIGHLIGHT if hilight else self.COLOR_NEUTRAL
         fire_color = self.COLOR_FIRE
         inner_color = self.TEAM_COLOR[self.player_team[player_id]] if team_colors else self.PLAYER_COLOR[player_id]
 
@@ -442,9 +446,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             for y in range(self.map_height):
                 if self.map[x, y] == self.MAP_TREE:
                     self._draw_tile(obs, x, y, self.COLOR_TREE)
-        self._map_cache = obs.copy()
+        self._map_cache = obs
         self._needs_repaint = False
-        return obs
+        return self._map_cache.copy()
 
     def _get_player_observation(self, player_id):
         """
@@ -463,14 +467,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         obs = self._get_map()
 
         obs[:3, :] = team_color
-        obs[:-3, :] = team_color
+        obs[-3:, :] = team_color
 
         # paint general
         self._draw_general(obs)
 
         # paint soldiers
-        for player_id in range(self.n_players):
-            self._draw_soldier(obs, player_id, team_colors=True) # stub: for the moment...
+        for i in range(self.n_players):
+            self._draw_soldier(obs, i, team_colors=True, hilight=i==player_id) # stub: for the moment...
 
         return obs
 
@@ -571,9 +575,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.team_scores *= 0
 
-        # for the moment hardcode 4,4,4 teams
-        assert self.n_players == 12
-        teams = [self.TEAM_RED]*4 + [self.TEAM_GREEN]*4 + [self.TEAM_BLUE]*4
+        teams = [self.TEAM_RED] * self.n_players_red + [self.TEAM_GREEN] * self.n_players_green + [self.TEAM_BLUE] * self.n_players_blue
         np.random.shuffle(teams)
         self.player_team[:] = teams
 
@@ -587,11 +589,15 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         return self._get_observations()
 
+    @property
+    def n_players(self):
+        return self.n_players_red + self.n_players_green + self.n_players_blue
+
     def _render_human(self):
         raise NotImplemented("Sorry tile-map rendering not implemented yet")
 
-    def _render_rgb(self):
-        return self._get_player_observation(-1)
+    def _render_rgb(self, player_id=-1):
+        return self._get_player_observation(player_id)
 
     def _render_rgb_old(self):
         """ Renders game in RGB using very simple colored tiles."""
@@ -636,12 +642,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         return image
 
-    def render(self, mode='human'):
+    def render(self, mode='human', player_id = -1):
         """ render environment """
         if mode == 'human':
             return self._render_human()
         elif mode == 'rgb_array':
-            return self._render_rgb()
+            return self._render_rgb(player_id)
         else:
             raise ValueError(f"Invalid render mode {mode}")
 
