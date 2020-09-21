@@ -5,11 +5,13 @@ Author: Matthew Aitchison
 
 """
 
+LOG_FOLDER = "Experiment_5"
 
 from rescue import RescueTheGeneralEnv, MultiAgentEnvAdapter
 
 import numpy as np
 import cv2
+import os
 import pickle
 
 import gym
@@ -19,6 +21,8 @@ from stable_baselines.common.policies import CnnLstmPolicy, CnnPolicy
 from stable_baselines.common import make_vec_env
 from stable_baselines.common.vec_env.vec_normalize import VecNormalize
 from stable_baselines import PPO2
+
+from new_models import single_layer_cnn
 
 def export_movie(filename, model):
 
@@ -109,31 +113,37 @@ def play_simple_game():
     #vec_env = VecNormalize(vec_env, norm_obs=False, clip_obs=False, norm_reward=True, clip_reward=False)
 
     # create model
-    model = PPO2(CnnPolicy, vec_env, verbose=1)
+    model = PPO2(CnnPolicy, vec_env, verbose=1, policy_kwargs={"cnn_extractor":single_layer_cnn})
 
     for sub_env in vec_env.envs:
         sub_env.model = model
+        sub_env.env.log_folder = LOG_FOLDER
 
     scores = []
 
-    scores.append(export_movie(f"ppo_run-0.mp4", model))
+    scores.append(export_movie(f"{LOG_FOLDER}/ppo_run-0.mp4", model))
+
+    # this is mostly just to see how big the model is..
+    model.save(f"{LOG_FOLDER}/model_initial.p")
 
     for epoch in range(1000):
 
         model.learn(100000, reset_num_timesteps=epoch==0, log_interval=10)
 
         print("Generating movie...")
-        scores.append(export_movie(f"ppo_run-{epoch+1}.mp4", model))
+        scores.append(export_movie(f"{LOG_FOLDER}/ppo_run-{epoch+1}.mp4", model))
 
-        pickle.dump(scores, open("results.dat", "wb"))
+        pickle.dump(scores, open(f"{LOG_FOLDER}/results.dat", "wb"))
 
     print("Finished training.")
 
 def main():
+
+    os.makedirs(LOG_FOLDER, exist_ok=True)
+
     print("Rendering movie...")
     play_simple_game()
     print("Done.")
-
 
 if __name__ == "__main__":
     main()

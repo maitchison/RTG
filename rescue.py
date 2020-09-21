@@ -2,6 +2,27 @@
 Rescue the General Environment
 
 
+Suggested scenarios
+
+************************
+**Red-team-only**
+************************
+
+1 red players
+0 green players
+0 blue players
+
+mode=easy (this won't matter much though
+general=visible to all
+
+Description:
+This is a very simple scenario that should be solvable using standard single-agent algorithms.
+It provides a good sanity check for learning algorithms, which should be able to solve the environment (average
+score >9.9) in about 1M agent steps.
+
+
+
+
 """
 
 import gym
@@ -65,13 +86,15 @@ class MultiAgentEnvAdapter(gym.Env):
 
         assert self.model is not None, "Must assign model for other actors before using environment"
 
-        actions = self.next_actions.copy()
+        actions = self.next_actions[:]
         actions[0] = action # learning agent is always agent 0
 
         obs, rewards, dones, infos = self.env.step(actions)
 
         # todo: implement LSTM
-        self.next_actions, _, _, _ = self.model.step(np.asarray(obs), None, None)
+        if len(obs) > 1:
+            # only need to do this if there are other players...
+            self.next_actions, _, _, _ = self.model.step(np.asarray(obs), None, None)
 
         return obs[0], rewards[0], dones[0], infos[0]
 
@@ -110,7 +133,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     Observational Space
     """
 
-    REWARD_SCALE = 10 # some algorithms work better if value is
+    REWARD_SCALE = 1 # some algorithms work better if value is
 
     MAP_GRASS = 1
     MAP_TREE = 2
@@ -155,12 +178,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     def __init__(self):
         super().__init__()
 
-        self.n_players_red, self.n_players_green, self.n_players_blue = 4, 0, 0
+        self.log_folder = "./"
+
+        self.n_players_red, self.n_players_green, self.n_players_blue = 1, 0, 0
 
         self.id = mpi_rank_or_zero()
         self.n_trees = 10
-        self.map_width = 24
-        self.map_height = 24
+        self.map_width = 16
+        self.map_height = 16
         self.player_view_distance = 5
         self.player_shoot_range = 4
         self.timeout = 1000
@@ -364,7 +389,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             ]
 
             # append outcome to a log
-            log_filename = f"env.{self.id}.csv"
+            log_filename = f"{self.log_folder}/env.{self.id}.csv"
 
             if not os.path.exists(log_filename):
                 with open(log_filename, "w") as f:
@@ -382,7 +407,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         infos = [{} for _ in range(self.n_players)]
 
         self.counter += 1
-        self.player_last_action = actions
+        self.player_last_action = actions[:]
 
         rewards *= self.REWARD_SCALE
 
@@ -474,57 +499,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # paint soldiers
         for i in range(self.n_players):
-            self._draw_soldier(obs, i, team_colors=True, hilight=i==player_id) # stub: for the moment...
-
-        return obs
-
-    def _get_player_observation_layered(self, player_id):
-        """
-        Returns the player observation. Non-visible parts of map will be masked with 0.
-
-        This method puts each player on a seperate layer
-
-        :param player_id:
-        :return: Numpy array containing player observation of dims [map_layers, width, height],
-            first layer is map
-            next layer is general position (if known)
-            then n_players layers with number at players location (if visible) indicating health
-        """
-
-        assert 0 <= player_id < self.n_players, "Invalid player_id"
-
-        obs = np.zeros((self.map_layers, self.map_width, self.map_height), dtype=np.uint8)
-        obs[0, :, :] = self.map[:, :]
-
-        if self.player_seen_general[player_id]:
-            gx, gy = self.general_location
-            obs[1, gx, gy] = 1
-
-        for i in range(self.n_players):
-            px, py = self.player_location[i]
-
-            # rotate so this player is always in the first spot.
-            destination_layer = ((i + self.n_players - player_id) % self.n_players) + 2
-
-            if self._in_vision(player_id, px, py):
-                obs[destination_layer, px, py] = self.player_health[i]
-                if self.player_last_action[i] in self.SHOOT_ACTIONS:
-                    indx = self.player_last_action[i] - self.ACTION_SHOOT_UP
-                    px += self.DX[indx]
-                    py += self.DY[indx]
-                    # not sure this is the best way to indicate a player shooting?
-                    # maybe I should draw the marker on the spot hit...
-                    if 0 <= px < self.map_width and 0 <= py < self.map_height:
-                        obs[destination_layer, px, py] = 1
-
-        # final layer is just our team, this would be better feed in as non-spatial data...
-        obs[-1,:,:] = self.player_team[player_id]
-
-        # I really don't like this, we are shifting from CWH to WHC, which is slow, and pytorch
-        # should expect channels first, but for some reason baselines wants them last
-        # oh.. wait.. yeah this is in tensorflow... hmm ok.
-        obs = obs.swapaxes(0, 2)
-        obs = obs.swapaxes(0, 1)
+            self._draw_soldier(obs, i, team_colors=True, hilight=i==player_id)
 
         return obs
 
