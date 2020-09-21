@@ -95,8 +95,6 @@ class MultiAgentEnvAdapter(gym.Env):
         # todo: implement LSTM
         if len(obs) > 1:
             # only need to do this if there are other players...
-            # stub:
-            print("Generating other agents actions...")
             self.next_actions, _, _, _ = self.model.step(np.asarray(obs), None, None)
 
         return obs[0], rewards[0], dones[0], infos[0]
@@ -365,10 +363,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             team_rewards[self.TEAM_BLUE] += 10
         elif game_timeout:
             team_rewards[self.TEAM_GREEN] += 5
-
-        # stub: no rewards for other teams
-        team_rewards[1] = 0
-        team_rewards[2] = 0
 
         for player_id in range(self.n_players):
             rewards[player_id] = team_rewards[self.player_team[player_id]]

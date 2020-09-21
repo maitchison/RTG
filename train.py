@@ -5,7 +5,23 @@ Author: Matthew Aitchison
 
 """
 
-LOG_FOLDER = "Experiment_6b"
+"""
+Performance notes
+
+Model1
+8-8-16 no max-pool
+
+Model2
+32-64-64 maxpool on last 2 layers
+
+Optiplex    (CPU)  model1 = 300 FPS
+My computer (CPU)  model1 = 221 FPS 
+My computer (GPU)  model1 = 2100 FPS (at ~20% gpu) 
+My computer (GPU)  model2 = 1300 FPS (at ~60% gpu)
+
+"""
+
+LOG_FOLDER = "Experiment_7"
 
 from rescue import RescueTheGeneralEnv, MultiAgentEnvAdapter
 
@@ -97,7 +113,7 @@ def play_simple_game():
     #vec_env = VecNormalize(vec_env, norm_obs=False, clip_obs=False, norm_reward=True, clip_reward=False)
 
     # create model
-    model = PPO2(CnnPolicy, vec_env, verbose=1, learning_rate=1e-4, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
+    model = PPO2(CnnPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
 
     for sub_env in vec_env.envs:
         sub_env.model = model
