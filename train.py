@@ -5,7 +5,7 @@ Author: Matthew Aitchison
 
 """
 
-LOG_FOLDER = "Experiment_5"
+LOG_FOLDER = "Experiment_6"
 
 from rescue import RescueTheGeneralEnv, MultiAgentEnvAdapter
 
@@ -41,8 +41,8 @@ def export_movie(filename, model):
     width = (width * scale) // 4 * 4 # make sure these are multiples of 4
     height = (height * scale) // 4 * 4
 
-    # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
-    video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
+    # create video recorder
+    video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 60, (width, height), isColor=True)
 
     dones = [False] * env.n_players
 
@@ -69,30 +69,13 @@ def export_movie(filename, model):
 
         assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format((width, height, 3), frame.shape)
 
+    for _ in range(4):
+        # this just makes it easier to see the last frame
         video_out.write(frame)
 
     video_out.release()
 
     return team_scores
-
-def play_random_game():
-    """
-    Simple test of the environment using random actions...
-    """
-
-    print("Starting environment")
-
-    env = RescueTheGeneralEnv()
-    obs = env.reset()
-
-    while True:
-        print(f"Turn {env.counter}")
-        # random actions for the moment...
-        actions = np.random.randint(0, 10, size=[env.n_players])
-        obs, rewards, dones, infos = env.step(actions)
-        if np.all(dones):
-            break
-
 
 def make_env():
     env = RescueTheGeneralEnv()
@@ -108,12 +91,12 @@ def play_simple_game():
     print("Starting environment")
 
     # mutli-processor not supported yet. Would require sending the model to each process, and I don't know if
-    # tensorflow allows instances running accross processes like that.
+    # tensorflow allows instances running across processes like that.
     vec_env = DummyVecEnv([make_env for _ in range(16)])
     #vec_env = VecNormalize(vec_env, norm_obs=False, clip_obs=False, norm_reward=True, clip_reward=False)
 
     # create model
-    model = PPO2(CnnPolicy, vec_env, verbose=1, policy_kwargs={"cnn_extractor":single_layer_cnn})
+    model = PPO2(CnnPolicy, vec_env, verbose=1, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
 
     for sub_env in vec_env.envs:
         sub_env.model = model

@@ -36,6 +36,7 @@ from stable_baselines.common.misc_util import mpi_rank_or_zero
 
 # the initial health of each player
 PLAYER_MAX_HEALTH = 10
+INITIAL_GENERAL_HEALTH = 1 # stub 10
 
 class MultiAgentEnv(gym.Env):
     """
@@ -94,6 +95,8 @@ class MultiAgentEnvAdapter(gym.Env):
         # todo: implement LSTM
         if len(obs) > 1:
             # only need to do this if there are other players...
+            # stub:
+            print("Generating other agents actions...")
             self.next_actions, _, _, _ = self.model.step(np.asarray(obs), None, None)
 
         return obs[0], rewards[0], dones[0], infos[0]
@@ -133,7 +136,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     Observational Space
     """
 
-    REWARD_SCALE = 1 # some algorithms work better if value is
+    REWARD_SCALE = 3 # some algorithms work better if value is higher
 
     MAP_GRASS = 1
     MAP_TREE = 2
@@ -148,6 +151,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     COLOR_NEUTRAL = np.asarray([64, 64, 64], dtype=np.uint8)
     COLOR_GRASS = np.asarray([0, 128, 0], dtype=np.uint8)
     COLOR_TREE = np.asarray([125, 255, 150], dtype=np.uint8)
+    COLOR_DEAD = np.asarray([0, 0, 0], dtype=np.uint8)
 
     PLAYER_COLOR = np.asarray(
         [np.asarray(plt.cm.tab20(i)[:3])*255 for i in range(12)]
@@ -184,8 +188,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.id = mpi_rank_or_zero()
         self.n_trees = 10
-        self.map_width = 16
-        self.map_height = 16
+        self.map_width = 12
+        self.map_height = 12
         self.player_view_distance = 5
         self.player_shoot_range = 4
         self.timeout = 1000
@@ -193,7 +197,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.game_counter = 0
 
         self.general_location = (0,0)
-        self.general_health = 10
+        self.general_health = 0
 
         self.player_location = np.zeros((self.n_players, 2), dtype=np.uint8)
         self.player_health = np.zeros((self.n_players), dtype=np.uint8)
@@ -289,6 +293,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 for j in range(self.player_shoot_range):
                     # check location
 
+                    x += self.DX[indx]
+                    y += self.DY[indx]
+
                     if (x, y) == self.general_location:
                         # general was hit
                         self.general_health -= (np.random.randint(1, 6) + np.random.randint(1, 6))
@@ -296,6 +303,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                         break
 
                     for other_player_id in range(self.n_players):
+
                         if other_player_id == player_id:
                             continue
 
@@ -315,9 +323,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                             self.stats_player_hit[self.player_team[player_id], self.player_team[other_player_id]] += 1
                             target_hit = True
                             break
-
-                    x += self.DX[indx]
-                    y += self.DY[indx]
 
                     if target_hit:
                         break
@@ -360,6 +365,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             team_rewards[self.TEAM_BLUE] += 10
         elif game_timeout:
             team_rewards[self.TEAM_GREEN] += 5
+
+        # stub: no rewards for other teams
+        team_rewards[1] = 0
+        team_rewards[2] = 0
 
         for player_id in range(self.n_players):
             rewards[player_id] = team_rewards[self.player_team[player_id]]
@@ -450,7 +459,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     def _draw_general(self, obs):
         x, y = self.general_location
         dx, dy = 3 + x * 3, 3 + y * 3
-        c = self.COLOR_GENERAL
+        c = self.COLOR_GENERAL if self.general_health > 0 else self.COLOR_DEAD
 
         obs[dx + 1, dy + 1] = c
         obs[dx + 2, dy + 1] = c
@@ -511,7 +520,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # general location
         self.general_location = (np.random.randint(1, self.map_width - 2), np.random.randint(1, self.map_height - 2))
-        self.general_health = 10
+        self.general_health = INITIAL_GENERAL_HEALTH
 
         self._needs_repaint = True
 
