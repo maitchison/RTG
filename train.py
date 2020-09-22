@@ -32,6 +32,7 @@ import os
 import pickle
 import argparse
 import time
+import os
 
 import tensorflow as tf
 
@@ -119,16 +120,8 @@ def train_model():
     # our MARL environments are handled like vectorized environments
     vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(16)])
 
-    # create model
-    if config.device.lower() == "auto":
-        cm = nullcontext()
-    else:
-        print(f"Using device {config.device}")
-        cm = tf.device(f"/{config.device}")
-
-    with cm:
-        model = PPO2(CnnPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001,
-             policy_kwargs={"cnn_extractor": single_layer_cnn})
+    model = PPO2(CnnPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001,
+         policy_kwargs={"cnn_extractor": single_layer_cnn})
 
     for sub_env in vec_env.envs:
         sub_env.log_folder = config.log_folder
@@ -183,13 +176,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, help="[bench|video|train]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
-    parser.add_argument('--device', type=str, help="[CPU|GPU|AUTO]", default="auto")
+    parser.add_argument('--device', type=str, help="[0|1|2|3|AUTO]", default="auto")
 
     args = parser.parse_args()
 
     # setup config
     config.log_folder = args.run
     config.device = args.device
+
+    if config.device.lower() != "auto":
+        import os
+        print(f"Using GPU {config.device}")
+        os.environ["CUDA_VISIBLE_DEVICES"] = config.device
+
     os.makedirs(config.log_folder, exist_ok=True)
 
     if args.mode == "bench":
