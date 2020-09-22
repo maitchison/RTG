@@ -24,12 +24,16 @@ My computer (GPU)  model2 = 1300 FPS (at ~60% gpu)
 from rescue import RescueTheGeneralEnv
 from MARL import MultiAgentVecEnv
 
+from contextlib import nullcontext
+
 import numpy as np
 import cv2
 import os
 import pickle
 import argparse
 import time
+
+import tensorflow as tf
 
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines.common.policies import CnnLstmPolicy, CnnPolicy
@@ -42,6 +46,7 @@ from new_models import single_layer_cnn
 class config():
     """ Class to hold config files"""
     log_folder = str()
+    device = str()
 
 
 def export_movie(filename, model):
@@ -106,11 +111,24 @@ def train_model():
 
     print("Starting environment")
 
+    # copy source files for later
+    from shutil import copyfile
+    for filename in ["train.py", "rescue.py"]:
+        copyfile(filename, f"{config.log_folder}/{filename}")
+
     # our MARL environments are handled like vectorized environments
-    vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(4)])
+    vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(16)])
 
     # create model
-    model = PPO2(CnnPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
+    if config.device.lower() == "auto":
+        cm = nullcontext()
+    else:
+        print(f"Using device {config.device}")
+        cm = tf.device(f"/{config.device}")
+
+    with cm:
+        model = PPO2(CnnPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001,
+             policy_kwargs={"cnn_extractor": single_layer_cnn})
 
     for sub_env in vec_env.envs:
         sub_env.log_folder = config.log_folder
@@ -165,11 +183,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, help="[bench|video|train]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
+    parser.add_argument('--device', type=str, help="[CPU|GPU|AUTO]", default="auto")
 
     args = parser.parse_args()
 
     # setup config
     config.log_folder = args.run
+    config.device = args.device
     os.makedirs(config.log_folder, exist_ok=True)
 
     if args.mode == "bench":

@@ -115,7 +115,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.log_folder = "./"
 
-        self.n_players_red, self.n_players_green, self.n_players_blue = 4, 0, 0
+        self.n_players_red, self.n_players_green, self.n_players_blue = 2, 4, 0
         self.ego_centric = True
 
         self.id = mpi_rank_or_zero()
@@ -136,13 +136,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # game rules
         self.easy_rewards = True # enables some easy rewards, such as killing enemy players.
         self.n_trees = 10
-        self.map_width = 32
-        self.map_height = 32
+        self.map_width = 24
+        self.map_height = 24
         self.player_view_distance = 5
         self.player_shoot_range = 4
         self.timeout = 1000
         self.general_always_visible = False
-        self.initial_general_health = 1  # stub 10
+        self.initial_general_health = 10 
 
         self.reward_logging = True # logs rewards to txt file
 
@@ -195,7 +195,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # update general vision
         if self._in_vision(player_id, *self.general_location):
-            self.player_seen_general[player_id] = True
+
+            # standing on general stops vision
+            player_blocking = False
+            for i in range(self.n_players):
+                if tuple(self.player_location[i]) == (x, y):
+                    player_blocking = True
+            
+            self.player_seen_general[player_id] = not player_blocking
 
     def step(self, actions):
         """
@@ -240,12 +247,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     x += self.DX[indx]
                     y += self.DY[indx]
 
-                    if (x, y) == self.general_location:
-                        # general was hit
-                        self.general_health -= (np.random.randint(1, 6) + np.random.randint(1, 6))
-                        self.stats_general_shot[self.player_team[player_id]] += 1
-                        break
-
                     for other_player_id in range(self.n_players):
 
                         if other_player_id == player_id:
@@ -267,6 +268,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                             self.stats_player_hit[self.player_team[player_id], self.player_team[other_player_id]] += 1
                             target_hit = True
                             break
+
+                    if not target_hit and (x, y) == self.general_location:
+                        # general was hit
+                        self.general_health -= (np.random.randint(1, 6) + np.random.randint(1, 6))
+                        self.stats_general_shot[self.player_team[player_id]] += 1
+                        break
 
                     if target_hit:
                         break
@@ -307,8 +314,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         elif general_rescued:
             team_rewards[self.TEAM_RED] -= 10
             team_rewards[self.TEAM_BLUE] += 10
-        elif game_timeout:
-            team_rewards[self.TEAM_GREEN] += 5
 
         for player_id in range(self.n_players):
             rewards[player_id] = team_rewards[self.player_team[player_id]]
@@ -383,7 +388,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         obs[dx:dx+CELL_SIZE, dy:dy+CELL_SIZE] = c
 
     def _draw_soldier(self, obs, player_id, team_colors=False, hilight=False):
-        ring_color = self.COLOR_HIGHLIGHT if hilight else self.COLOR_NEUTRAL
+
+        if self.player_health[player_id] <= 0:
+            ring_color = self.COLOR_DEAD
+        elif hilight:
+            ring_color = self.COLOR_HIGHLIGHT
+        else:
+            ring_color = self.COLOR_NEUTRAL
+
         fire_color = self.COLOR_FIRE
         inner_color = self.TEAM_COLOR[self.player_team[player_id]] if team_colors else self.PLAYER_COLOR[player_id]
 
@@ -447,7 +459,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # paint soldiers
         for i in range(self.n_players):
-            self._draw_soldier(obs, i, team_colors=True, hilight=i==player_id)
+            self._draw_soldier(obs, i, team_colors=True, hilight=(i==player_id) and not self.ego_centric)
 
         # ego centric view
         if self.ego_centric and player_id >= 0:
