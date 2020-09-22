@@ -21,7 +21,8 @@ My computer (GPU)  model2 = 1300 FPS (at ~60% gpu)
 
 """
 
-from rescue import RescueTheGeneralEnv, MultiAgentEnvAdapter
+from rescue import RescueTheGeneralEnv
+from MARL import MultiAgentVecEnv
 
 import numpy as np
 import cv2
@@ -39,15 +40,13 @@ from stable_baselines import PPO2
 from new_models import single_layer_cnn
 
 class config():
-
+    """ Class to hold config files"""
     log_folder = str()
 
 
-
 def export_movie(filename, model):
-
-    """ Exports a movie with agents playing randomly.
-        which_frames: model, real, or both
+    """
+    Exports a movie with agents playing randomly.
     """
 
     scale = 4
@@ -79,7 +78,8 @@ def export_movie(filename, model):
         for i in range(env.n_players):
             team_scores[env.player_team[i]] += rewards[i]
 
-        frame = env.render("rgb_array", player_id=0) # stub, view from player 0's perspective.
+        # generate frames from global perspective
+        frame = env.render("rgb_array", player_id=-1)
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
@@ -98,11 +98,6 @@ def export_movie(filename, model):
 
     return team_scores
 
-def make_env():
-    env = RescueTheGeneralEnv()
-    env = MultiAgentEnvAdapter(env)
-    return env
-
 def train_model():
     """
     Train PPO on the environment using the "other agents are environment" method.
@@ -111,16 +106,14 @@ def train_model():
 
     print("Starting environment")
 
-    # mutli-processor not supported yet. Would require sending the model to each process, and I don't know if
-    # tensorflow allows instances running across processes like that.
-    vec_env = DummyVecEnv([make_env for _ in range(16)])
+    # our MARL environments are handled like vectorized environments
+    vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(4)])
 
     # create model
     model = PPO2(CnnPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
 
     for sub_env in vec_env.envs:
-        sub_env.model = model
-        sub_env.env.log_folder = config.log_folder
+        sub_env.log_folder = config.log_folder
 
     scores = []
 
@@ -171,12 +164,12 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, help="[bench|video|train]")
-    parser.add_argument('--experiment', type=str, help="experiment folder", default="test")
+    parser.add_argument('--run', type=str, help="run folder", default="test")
 
     args = parser.parse_args()
 
     # setup config
-    config.log_folder = args.experiment
+    config.log_folder = args.run
     os.makedirs(config.log_folder, exist_ok=True)
 
     if args.mode == "bench":

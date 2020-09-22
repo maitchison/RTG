@@ -20,9 +20,6 @@ This is a very simple scenario that should be solvable using standard single-age
 It provides a good sanity check for learning algorithms, which should be able to solve the environment (average
 score >9.9) in about 1M agent steps.
 
-
-
-
 """
 
 import gym
@@ -34,78 +31,12 @@ import matplotlib.pyplot as plt
 
 from stable_baselines.common.misc_util import mpi_rank_or_zero
 
+from MARL import MultiAgentEnv
+
 # the initial health of each player
 PLAYER_MAX_HEALTH = 10
-INITIAL_GENERAL_HEALTH = 1 # stub 10
 
 CELL_SIZE = 3
-
-class MultiAgentEnv(gym.Env):
-    """
-    Multi-Agent extension for OpenAI Gym
-
-    Credit:
-    Largely based on OpenAI's multi-agent environment
-    https://github.com/openai/multiagent-particle-envs/blob/master/multiagent/environment.py
-
-    """
-    metadata = {
-        'render.modes': ['human', 'rgb_array']
-    }
-
-    def __init__(self):
-        super().__init__()
-        pass
-
-    def step(self, actions):
-        return [], [], [], []
-
-    def reset(self):
-        return []
-
-class MultiAgentEnvAdapter(gym.Env):
-    """
-    Adapter for multi-agent environments. Trains a single agent an a muti-agent environment where all other agents
-    are played by froozen copies of the agent.
-
-    This allows multi-agent environments to be played by single-agent algorithms
-
-    """
-
-    def __init__(self, env:MultiAgentEnv):
-        """
-        :param multi_env: The multi-agent environment to use.
-        """
-        super().__init__()
-        self.env = env
-        self.model = None
-        self.next_actions = np.zeros([self.env.n_players], dtype=np.uint8)
-
-        self.action_space = env.action_space
-        self.observation_space = env.observation_space
-
-
-    def step(self, action):
-
-        assert self.model is not None, "Must assign model for other actors before using environment"
-
-        actions = self.next_actions[:]
-        actions[0] = action # learning agent is always agent 0
-
-        obs, rewards, dones, infos = self.env.step(actions)
-
-        # todo: implement LSTM
-        if len(obs) > 1:
-            # only need to do this if there are other players...
-            self.next_actions, _, _, _ = self.model.step(np.asarray(obs), None, None)
-
-        return obs[0], rewards[0], dones[0], infos[0]
-
-    def reset(self):
-        return self.env.reset()[0]
-
-    def render(self, mode='human'):
-        return self.env.render(mode)
 
 class RescueTheGeneralEnv(MultiAgentEnv):
     """
@@ -184,7 +115,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.log_folder = "./"
 
-        self.n_players_red, self.n_players_green, self.n_players_blue = 1, 0, 0
+        self.n_players_red, self.n_players_green, self.n_players_blue = 4, 0, 0
         self.ego_centric = True
 
         self.id = mpi_rank_or_zero()
@@ -205,12 +136,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # game rules
         self.easy_rewards = True # enables some easy rewards, such as killing enemy players.
         self.n_trees = 10
-        self.map_width = 12
-        self.map_height = 12
-        self.player_view_distance = 3
+        self.map_width = 32
+        self.map_height = 32
+        self.player_view_distance = 5
         self.player_shoot_range = 4
         self.timeout = 1000
-        self.general_always_visible = True
+        self.general_always_visible = False
+        self.initial_general_health = 1  # stub 10
 
         self.reward_logging = True # logs rewards to txt file
 
@@ -415,6 +347,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                             "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions\n")
 
             with open(log_filename, "a+") as f:
+
+                def nice_print(x):
+                    return " ".join(str(i) for i in x.reshape(-1))
+
                 output_string = ",".join(
                     str(x) for x in [self.game_counter, self.counter, *self.team_scores, *(nice_print(x) for x in stats)]
                 )
@@ -558,7 +494,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # general location
         self.general_location = (np.random.randint(1, self.map_width - 2), np.random.randint(1, self.map_height - 2))
-        self.general_health = INITIAL_GENERAL_HEALTH
+        self.general_health = self.initial_general_health
 
         self._needs_repaint = True
 
@@ -672,7 +608,3 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             return self._render_rgb(player_id)
         else:
             raise ValueError(f"Invalid render mode {mode}")
-
-
-def nice_print(x):
-    return " ".join(str(i) for i in x.reshape(-1))
