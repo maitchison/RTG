@@ -38,6 +38,8 @@ from stable_baselines.common.misc_util import mpi_rank_or_zero
 PLAYER_MAX_HEALTH = 10
 INITIAL_GENERAL_HEALTH = 1 # stub 10
 
+CELL_SIZE = 3
+
 class MultiAgentEnv(gym.Env):
     """
     Multi-Agent extension for OpenAI Gym
@@ -183,14 +185,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.log_folder = "./"
 
         self.n_players_red, self.n_players_green, self.n_players_blue = 1, 0, 0
+        self.ego_centric = True
 
         self.id = mpi_rank_or_zero()
-        self.n_trees = 10
-        self.map_width = 12
-        self.map_height = 12
-        self.player_view_distance = 5
-        self.player_shoot_range = 4
-        self.timeout = 1000
         self.counter = 0
         self.game_counter = 0
 
@@ -205,7 +202,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.team_scores = np.zeros([3], dtype=np.int)
 
+        # game rules
         self.easy_rewards = True # enables some easy rewards, such as killing enemy players.
+        self.n_trees = 10
+        self.map_width = 12
+        self.map_height = 12
+        self.player_view_distance = 3
+        self.player_shoot_range = 4
+        self.timeout = 1000
+        self.general_always_visible = True
+
         self.reward_logging = True # logs rewards to txt file
 
         self.stats_player_hit = np.zeros((3,3), dtype=np.int) # which teams killed who
@@ -219,9 +225,17 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_actions = np.zeros((3), dtype=np.int)  # how actions this team could have performed (sum_t(agents_alive))
 
         self.action_space = spaces.Discrete(10)
-        self.observation_space = spaces.Box(
-            low=0, high=255, shape=(self.map_width*3+6, self.map_height*3+6, 3), dtype=np.uint8
-        )
+        if self.ego_centric:
+            self.observation_space = spaces.Box(
+                low=0, high=255,
+                shape=((self.player_view_distance * 2 + 3) * CELL_SIZE, (self.player_view_distance * 2 + 3) * CELL_SIZE, 3),
+                dtype=np.uint8
+            )
+        else:
+            self.observation_space = spaces.Box(
+                low=0, high=255, shape=(self.map_width * 3 + 6, self.map_height * 3 + 6, 3), dtype=np.uint8
+            )
+
 
     def _in_vision(self, player_id, x, y):
         """
@@ -429,8 +443,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         return [self._get_player_observation(player_id) for player_id in range(self.n_players)]
 
     def _draw_tile(self, obs, x, y, c):
-        dx, dy = 3+x*3, 3+y*3
-        obs[dx:dx+3, dy:dy+3] = c
+        dx, dy = (x+1)*CELL_SIZE, (y+1)*CELL_SIZE
+        obs[dx:dx+CELL_SIZE, dy:dy+CELL_SIZE] = c
 
     def _draw_soldier(self, obs, player_id, team_colors=False, hilight=False):
         ring_color = self.COLOR_HIGHLIGHT if hilight else self.COLOR_NEUTRAL
@@ -485,8 +499,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :return:
         """
 
-        # todo: implement limited vision
-
         if player_id >= 0:
             team_color = self.TEAM_COLOR[self.player_team[player_id]]
         else:
@@ -494,15 +506,47 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         obs = self._get_map()
 
-        obs[:3, :] = team_color
-        obs[-3:, :] = team_color
-
         # paint general
         self._draw_general(obs)
 
         # paint soldiers
         for i in range(self.n_players):
             self._draw_soldier(obs, i, team_colors=True, hilight=i==player_id)
+
+        # ego centric view
+        if self.ego_centric and player_id >= 0:
+            # this is all a bit dodgy, I'll rewrite it later...
+            full_map = obs.copy()
+            padding = (self.player_view_distance+1) * CELL_SIZE  # +1 for border
+            full_map = np.pad(full_map, ((padding, padding), (padding, padding), (0,0)), mode="constant")
+
+            # get our local view
+            left = padding + CELL_SIZE + (self.player_location[player_id][0] - (self.player_view_distance + 1)) * CELL_SIZE
+            right = padding + CELL_SIZE + (self.player_location[player_id][0] + (self.player_view_distance + 2)) * CELL_SIZE
+            top = padding + CELL_SIZE + (self.player_location[player_id][1] - (self.player_view_distance + 1)) * CELL_SIZE
+            bottom = padding + CELL_SIZE + (self.player_location[player_id][1] + (self.player_view_distance + 2)) * CELL_SIZE
+            obs = full_map[left:right, top:bottom, :]
+
+        # mark edges with team
+        if player_id >= 0:
+            obs[:3, :] = team_color
+            obs[-3:, :] = team_color
+            obs[:, :3] = team_color
+            obs[:, -3:] = team_color
+
+
+        # show general off-screen location
+        if self.ego_centric and player_id >= 0 and self.player_seen_general[player_id]:
+
+            dx = self.general_location[0] - self.player_location[player_id][0]
+            dy = self.general_location[1] - self.player_location[player_id][1]
+
+            if abs(dx) > self.player_view_distance or abs(dy) > self.player_view_distance:
+                dx += self.player_view_distance
+                dy += self.player_view_distance
+                dx = np.clip(dx, -1, self.player_view_distance * 2 + 1)
+                dy = np.clip(dy, -1, self.player_view_distance * 2 + 1)
+                self._draw_tile(obs, dx, dy, self.COLOR_GENERAL)
 
         return obs
 
@@ -560,7 +604,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for i in range(self.n_players):
             self.player_location[i] = start_locations[i]
             self.player_health[i] = PLAYER_MAX_HEALTH
-            self.player_seen_general[i] = self.player_team[i] == self.TEAM_BLUE
+            self.player_seen_general[i] = self.player_team[i] == self.TEAM_BLUE or self.general_always_visible
             # this will update seen_general if player is close
             # which normally doesn't happen as I make sure players do not start close to the general
             self._move_player(i, 0, 0)
