@@ -28,6 +28,7 @@ import cv2
 import os
 import pickle
 import argparse
+import time
 
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines.common.policies import CnnLstmPolicy, CnnPolicy
@@ -113,7 +114,6 @@ def train_model():
     # mutli-processor not supported yet. Would require sending the model to each process, and I don't know if
     # tensorflow allows instances running across processes like that.
     vec_env = DummyVecEnv([make_env for _ in range(16)])
-    #vec_env = VecNormalize(vec_env, norm_obs=False, clip_obs=False, norm_reward=True, clip_reward=False)
 
     # create model
     model = PPO2(CnnPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
@@ -142,25 +142,30 @@ def train_model():
 
 def generate_video():
     """
-    Generate a video of random play
-    :return:
+    Generate a video of random play then exit.
     """
 
     print("Generating video.")
-
-    #vec_env = DummyVecEnv([make_env for _ in range(16)])
-
-    # create model
     model = PPO2(CnnPolicy, None, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
-
-    # for sub_env in vec_env.envs:
-    #     sub_env.model = model
-    #     sub_env.env.log_folder = config.log_folder
-
     export_movie(f"{config.log_folder}/ppo_run-0.mp4", model)
 
 def run_benchmark():
-    raise Exception("Benchmark not implemented yet")
+
+    print("Benchmarking environment")
+
+    env = RescueTheGeneralEnv()
+
+    start_time = time.time()
+
+    env.reset()
+    for _ in range(10000):
+        random_actions = np.random.randint(0,10, size=(env.n_players,))
+        env.step(random_actions)
+
+    time_taken_ms = (time.time() - start_time)
+
+    print(f"Native environment runs at {10000/time_taken_ms:.0f} FPS.")
+
 
 def main():
 
