@@ -151,6 +151,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.timeout = 1000
         self.general_always_visible = False
         self.initial_general_health = 10
+        self.hidden_roles = True
 
         # other rules
         self.location_encoding = "abs" # none | sin | abs
@@ -554,7 +555,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # paint soldiers
         for i in range(self.n_players):
-            self._draw_soldier(obs, i, team_colors=True, padding=(self._map_padding, self._map_padding))
+            self._draw_soldier(
+                obs,
+                i,
+                team_colors=not self.hidden_roles or (i == player_id),
+                padding=(self._map_padding, self._map_padding)
+            )
 
         # ego centric view
         if player_id >= 0:
@@ -569,12 +575,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             padding = self._map_padding * CELL_SIZE
             obs = obs[padding:-padding, padding:-padding, :]
 
-        # mark edges with team colors
         if player_id >= 0:
+            # mark sides with team colors
             obs[:3, :, :3] = team_color
             obs[-3:, :, :3] = team_color
-            obs[:, :3, :3] = team_color
-            obs[:, -3:, :3] = team_color
+            # mark top and bottom with time and health
+            obs[:, :3, 0:2] = int(self.counter / self.timeout * 255)
+            obs[:, -3:, :2] = int(self.player_health[player_id] / PLAYER_MAX_HEALTH * 255)
 
         # show general off-screen location
         if player_id >= 0 and self.player_seen_general[player_id]:
