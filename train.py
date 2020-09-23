@@ -148,6 +148,10 @@ def train_model():
 
     model.save(f"{config.log_folder}/model_final.p")
 
+    # flush the log buffer
+    for env in vec_env.envs:
+        env._write_log_buffer()
+
     print("Finished training.")
 
 def generate_video():

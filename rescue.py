@@ -130,6 +130,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.counter = 0
         self.game_counter = 0
 
+        self._log_buffer = []
+
         self.general_location = (0,0)
         self.general_health = 0
 
@@ -151,7 +153,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.timeout = 1000
         self.general_always_visible = False
         self.initial_general_health = 10
-        self.hidden_roles = True
+        self.hidden_roles = False
 
         # other rules
         self.location_encoding = "abs" # none | sin | abs
@@ -195,7 +197,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         px, py = self.player_location[player_id]
 
-        return abs(int(px) - x) + abs(int(py) - y) < self.player_view_distance
+        return max(abs(px - x), abs(py - y)) <= self.player_view_distance
 
     def player_at_pos(self, x, y, include_dead = False):
         """
@@ -377,43 +379,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # game ends for everyone under these outcomes
         if general_killed or general_rescued or game_timeout or all_players_dead:
+            self.write_stats_to_log()
             dones[:] = True
-            stats = [
-                self.stats_player_hit,
-                self.stats_deaths,
-                self.stats_kills,
-                self.stats_general_shot,
-                self.stats_tree_harvested,
-                self.stats_shots_fired,
-                self.stats_times_moved,
-                self.stats_times_acted,
-                self.stats_actions
-            ]
-
-            # append outcome to a log
-            log_filename = f"{self.log_folder}/env.{self.id}.csv"
-
-            if not os.path.exists(log_filename):
-                with open(log_filename, "w") as f:
-                    f.write("game_counter, game_length, score_red, score_green, score_blue, " +
-                            "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, " +
-                            "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions, player_count\n")
-
-            with open(log_filename, "a+") as f:
-
-                def nice_print(x):
-                    return " ".join(str(i) for i in x.reshape(-1))
-
-                output_string = ",".join(
-                    str(x) for x in [
-                        self.game_counter,
-                        self.counter,
-                        *self.team_scores,
-                        *(nice_print(x) for x in stats),
-                        self.n_players
-                    ]
-                )
-                f.write(output_string + "\n")
 
         obs = self._get_observations()
         infos = [{} for _ in range(self.n_players)]
@@ -432,7 +399,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :param damage:
         :return:
         """
-        self.player_health[player_id] -= damage
+        self.player_health[player_id] = max(0, self.player_health[player_id] - damage)
 
     def _get_observations(self):
         return [self._get_player_observation(player_id) for player_id in range(self.n_players)]
@@ -539,6 +506,59 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self._needs_repaint = False
         return self._map_cache.copy()
 
+    def write_log_buffer(self):
+        """
+        Write buffer to disk
+        :return:
+        """
+
+        # append outcome to a log
+        log_filename = f"{self.log_folder}/env.{self.id}.csv"
+
+        if not os.path.exists(log_filename):
+            with open(log_filename, "w") as f:
+                f.write("game_counter, game_length, score_red, score_green, score_blue, " +
+                        "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, " +
+                        "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions, player_count\n")
+
+        with open(log_filename, "a+") as f:
+            for output_string in LOG_BUFFER:
+                f.write(output_string + "\n")
+
+        LOG_BUFFER.clear()
+
+    def write_stats_to_log(self):
+
+        stats = [
+            self.stats_player_hit,
+            self.stats_deaths,
+            self.stats_kills,
+            self.stats_general_shot,
+            self.stats_tree_harvested,
+            self.stats_shots_fired,
+            self.stats_times_moved,
+            self.stats_times_acted,
+            self.stats_actions
+        ]
+
+        def nice_print(x):
+            return " ".join(str(i) for i in x.reshape(-1))
+
+        output_string = ",".join(
+            str(x) for x in [
+                self.game_counter,
+                self.counter,
+                *self.team_scores,
+                *(nice_print(x) for x in stats),
+                self.n_players
+            ]
+        )
+
+        LOG_BUFFER.append(output_string)
+
+        if len(LOG_BUFFER) > 10:
+            self.write_log_buffer()
+
     def _get_player_observation(self, player_id):
         """
         Generates a copy of the map with local observations given given player.
@@ -548,13 +568,27 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         obs = self._get_map()
 
-        # paint soldiers
+        # paint soldiers, living over dead
         for i in range(self.n_players):
-            if (player_id == -1) or self._in_vision(player_id, *self.player_location[i]):
+
+            player_visible = (player_id == -1) or self._in_vision(player_id, *self.player_location[i])
+
+            if player_visible and self.is_dead(i):
                 self._draw_soldier(
                     obs,
                     i,
-                    team_colors=not self.hidden_roles or (i == player_id) or (player_id == -1),
+                    team_colors=(not self.hidden_roles) or (i == player_id) or (player_id == -1),
+                    padding=(self._map_padding, self._map_padding)
+                )
+        for i in range(self.n_players):
+
+            player_visible = (player_id == -1) or self._in_vision(player_id, *self.player_location[i])
+
+            if player_visible and not self.is_dead(i):
+                self._draw_soldier(
+                    obs,
+                    i,
+                    team_colors=(not self.hidden_roles) or (i == player_id) or (player_id == -1),
                     padding=(self._map_padding, self._map_padding)
                 )
 
@@ -587,8 +621,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             obs[-1:, :, :3] = 0
             obs[:, :1, :3] = 0
             obs[:, -1:, :3] = 0
-
-
 
         # show general off-screen location
         if player_id >= 0 and self.player_seen_general[player_id]:
@@ -735,7 +767,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         i = 0
         for x in range(grid_width):
             for y in range(grid_height):
-                self._draw(frame, gw + pw*x, ph*y, player_frames[i])
+                # draw a darker version of player observations so they don't distract too much
+                self._draw(frame, gw + pw*x, ph*y, player_frames[i] * 0.75)
                 i = i + 1
 
         # add video padding
@@ -754,3 +787,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             return self._render_rgb(use_location=use_location)
         else:
             raise ValueError(f"Invalid render mode {mode}")
+
+
+# all envs share this log
+LOG_BUFFER = []
