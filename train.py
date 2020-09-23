@@ -142,7 +142,7 @@ def train_model():
     for epoch in range(1, 100):
         print("Generating video...")
         export_video(f"{config.log_folder}/ppo_run_{epoch:03}M.mp4", model, vec_env)
-        model.save(f"{config.log_folder}/model_{epoch:03}M.p")
+        model.save(f"{config.log_folder}/model_{epoch:03}_M.p")
         print("Training...")
         model.learn(1000000, reset_num_timesteps=False, log_interval=10)
 

@@ -240,7 +240,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.player_seen_general[player_id] = not player_blocking
 
     def is_dead(self, player_id):
-        return self.player_health[player_id] > 0
+        return self.player_health[player_id] <= 0
 
     def step(self, actions):
         """
@@ -448,10 +448,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         elif highlight:
             ring_color = self.COLOR_HIGHLIGHT
         else:
-            ring_color = self.COLOR_NEUTRAL
+            ring_color = self.TEAM_COLOR[self.player_team[player_id]] if team_colors else self.COLOR_NEUTRAL
 
         fire_color = self.COLOR_FIRE
-        inner_color = self.TEAM_COLOR[self.player_team[player_id]] if team_colors else self.PLAYER_COLOR[player_id]
+        inner_color = self.PLAYER_COLOR[player_id]
 
         x,y = self.player_location[player_id]
 
@@ -546,21 +546,17 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :return:
         """
 
-        if player_id >= 0:
-            team_color = self.TEAM_COLOR[self.player_team[player_id]]
-        else:
-            team_color = np.asarray([128, 128, 128], dtype=np.uint8)
-
         obs = self._get_map()
 
         # paint soldiers
         for i in range(self.n_players):
-            self._draw_soldier(
-                obs,
-                i,
-                team_colors=not self.hidden_roles or (i == player_id),
-                padding=(self._map_padding, self._map_padding)
-            )
+            if (player_id == -1) or self._in_vision(player_id, *self.player_location[i]):
+                self._draw_soldier(
+                    obs,
+                    i,
+                    team_colors=not self.hidden_roles or (i == player_id) or (player_id == -1),
+                    padding=(self._map_padding, self._map_padding)
+                )
 
         # ego centric view
         if player_id >= 0:
@@ -576,12 +572,23 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             obs = obs[padding:-padding, padding:-padding, :]
 
         if player_id >= 0:
-            # mark sides with team colors
-            obs[:3, :, :3] = team_color
-            obs[-3:, :, :3] = team_color
+            # blank out frame
+            obs[:3, :, :3] = 64
+            obs[-3:, :, :3] = 64
+            obs[:, :3, :3] = 64
+            obs[:, -3:, :3] = 64
             # mark top and bottom with time and health
-            obs[:, :3, 0:2] = int(self.counter / self.timeout * 255)
-            obs[:, -3:, :2] = int(self.player_health[player_id] / PLAYER_MAX_HEALTH * 255)
+            obs[3:-3, :3, :3] = int(self.counter / self.timeout * 255)
+            obs[3:-3, -3:, 0:2] = int(self.player_health[player_id] / PLAYER_MAX_HEALTH * 255)
+
+            # darken edges a little
+            # this is really just for aesthetics
+            obs[:1, :, :3] = 0
+            obs[-1:, :, :3] = 0
+            obs[:, :1, :3] = 0
+            obs[:, -1:, :3] = 0
+
+
 
         # show general off-screen location
         if player_id >= 0 and self.player_seen_general[player_id]:
