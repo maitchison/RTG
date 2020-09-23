@@ -50,16 +50,15 @@ class config():
     device = str()
 
 
-def export_movie(filename, model):
+def export_video(filename, model, env):
     """
     Exports a movie with agents playing randomly.
     """
 
     scale = 4
 
-    env = RescueTheGeneralEnv()
     states = env.reset()
-    frame = env.render("rgb_array")
+    frame = env.envs[0].render("rgb_array")
 
     # work out our height
     height, width, channels = frame.shape
@@ -69,23 +68,27 @@ def export_movie(filename, model):
     # create video recorder
     video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 15, (width, height), isColor=True)
 
-    dones = [False] * env.n_players
+    dones = [False] * len(states)
 
     team_scores = np.zeros([3], dtype=np.int)
 
-    # play the game...
-    while not np.all(dones):
+    # don't like it that this is hard coded... not sure how to init the states?
+    agent_states = np.zeros((len(states), 512))
 
-        # todo: implement LSTM
-        actions, _, _, _ = model.step(np.asarray(states), None, None)
+    n_players = env.envs[0].n_players
+
+    # play the game...
+    while not np.all(dones[:n_players]):
+
+        actions, _, agent_states, _ = model.step(np.asarray(states), agent_states, dones)
 
         states, rewards, dones, infos = env.step(actions)
 
-        for i in range(env.n_players):
-            team_scores[env.player_team[i]] += rewards[i]
+        for i in range(n_players):
+            team_scores[env.envs[0].player_team[i]] += rewards[i]
 
         # generate frames from global perspective
-        frame = env.render("rgb_array", player_id=-1)
+        frame = env.envs[0].render("rgb_array", player_id=-1)
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
@@ -120,27 +123,27 @@ def train_model():
     # our MARL environments are handled like vectorized environments
     vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(16)])
 
-    model = PPO2(CnnPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001,
+    model = PPO2(CnnLstmPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001,
          policy_kwargs={"cnn_extractor": single_layer_cnn})
 
     for sub_env in vec_env.envs:
         sub_env.log_folder = config.log_folder
 
-    scores = []
+    # special case for first epoch, we want some early results
+    for mini_epoch in range(0, 10):
+        print("Generating video...")
+        export_video(f"{config.log_folder}/ppo_run_000_{mini_epoch}_M.mp4", model, vec_env)
+        if mini_epoch == 0:
+            model.save(f"{config.log_folder}/model_000_M.p")
+        model.learn(100000, reset_num_timesteps=False, log_interval=10)
 
-    scores.append(export_movie(f"{config.log_folder}/ppo_run-0.mp4", model))
+    for epoch in range(1, 100):
+        print("Generating video...")
+        export_video(f"{config.log_folder}/ppo_run_{epoch:03}M.mp4", model, vec_env)
+        model.save(f"{config.log_folder}/model_{epoch:03}M.p")
+        model.learn(1000000, reset_num_timesteps=False, log_interval=10)
 
-    # this is mostly just to see how big the model is..
-    model.save(f"{config.log_folder}/model_initial.p")
-
-    for epoch in range(1000):
-
-        model.learn(100000, reset_num_timesteps=epoch==0, log_interval=10)
-
-        print("Generating movie...")
-        scores.append(export_movie(f"{config.log_folder}/ppo_run-{epoch+1}.mp4", model))
-
-        pickle.dump(scores, open(f"{config.log_folder}/results.dat", "wb"))
+    model.save(f"{config.log_folder}/model_final.p")
 
     print("Finished training.")
 
@@ -150,8 +153,9 @@ def generate_video():
     """
 
     print("Generating video.")
-    model = PPO2(CnnPolicy, None, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
-    export_movie(f"{config.log_folder}/ppo_run-0.mp4", model)
+    env = MultiAgentVecEnv([RescueTheGeneralEnv])
+    model = PPO2(CnnPolicy, env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
+    export_video(f"{config.log_folder}/ppo_run-0.mp4", model, env)
 
 def run_benchmark():
 
@@ -185,7 +189,6 @@ def main():
     config.device = args.device
 
     if config.device.lower() != "auto":
-        import os
         print(f"Using GPU {config.device}")
         os.environ["CUDA_VISIBLE_DEVICES"] = config.device
 

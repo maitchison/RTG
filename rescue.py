@@ -115,7 +115,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.log_folder = "./"
 
-        self.n_players_red, self.n_players_green, self.n_players_blue = 2, 4, 0
+        self.n_players_red, self.n_players_green, self.n_players_blue = 2, 2, 0
         self.ego_centric = True
 
         self.id = mpi_rank_or_zero()
@@ -125,11 +125,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.general_location = (0,0)
         self.general_health = 0
 
-        self.player_location = np.zeros((self.n_players, 2), dtype=np.uint8)
-        self.player_health = np.zeros((self.n_players), dtype=np.uint8)
+        self.player_location = np.zeros((self.n_players, 2), dtype=np.int)
+        self.player_health = np.zeros((self.n_players), dtype=np.int)
         self.player_seen_general = np.zeros((self.n_players), dtype=np.uint8)
-        self.player_team = np.zeros((self.n_players), dtype=np.uint8)
-        self.player_last_action = np.zeros((self.n_players), dtype=np.uint8)
+        self.player_team = np.zeros((self.n_players), dtype=np.int)
+        self.player_last_action = np.zeros((self.n_players), dtype=np.int)
 
         self.team_scores = np.zeros([3], dtype=np.int)
 
@@ -349,7 +349,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 with open(log_filename, "w") as f:
                     f.write("game_counter, game_length, score_red, score_green, score_blue, " +
                             "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, " +
-                            "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions\n")
+                            "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions, player_count\n")
 
             with open(log_filename, "a+") as f:
 
@@ -357,7 +357,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     return " ".join(str(i) for i in x.reshape(-1))
 
                 output_string = ",".join(
-                    str(x) for x in [self.game_counter, self.counter, *self.team_scores, *(nice_print(x) for x in stats)]
+                    str(x) for x in [
+                        self.game_counter,
+                        self.counter,
+                        *self.team_scores,
+                        *(nice_print(x) for x in stats),
+                        self.n_players
+                    ]
                 )
                 f.write(output_string + "\n")
 
