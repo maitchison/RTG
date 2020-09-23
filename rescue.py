@@ -124,7 +124,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.log_folder = "./"
 
-        self.n_players_red, self.n_players_green, self.n_players_blue = 2, 2, 0
+        self.n_players_red, self.n_players_green, self.n_players_blue = 2, 2, 2
 
         self.id = mpi_rank_or_zero()
         self.counter = 0
@@ -196,6 +196,21 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         return abs(int(px) - x) + abs(int(py) - y) < self.player_view_distance
 
+    def player_at_pos(self, x, y, include_dead = False):
+        """
+        Returns first ID of player at given position or -1 if none
+        :param x:
+        :param y:
+        :return:
+        """
+
+        # todo: this could be a lot faster, maybe we need a lookup?
+
+        for player_id in range(self.n_players):
+            if (include_dead or not self.is_dead(player_id)) and tuple(self.player_location[player_id]) == (x,y):
+                return player_id
+        return -1
+
     def _move_player(self, player_id, dx, dy):
         """
         Moves player given offset.
@@ -207,7 +222,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         x,y = self.player_location[player_id]
         x = np.clip(x + dx, 0, self.map_width-1)
         y = np.clip(y + dy, 0, self.map_height-1)
-        self.player_location[player_id] = x, y
+
+        if self.player_at_pos(x, y) == -1:
+            # can not move on-top of other players.
+            self.player_location[player_id] = x, y
 
         # update general vision
         if self._in_vision(player_id, *self.general_location):
@@ -219,6 +237,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     player_blocking = True
             
             self.player_seen_general[player_id] = not player_blocking
+
+    def is_dead(self, player_id):
+        return self.player_health[player_id] > 0
 
     def step(self, actions):
         """
@@ -248,69 +269,78 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         red_team_good_kills = 0
         blue_team_good_kills = 0
 
+        # shooting
         for player_id in range(self.n_players):
 
             if actions[player_id] in self.SHOOT_ACTIONS:
 
                 self.stats_shots_fired[self.player_team[player_id]] += 1
 
-                indx = actions[player_id] - self.ACTION_SHOOT_UP
+                index = actions[player_id] - self.ACTION_SHOOT_UP
                 x, y = self.player_location[player_id]
-                target_hit = False
+
                 for j in range(self.player_shoot_range):
                     # check location
 
-                    x += self.DX[indx]
-                    y += self.DY[indx]
+                    x += self.DX[index]
+                    y += self.DY[index]
 
-                    for other_player_id in range(self.n_players):
+                    # check other players
+                    other_player_id = self.player_at_pos(x, y)
+                    if other_player_id >= 0:
+                        # a soldier was hit...
+                        self._damage_player(other_player_id, np.random.randint(1,6) + np.random.randint(1,6))
+                        if self.player_health[other_player_id] <= 0:
+                            self.stats_deaths[self.player_team[other_player_id]] += 1
+                            self.stats_kills[self.player_team[player_id]] += 1
+                            # we killed the target player
+                            if self.player_team[player_id] == self.TEAM_RED and self.player_team[other_player_id] == self.TEAM_BLUE:
+                                red_team_good_kills += 1
+                            elif self.player_team[player_id] == self.TEAM_BLUE and self.player_team[other_player_id] == self.TEAM_RED:
+                                blue_team_good_kills += 1
 
-                        if other_player_id == player_id:
-                            continue
+                        self.stats_player_hit[self.player_team[player_id], self.player_team[other_player_id]] += 1
+                        break
 
-                        if (x,y) == tuple(self.player_location[other_player_id]) and self.player_health[other_player_id] > 0:
-                            # this player got hit
-                            # todo: randomize who gets hit if players are stacked
-                            self._damage_player(other_player_id, np.random.randint(1,6) + np.random.randint(1,6))
-                            if self.player_health[other_player_id] <= 0:
-                                self.stats_deaths[self.player_team[other_player_id]] += 1
-                                self.stats_kills[self.player_team[player_id]] += 1
-                                # we killed the target player
-                                if self.player_team[player_id] == self.TEAM_RED and self.player_team[other_player_id] == self.TEAM_BLUE:
-                                    red_team_good_kills += 1
-                                elif self.player_team[player_id] == self.TEAM_BLUE and self.player_team[other_player_id] == self.TEAM_RED:
-                                    blue_team_good_kills += 1
-
-                            self.stats_player_hit[self.player_team[player_id], self.player_team[other_player_id]] += 1
-                            target_hit = True
-                            break
-
-                    if not target_hit and (x, y) == self.general_location:
+                    # check general
+                    if (x, y) == self.general_location:
                         # general was hit
                         self.general_health -= (np.random.randint(1, 6) + np.random.randint(1, 6))
                         self.stats_general_shot[self.player_team[player_id]] += 1
                         self._needs_repaint = True
                         break
 
-                    if target_hit:
-                        break
-
+        # repeat dead men can't act as players might have been killed above
         for player_id in range(self.n_players):
-            if actions[player_id] in [self.ACTION_MOVE_UP, self.ACTION_MOVE_DOWN, self.ACTION_MOVE_LEFT, self.ACTION_MOVE_RIGHT]:
-                self.stats_times_moved[self.player_team[player_id]] += 1
-                indx = actions[player_id] - self.ACTION_MOVE_UP
-                self._move_player(player_id, self.DX[indx], self.DY[indx])
-            elif actions[player_id] == self.ACTION_ACT:
+            if self.player_health[player_id] <= 0:
+                actions[player_id] = self.ACTION_NOOP
+
+        # if we are within 1 range of general rescue him automatically
+        for player_id in range(self.n_players):
+            if self.player_team[[player_id]] == self.TEAM_BLUE and not self.is_dead(player_id):
+                dx = self.player_location[player_id][0] - self.general_location[0]
+                dy = self.player_location[player_id][1] - self.general_location[1]
+                if abs(dx) + abs(dy) <= 1:
+                    rescue_counter += 1
+
+        # acting
+        for player_id in range(self.n_players):
+            if actions[player_id] == self.ACTION_ACT:
                 self.stats_times_acted[self.player_team[player_id]] += 1
                 px, py = self.player_location[player_id]
-                if self.general_location == (px, py):
-                    rescue_counter += 1
                 if self.map[(px, py)] == self.MAP_TREE:
                     self.stats_tree_harvested[self.player_team[player_id]] += 1
                     if self.player_team[player_id] == self.TEAM_GREEN:
                         green_tree_harvest_counter += 1
                     self.map[(px, py)] = self.MAP_GRASS
                     self._needs_repaint = True
+
+        # moving
+        for player_id in range(self.n_players):
+            if actions[player_id] in [self.ACTION_MOVE_UP, self.ACTION_MOVE_DOWN, self.ACTION_MOVE_LEFT, self.ACTION_MOVE_RIGHT]:
+                self.stats_times_moved[self.player_team[player_id]] += 1
+                index = actions[player_id] - self.ACTION_MOVE_UP
+                self._move_player(player_id, self.DX[index], self.DY[index])
 
         # generate points
         general_killed = self.general_health <= 0
@@ -683,18 +713,22 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         gw, gh, _ = global_frame.shape
         pw, ph, _ = player_frames[0].shape
 
-        frame = np.zeros((gw+pw*2, max(gh, ph*2), 3), np.uint8)
+        grid_width = 3
+        grid_height = 2
+
+        frame = np.zeros((gw+pw*grid_width, max(gh, ph*grid_height), 3), np.uint8)
         self._draw(frame, 0, 0, global_frame)
-        self._draw(frame, gw, 0, player_frames[0])
-        self._draw(frame, gw + pw, 0, player_frames[1])
-        self._draw(frame, gw, ph, player_frames[2])
-        self._draw(frame, gw + pw, ph, player_frames[3])
+        i = 0
+        for x in range(grid_width):
+            for y in range(grid_height):
+                self._draw(frame, gw + pw*x, ph*y, player_frames[i])
+                i = i + 1
 
         # add video padding
         padding = (CELL_SIZE, CELL_SIZE)
         frame = np.pad(frame, (padding, padding, (0, 0)), mode="constant")
 
-        frame = frame.swapaxes(0,1) # I'm using x,y, but video needs y,x
+        frame = frame.swapaxes(0, 1) # I'm using x,y, but video needs y,x
 
         return frame
 
