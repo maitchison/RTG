@@ -22,6 +22,11 @@ score >9.9) in about 1M agent steps.
 
 """
 
+"""
+Benchmarking
+Start, 1591
+"""
+
 import gym
 from gym import spaces
 import numpy as np
@@ -116,7 +121,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.log_folder = "./"
 
         self.n_players_red, self.n_players_green, self.n_players_blue = 2, 2, 0
-        self.ego_centric = True
 
         self.id = mpi_rank_or_zero()
         self.counter = 0
@@ -142,7 +146,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.player_shoot_range = 4
         self.timeout = 1000
         self.general_always_visible = False
-        self.initial_general_health = 10 
+        self.initial_general_health = 10
+
+        # other rules
+        self.location_encoding = "abs" # none | sin | abs
 
         self.reward_logging = True # logs rewards to txt file
 
@@ -157,17 +164,22 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_actions = np.zeros((3), dtype=np.int)  # how actions this team could have performed (sum_t(agents_alive))
 
         self.action_space = spaces.Discrete(10)
-        if self.ego_centric:
-            self.observation_space = spaces.Box(
-                low=0, high=255,
-                shape=((self.player_view_distance * 2 + 3) * CELL_SIZE, (self.player_view_distance * 2 + 3) * CELL_SIZE, 3),
-                dtype=np.uint8
-            )
-        else:
-            self.observation_space = spaces.Box(
-                low=0, high=255, shape=(self.map_width * 3 + 6, self.map_height * 3 + 6, 3), dtype=np.uint8
-            )
 
+        obs_channels = 3
+        if self.location_encoding == "none":
+            pass
+        elif self.location_encoding == "sin":
+            obs_channels += 4
+        elif self.location_encoding == "abs":
+            obs_channels += 2
+        else:
+            raise Exception(f"Invalid location encoding {self.location_encoding} use [none|sin|abs].")
+
+        self.observation_space = spaces.Box(
+            low=0, high=255,
+            shape=((self.player_view_distance * 2 + 3) * CELL_SIZE, (self.player_view_distance * 2 + 3) * CELL_SIZE, obs_channels),
+            dtype=np.uint8
+        )
 
     def _in_vision(self, player_id, x, y):
         """
@@ -273,6 +285,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                         # general was hit
                         self.general_health -= (np.random.randint(1, 6) + np.random.randint(1, 6))
                         self.stats_general_shot[self.player_team[player_id]] += 1
+                        self._needs_repaint = True
                         break
 
                     if target_hit:
@@ -390,10 +403,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         return [self._get_player_observation(player_id) for player_id in range(self.n_players)]
 
     def _draw_tile(self, obs, x, y, c):
-        dx, dy = (x+1)*CELL_SIZE, (y+1)*CELL_SIZE
-        obs[dx:dx+CELL_SIZE, dy:dy+CELL_SIZE] = c
+        dx, dy = x*CELL_SIZE, y*CELL_SIZE
+        obs[dx:dx+CELL_SIZE, dy:dy+CELL_SIZE, :3] = c
 
-    def _draw_soldier(self, obs, player_id, team_colors=False, hilight=False):
+    def _draw_soldier(self, obs, player_id, team_colors=False, hilight=False, padding=(0,0)):
 
         if self.player_health[player_id] <= 0:
             ring_color = self.COLOR_DEAD
@@ -406,35 +419,40 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         inner_color = self.TEAM_COLOR[self.player_team[player_id]] if team_colors else self.PLAYER_COLOR[player_id]
 
         x,y = self.player_location[player_id]
-        dx, dy = 3 + x * 3 + 1, 3 + y * 3 + 1
+        dx, dy = (x+padding[0]) * CELL_SIZE + 1, (y+padding[1]) * CELL_SIZE + 1
 
-        obs[dx, dy] = inner_color
-        obs[dx - 1, dy - 1] = ring_color
-        obs[dx + 0, dy - 1] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_UP else ring_color
-        obs[dx + 1, dy - 1] = ring_color
-        obs[dx - 1, dy + 0] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_LEFT else ring_color
-        obs[dx + 1, dy + 0] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_RIGHT else ring_color
-        obs[dx - 1, dy + 1] = ring_color
-        obs[dx + 0, dy + 1] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_DOWN else ring_color
-        obs[dx + 1, dy + 1] = ring_color
+        obs[dx, dy, :3] = inner_color
+        obs[dx - 1, dy - 1, :3] = ring_color
+        obs[dx + 0, dy - 1, :3] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_UP else ring_color
+        obs[dx + 1, dy - 1, :3] = ring_color
+        obs[dx - 1, dy + 0, :3] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_LEFT else ring_color
+        obs[dx + 1, dy + 0, :3] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_RIGHT else ring_color
+        obs[dx - 1, dy + 1, :3] = ring_color
+        obs[dx + 0, dy + 1, :3] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_DOWN else ring_color
+        obs[dx + 1, dy + 1, :3] = ring_color
 
     def _draw_general(self, obs):
         x, y = self.general_location
-        dx, dy = 3 + x * 3, 3 + y * 3
+        dx, dy = x * CELL_SIZE, y * CELL_SIZE
         c = self.COLOR_GENERAL if self.general_health > 0 else self.COLOR_DEAD
 
-        obs[dx + 1, dy + 1] = c
-        obs[dx + 2, dy + 1] = c
-        obs[dx + 0, dy + 1] = c
-        obs[dx + 1, dy + 2] = c
-        obs[dx + 1, dy + 0] = c
+        obs[dx + 1, dy + 1, :3] = c
+        obs[dx + 2, dy + 1, :3] = c
+        obs[dx + 0, dy + 1, :3] = c
+        obs[dx + 1, dy + 2, :3] = c
+        obs[dx + 1, dy + 0, :3] = c
 
     def _get_map(self):
+        """
+        Returns a map with optional positional encoding.
+        Map is only redrawn as needed (e.g. when trees are removed).
+        :return:
+        """
 
         if not self._needs_repaint:
             return self._map_cache.copy()
 
-        obs = np.zeros((self.map_width * 3 + 6, self.map_height * 3 + 6, 3), dtype=np.uint8)
+        obs = np.zeros((self.map_width * CELL_SIZE, self.map_height * CELL_SIZE, 3), dtype=np.uint8)
         obs[:, :, :] = self.COLOR_GRASS
 
         # paint trees
@@ -442,6 +460,33 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             for y in range(self.map_height):
                 if self.map[x, y] == self.MAP_TREE:
                     self._draw_tile(obs, x, y, self.COLOR_TREE)
+
+        # paint general
+        self._draw_general(obs)
+
+        # positional encoding
+        position_obs = None
+        if self.location_encoding == "none":
+            pass
+        elif self.location_encoding == "abs":
+            x = np.linspace(0, 1, obs.shape[0])
+            y = np.linspace(0, 1, obs.shape[1])
+            xs, ys = np.meshgrid(x, y)
+            position_obs = np.stack([xs, ys], axis=-1)
+            position_obs = np.asarray(position_obs * 255, dtype=np.uint8)
+        elif self.location_encoding == "sin":
+            pass
+        else:
+            raise Exception(f"Invalid location encoding {self.location_encoding} use [none|sin|abs].")
+
+        if position_obs is not None:
+            obs = np.concatenate([obs, position_obs], axis=2)
+
+        # padding (makes cropping easier...)
+        self._map_padding = (self.player_view_distance + 1) # +1 for border
+        padding = (self._map_padding*CELL_SIZE, self._map_padding*CELL_SIZE)
+        obs = np.pad(obs, (padding, padding, (0, 0)), mode="constant")
+
         self._map_cache = obs
         self._needs_repaint = False
         return self._map_cache.copy()
@@ -449,7 +494,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     def _get_player_observation(self, player_id):
         """
         Generates a copy of the map with local observations given given player.
-        :param player_id: player's perspective, -1 is all vision
+        :param player_id: player's perspective, -1 is global view
         :return:
         """
 
@@ -460,37 +505,32 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         obs = self._get_map()
 
-        # paint general
-        self._draw_general(obs)
-
         # paint soldiers
         for i in range(self.n_players):
-            self._draw_soldier(obs, i, team_colors=True, hilight=(i==player_id) and not self.ego_centric)
+            self._draw_soldier(obs, i, team_colors=True, padding=(self._map_padding, self._map_padding))
 
         # ego centric view
-        if self.ego_centric and player_id >= 0:
-            # this is all a bit dodgy, I'll rewrite it later...
-            full_map = obs.copy()
-            padding = (self.player_view_distance+1) * CELL_SIZE  # +1 for border
-            full_map = np.pad(full_map, ((padding, padding), (padding, padding), (0,0)), mode="constant")
-
-            # get our local view
-            left = padding + CELL_SIZE + (self.player_location[player_id][0] - (self.player_view_distance + 1)) * CELL_SIZE
-            right = padding + CELL_SIZE + (self.player_location[player_id][0] + (self.player_view_distance + 2)) * CELL_SIZE
-            top = padding + CELL_SIZE + (self.player_location[player_id][1] - (self.player_view_distance + 1)) * CELL_SIZE
-            bottom = padding + CELL_SIZE + (self.player_location[player_id][1] + (self.player_view_distance + 2)) * CELL_SIZE
-            obs = full_map[left:right, top:bottom, :]
-
-        # mark edges with team
         if player_id >= 0:
-            obs[:3, :] = team_color
-            obs[-3:, :] = team_color
-            obs[:, :3] = team_color
-            obs[:, -3:] = team_color
+            # get our local view
+            left = (self._map_padding + self.player_location[player_id][0] - (self.player_view_distance + 1)) * CELL_SIZE
+            right = (self._map_padding + self.player_location[player_id][0] + (self.player_view_distance + 2)) * CELL_SIZE
+            top = (self._map_padding + self.player_location[player_id][1] - (self.player_view_distance + 1)) * CELL_SIZE
+            bottom = (self._map_padding + self.player_location[player_id][1] + (self.player_view_distance + 2)) * CELL_SIZE
+            obs = obs[left:right, top:bottom, :]
+        else:
+            # just remove padding
+            padding = self._map_padding * CELL_SIZE
+            obs = obs[padding:-padding, padding:-padding, :]
 
+        # mark edges with team colors
+        if player_id >= 0:
+            obs[:3, :, :3] = team_color
+            obs[-3:, :, :3] = team_color
+            obs[:, :3, :3] = team_color
+            obs[:, -3:, :3] = team_color
 
         # show general off-screen location
-        if self.ego_centric and player_id >= 0 and self.player_seen_general[player_id]:
+        if player_id >= 0 and self.player_seen_general[player_id]:
 
             dx = self.general_location[0] - self.player_location[player_id][0]
             dy = self.general_location[1] - self.player_location[player_id][1]
@@ -500,7 +540,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 dy += self.player_view_distance
                 dx = np.clip(dx, -1, self.player_view_distance * 2 + 1)
                 dy = np.clip(dy, -1, self.player_view_distance * 2 + 1)
-                self._draw_tile(obs, dx, dy, self.COLOR_GENERAL)
+                self._draw_tile(obs, dx+1, dy+1, self.COLOR_GENERAL) #not sure about these +1...
+
+        if player_id >= 0:
+            assert obs.shape == self.observation_space.shape, \
+                f"Invalid observation crop, found {obs.shape} expected {self.observation_space.shape}."
 
         return obs
 
@@ -572,57 +616,66 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     def _render_human(self):
         raise NotImplemented("Sorry tile-map rendering not implemented yet")
 
-    def _render_rgb(self, player_id=-1):
-        return self._get_player_observation(player_id)
+    def _process_obs(self, obs, use_location=False):
+        """
+        Converts observation into RGB
+        :return:
+        """
 
-    def _render_rgb_old(self):
-        """ Renders game in RGB using very simple colored tiles."""
+        obs = obs.copy()
 
-        image = np.zeros((self.map_width, self.map_height, 3), dtype=np.uint8)
+        if use_location:
+            # get location embedding channels (if any exist)
+            obs[:, :, :3] *= 0
+            obs = obs[:, :, -3:]  # grab last 3 channels
+        else:
+            # standard RGB
+            obs = obs[:, :, :3]
 
-        for x in range(self.map_width):
-            for y in range(self.map_height):
+        return obs
 
-                c = [0,0,0]
+    def _draw(self, frame, x, y, image):
+        w,h,_ = image.shape
+        frame[x:x+w, y:y+h] = image
 
-                # first get color from terrain
-                if self.map[x,y] == self.MAP_GRASS:
-                    c = (150,75,0)
-                elif self.map[x, y] == self.MAP_TREE:
-                    c = (125,255,150)
+    def _render_rgb(self, use_location=False):
+        """
+        Render out a frame
+        :param use_location:
+        :return:
+        """
 
-                # general location
-                if self.general_location == (x, y):
-                    c = (25,255,255)
+        # todo, don't assume 4 players, and have option for including player observations
 
-                # next get players color.. this is not ideal if they overlap
-                for i in range(self.n_players):
-                    if tuple(self.player_location[i]) == (x, y):
-                        if self.player_health[i] > 0:
-                            c = self.TEAM_COLOR[self.player_team[i]]
-                        else:
-                            # dead body
-                            c = (0, 0, 0)
+        global_frame = self._process_obs(self._get_player_observation(-1), use_location)
 
-                # bullet flares
-                for i in range(self.n_players):
-                    if self.player_last_action[i] in self.SHOOT_ACTIONS:
-                        indx = self.player_last_action[i] - self.ACTION_SHOOT_UP
-                        fx, fy = self.player_location[i]
-                        fx += self.DX[indx]
-                        fy += self.DY[indx]
-                        if (fx, fy) == (x,y):
-                            c = (255,255,128)
+        player_frames = [
+            self._process_obs(self._get_player_observation(player_id), use_location) for player_id in range(self.n_players)
+        ]
 
-                image[x,y,::-1] = c
+        gw, gh, _ = global_frame.shape
+        pw, ph, _ = player_frames[0].shape
 
-        return image
+        frame = np.zeros((gw+pw*2, max(gh, ph*2), 3), np.uint8)
+        self._draw(frame, 0, 0, global_frame)
+        self._draw(frame, gw, 0, player_frames[0])
+        self._draw(frame, gw + pw, 0, player_frames[1])
+        self._draw(frame, gw, ph, player_frames[2])
+        self._draw(frame, gw + pw, ph, player_frames[3])
 
-    def render(self, mode='human', player_id = -1):
+        # add video padding
+        padding = (CELL_SIZE, CELL_SIZE)
+        frame = np.pad(frame, (padding, padding, (0, 0)), mode="constant")
+
+        frame = frame.swapaxes(0,1) # I'm using x,y, but video needs y,x
+
+        return frame
+
+    def render(self, mode='human', use_location=False):
         """ render environment """
         if mode == 'human':
             return self._render_human()
         elif mode == 'rgb_array':
-            return self._render_rgb(player_id)
+            return self._render_rgb(use_location=use_location)
         else:
             raise ValueError(f"Invalid render mode {mode}")

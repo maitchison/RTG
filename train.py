@@ -80,7 +80,8 @@ def export_video(filename, model, env):
     # play the game...
     while not np.all(dones[:n_players]):
 
-        actions, _, agent_states, _ = model.step(np.asarray(states), agent_states, dones)
+        stacked_states = np.asarray(states)
+        actions, _, agent_states, _ = model.step(stacked_states, agent_states, dones)
 
         states, rewards, dones, infos = env.step(actions)
 
@@ -88,7 +89,7 @@ def export_video(filename, model, env):
             team_scores[env.envs[0].player_team[i]] += rewards[i]
 
         # generate frames from global perspective
-        frame = env.envs[0].render("rgb_array", player_id=-1)
+        frame = env.envs[0].render("rgb_array", use_location=False)
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
@@ -99,9 +100,9 @@ def export_video(filename, model, env):
         assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format((width, height, 3), frame.shape)
         video_out.write(frame)
 
-    for _ in range(4):
-        # this just makes it easier to see the last frame
-        video_out.write(frame)
+    for _ in range(15):
+        # this just makes it easier to see the last frame on some players
+        video_out.write(frame*0)
 
     video_out.release()
 
@@ -135,12 +136,14 @@ def train_model():
         export_video(f"{config.log_folder}/ppo_run_000_{mini_epoch}_M.mp4", model, vec_env)
         if mini_epoch == 0:
             model.save(f"{config.log_folder}/model_000_M.p")
+        print("Training...")
         model.learn(100000, reset_num_timesteps=False, log_interval=10)
 
     for epoch in range(1, 100):
         print("Generating video...")
         export_video(f"{config.log_folder}/ppo_run_{epoch:03}M.mp4", model, vec_env)
         model.save(f"{config.log_folder}/model_{epoch:03}M.p")
+        print("Training...")
         model.learn(1000000, reset_num_timesteps=False, log_interval=10)
 
     model.save(f"{config.log_folder}/model_final.p")
@@ -185,7 +188,7 @@ def main():
     args = parser.parse_args()
 
     # setup config
-    config.log_folder = args.run
+    config.log_folder = f"run/{args.run}"
     config.device = args.device
 
     if config.device.lower() != "auto":
