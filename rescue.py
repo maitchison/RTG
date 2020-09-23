@@ -28,9 +28,8 @@ Start, 1591
 More efficent cropping, 3020  
 """
 
-import gym
-from gym import spaces
 import numpy as np
+from gym import spaces
 import itertools
 import os
 import matplotlib.pyplot as plt
@@ -422,17 +421,21 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         inner_color = self.TEAM_COLOR[self.player_team[player_id]] if team_colors else self.PLAYER_COLOR[player_id]
 
         x,y = self.player_location[player_id]
+
         dx, dy = (x+padding[0]) * CELL_SIZE + 1, (y+padding[1]) * CELL_SIZE + 1
 
+        blit = obs.itemset
+
+        obs[dx - 1:dx + 2, dy - 1:dy + 2, :3] = ring_color
         obs[dx, dy, :3] = inner_color
-        obs[dx - 1, dy - 1, :3] = ring_color
-        obs[dx + 0, dy - 1, :3] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_UP else ring_color
-        obs[dx + 1, dy - 1, :3] = ring_color
-        obs[dx - 1, dy + 0, :3] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_LEFT else ring_color
-        obs[dx + 1, dy + 0, :3] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_RIGHT else ring_color
-        obs[dx - 1, dy + 1, :3] = ring_color
-        obs[dx + 0, dy + 1, :3] = fire_color if self.player_last_action[player_id] == self.ACTION_SHOOT_DOWN else ring_color
-        obs[dx + 1, dy + 1, :3] = ring_color
+        if self.player_last_action[player_id] == self.ACTION_SHOOT_UP:
+            obs[dx + 0, dy - 1, :3] = fire_color
+        elif self.player_last_action[player_id] == self.ACTION_SHOOT_LEFT:
+            obs[dx - 1, dy + 0, :3] = fire_color
+        elif self.player_last_action[player_id] == self.ACTION_SHOOT_RIGHT:
+            obs[dx + 1, dy + 0, :3] = fire_color
+        elif self.player_last_action[player_id] == self.ACTION_SHOOT_DOWN:
+            obs[dx + 0, dy + 1, :3] = fire_color
 
     def _draw_general(self, obs):
         x, y = self.general_location
