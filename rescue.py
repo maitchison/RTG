@@ -1,3 +1,5 @@
+#cython: language_level=3
+
 """
 Rescue the General Environment
 
@@ -29,11 +31,11 @@ More efficent cropping, 3020
 """
 
 import numpy as np
-from gym import spaces
 import itertools
 import os
 import matplotlib.pyplot as plt
 import math
+import gym.spaces
 
 from stable_baselines.common.misc_util import mpi_rank_or_zero
 
@@ -165,7 +167,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_times_acted = np.zeros((3), dtype=np.int)  # how many times each team acted
         self.stats_actions = np.zeros((3), dtype=np.int)  # how actions this team could have performed (sum_t(agents_alive))
 
-        self.action_space = spaces.Discrete(10)
+        self.action_space = gym.spaces.Discrete(10)
 
         obs_channels = 3
         if self.location_encoding == "none":
@@ -177,7 +179,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         else:
             raise Exception(f"Invalid location encoding {self.location_encoding} use [none|sin|abs].")
 
-        self.observation_space = spaces.Box(
+        self.observation_space = gym.spaces.Box(
             low=0, high=255,
             shape=((self.player_view_distance * 2 + 3) * CELL_SIZE, (self.player_view_distance * 2 + 3) * CELL_SIZE, obs_channels),
             dtype=np.uint8
@@ -408,11 +410,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         dx, dy = x*CELL_SIZE, y*CELL_SIZE
         obs[dx:dx+CELL_SIZE, dy:dy+CELL_SIZE, :3] = c
 
-    def _draw_soldier(self, obs, player_id, team_colors=False, hilight=False, padding=(0,0)):
+    def _draw_soldier(self, obs: np.ndarray, player_id: int, team_colors=False, highlight=False, padding=(0, 0)):
 
         if self.player_health[player_id] <= 0:
             ring_color = self.COLOR_DEAD
-        elif hilight:
+        elif highlight:
             ring_color = self.COLOR_HIGHLIGHT
         else:
             ring_color = self.COLOR_NEUTRAL
@@ -424,17 +426,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         dx, dy = (x+padding[0]) * CELL_SIZE + 1, (y+padding[1]) * CELL_SIZE + 1
 
-        blit = obs.itemset
-
         obs[dx - 1:dx + 2, dy - 1:dy + 2, :3] = ring_color
         obs[dx, dy, :3] = inner_color
-        if self.player_last_action[player_id] == self.ACTION_SHOOT_UP:
+        action = self.player_last_action[player_id]
+        if action == self.ACTION_SHOOT_UP:
             obs[dx + 0, dy - 1, :3] = fire_color
-        elif self.player_last_action[player_id] == self.ACTION_SHOOT_LEFT:
+        elif action == self.ACTION_SHOOT_LEFT:
             obs[dx - 1, dy + 0, :3] = fire_color
-        elif self.player_last_action[player_id] == self.ACTION_SHOOT_RIGHT:
+        elif action == self.ACTION_SHOOT_RIGHT:
             obs[dx + 1, dy + 0, :3] = fire_color
-        elif self.player_last_action[player_id] == self.ACTION_SHOOT_DOWN:
+        elif action == self.ACTION_SHOOT_DOWN:
             obs[dx + 0, dy + 1, :3] = fire_color
 
     def _draw_general(self, obs):
