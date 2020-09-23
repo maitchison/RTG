@@ -25,6 +25,7 @@ score >9.9) in about 1M agent steps.
 """
 Benchmarking
 Start, 1591
+More efficent cropping, 3020  
 """
 
 import gym
@@ -33,6 +34,7 @@ import numpy as np
 import itertools
 import os
 import matplotlib.pyplot as plt
+import math
 
 from stable_baselines.common.misc_util import mpi_rank_or_zero
 
@@ -42,6 +44,7 @@ from MARL import MultiAgentEnv
 PLAYER_MAX_HEALTH = 10
 
 CELL_SIZE = 3
+SIN_CHANNELS = 10 # 10 channels gets a frequence of 2^5, which suits maps around 32 tiles in length
 
 class RescueTheGeneralEnv(MultiAgentEnv):
     """
@@ -139,9 +142,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # game rules
         self.easy_rewards = True # enables some easy rewards, such as killing enemy players.
-        self.n_trees = 10
-        self.map_width = 24
-        self.map_height = 24
+        self.n_trees = 20
+        self.map_width = 32
+        self.map_height = 32
         self.player_view_distance = 5
         self.player_shoot_range = 4
         self.timeout = 1000
@@ -169,7 +172,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if self.location_encoding == "none":
             pass
         elif self.location_encoding == "sin":
-            obs_channels += 4
+            obs_channels += SIN_CHANNELS
         elif self.location_encoding == "abs":
             obs_channels += 2
         else:
@@ -475,7 +478,17 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             position_obs = np.stack([xs, ys], axis=-1)
             position_obs = np.asarray(position_obs * 255, dtype=np.uint8)
         elif self.location_encoding == "sin":
-            pass
+            x = np.linspace(0, 2*math.pi, obs.shape[0])
+            y = np.linspace(0, 2*math.pi, obs.shape[1])
+            xs, ys = np.meshgrid(x, y)
+            position_obs = []
+            for layer in range(SIN_CHANNELS):
+                freq = (2 ** (layer//2))
+                f = np.sin if (layer // 2) % 2 == 0 else np.cos
+                result = f((xs if layer % 2 == 0 else ys)*freq)
+                result = np.asarray((result + 1) / 2 * 255, dtype=np.uint8)
+                position_obs.append(result)
+            position_obs = np.stack(position_obs, axis=-1)
         else:
             raise Exception(f"Invalid location encoding {self.location_encoding} use [none|sin|abs].")
 
@@ -618,7 +631,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
     def _process_obs(self, obs, use_location=False):
         """
-        Converts observation into RGB
+        Converts observation into RGBobs[:, :, 1]
         :return:
         """
 
@@ -626,8 +639,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         if use_location:
             # get location embedding channels (if any exist)
+            _, _, channels = obs.shape
             obs[:, :, :3] *= 0
-            obs = obs[:, :, -3:]  # grab last 3 channels
+            # stub average location channels
+            if channels <= 6:
+                # take last 3
+                obs = obs[:, :, -3:]
+            else:
+                # average all location channels
+                obs[:, :, 0] = np.mean(obs[:, :, 3:], axis=2)
+                obs[:, :, 1] = obs[:, :, 0]
+
+            obs = obs[:, :, :3]
         else:
             # standard RGB
             obs = obs[:, :, :3]

@@ -89,7 +89,7 @@ def export_video(filename, model, env):
             team_scores[env.envs[0].player_team[i]] += rewards[i]
 
         # generate frames from global perspective
-        frame = env.envs[0].render("rgb_array", use_location=False)
+        frame = env.envs[0].render("rgb_array")
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
