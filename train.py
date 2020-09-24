@@ -46,7 +46,7 @@ def export_video(filename, model, env):
     Exports a movie with agents playing randomly.
     """
 
-    scale = 4
+    scale = 8
 
     states = env.reset()
     frame = env.envs[0].render("rgb_array")
@@ -224,7 +224,7 @@ def main():
     parser.add_argument('mode', type=str, help="[bench|train]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
     parser.add_argument('--device', type=str, help="[0|1|2|3|AUTO]", default="auto")
-    parser.add_argument('--scenario', type=str, help="[default|red2]", default="default")
+    parser.add_argument('--scenario', type=str, help="[full|red2]", default="default")
     parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=100)
     parser.add_argument('--model', type=str, help="model to use [cnn_lstm_default|cnn_lstm_fast]", default="cnn_lstm_default")
 

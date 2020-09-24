@@ -49,9 +49,11 @@ class RescueTheGeneralScenario():
     def __init__(self, **kwargs):
 
         # defaults
-        self.n_trees = 10
-        self.map_width = 32
-        self.map_height = 32
+
+        self.n_trees = 20
+        self.reward_per_tree = 0.5
+        self.map_width = 64
+        self.map_height = 64
         self.player_view_distance = 5
         self.player_shoot_range = 4
         self.timeout = 1000
@@ -59,11 +61,11 @@ class RescueTheGeneralScenario():
         self.general_initial_health = 10
         self.player_initial_health = 10
         self.location_encoding = "abs"  # none | sin | abs
-        self.player_counts = (2, 2, 2)
+        self.player_counts = (4, 4, 4)
         self.hidden_roles = True
-        self.easy_rewards = True  # enables some easy rewards, such as killing enemy players.
+        self.kill_rewards = False  # enables rewards for killing enemy players and penalties for being killed
 
-        self.description = ""
+        self.description = "The fi;; ga,e"
 
         # overrides
         for k,v in kwargs.items():
@@ -187,8 +189,32 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     DY = [-1, 1, 0, 0]
 
     SCENARIOS = {
-        "default": {
+        "full": {
             "description": "This is the default scenario."
+        },
+
+        "full_known_roles": {
+            "description": "The full game but with known roles.",
+            "hidden_roles": False,
+        },
+
+        "medium": {
+            "description": "A smaller version of the complete game.",
+            "map_width": 32,
+            "map_height": 32,
+            "player_counts": (2, 2, 2),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+        },
+
+        "medium_known_roles": {
+            "description": "A smaller version of the complete game. (roles are known)",
+            "map_width": 32,
+            "map_height": 32,
+            "player_counts": (2, 2, 2),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+            "hidden_roles": False,
         },
 
         "red2": {
@@ -196,7 +222,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "map_width": 24,
             "map_height": 24,
             "player_counts": (2, 0, 0),
+            "n_trees": 10,
+            "reward_per_tree": 1,
             "hidden_roles": False,
+            "kill_rewards": True, # help them to not shoot eachother
         }
     }
 
@@ -223,7 +252,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.players = [RTG_Player(id, self.scenario) for id in range(self.n_players)]
 
-        self.team_scores = np.zeros([3], dtype=np.int)
+        self.team_scores = np.zeros([3], dtype=np.float)
 
         self.reward_logging = True # logs rewards to txt file
 
@@ -316,6 +345,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         red_team_good_kills = 0
         blue_team_good_kills = 0
+        team_self_kills = [0,0,0]
+        team_deaths = [0, 0, 0]
 
         # shooting
         for player in self.players:
@@ -349,10 +380,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                             # we killed the target player
                             self.stats_deaths[other_player.team] += 1
                             self.stats_kills[player.team] += 1
+                            team_deaths[other_player.team] += 1
+
+                            if player.team == other_player.team:
+                                team_self_kills[player.team] += 1
+
                             if player.team == self.TEAM_RED and other_player.team == self.TEAM_BLUE:
                                 red_team_good_kills += 1
                             elif player.team == self.TEAM_BLUE and other_player.team == self.TEAM_RED:
                                 blue_team_good_kills += 1
+
                             self.player_lookup[player.x, player.y] = -1 # remove player from lookup
 
                         self.stats_player_hit[player.team, other_player.team] += 1
@@ -409,14 +446,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         general_rescued = rescue_counter >= 2 and not general_killed
         game_timeout = self.counter >= self.scenario.timeout
 
-        team_rewards = np.zeros([3], dtype=np.int)
+        team_rewards = np.zeros([3], dtype=np.float)
 
-        team_rewards[self.TEAM_GREEN] += green_tree_harvest_counter
-        if self.scenario.easy_rewards:
+        team_rewards[self.TEAM_GREEN] += green_tree_harvest_counter * self.scenario.reward_per_tree
+
+        if self.scenario.kill_rewards:
             team_rewards[self.TEAM_RED] += red_team_good_kills
             team_rewards[self.TEAM_BLUE] += blue_team_good_kills
             team_rewards[self.TEAM_RED] -= blue_team_good_kills
             team_rewards[self.TEAM_BLUE] -= red_team_good_kills
+            for team in range(3):
+                team_rewards[team] -= team_self_kills[team]
+                team_rewards[team] -= team_deaths[team]
         if general_killed:
             team_rewards[self.TEAM_RED] += 10
             team_rewards[self.TEAM_BLUE] -= 10
@@ -807,8 +848,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :param use_location:
         :return:
         """
-
-        # todo, don't assume 4 players, and have option for including player observations
 
         global_frame = self._process_obs(self._get_player_observation(-1), use_location)
 
