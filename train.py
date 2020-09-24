@@ -48,7 +48,8 @@ class config():
     """ Class to hold config files"""
     log_folder = str()
     device = str()
-
+    scenario = str()
+    epochs = int()
 
 def export_video(filename, model, env):
     """
@@ -114,6 +115,8 @@ def train_model():
     :return:
     """
 
+    print("=============================================================")
+
     print("Starting environment")
 
     # copy source files for later
@@ -122,13 +125,17 @@ def train_model():
         copyfile(filename, f"{config.log_folder}/{filename}")
 
     # our MARL environments are handled like vectorized environments
-    vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(16)])
+    vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario=config.scenario) for _ in range(16)])
+    print("Scenario parameters:")
+    print(vec_env.envs[0].scenario)
 
-    model = PPO2(CnnLstmPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001,
+    model = PPO2(CnnLstmPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, n_steps=64,
          policy_kwargs={"cnn_extractor": single_layer_cnn})
 
     for sub_env in vec_env.envs:
         sub_env.log_folder = config.log_folder
+
+    print("=============================================================")
 
     # special case for first epoch, we want some early results
     for mini_epoch in range(0, 10):
@@ -139,11 +146,11 @@ def train_model():
         print("Training...")
         model.learn(100000, reset_num_timesteps=False, log_interval=10)
 
-    for epoch in range(1, 100):
+    for epoch in range(1, config.epochs):
         print("Generating video...")
-        export_video(f"{config.log_folder}/ppo_run_{epoch:03}M.mp4", model, vec_env)
+        export_video(f"{config.log_folder}/ppo_run_{epoch:03}_M.mp4", model, vec_env)
         model.save(f"{config.log_folder}/model_{epoch:03}_M.p")
-        print("Training...")
+        print(f"Training epoch {epoch} on experiment {config.log_folder}")
         model.learn(1000000, reset_num_timesteps=False, log_interval=10)
 
     model.save(f"{config.log_folder}/model_final.p")
@@ -153,16 +160,6 @@ def train_model():
         env._write_log_buffer()
 
     print("Finished training.")
-
-def generate_video():
-    """
-    Generate a video of random play then exit.
-    """
-
-    print("Generating video.")
-    env = MultiAgentVecEnv([RescueTheGeneralEnv])
-    model = PPO2(CnnPolicy, env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, policy_kwargs={"cnn_extractor":single_layer_cnn})
-    export_video(f"{config.log_folder}/ppo_run-0.mp4", model, env)
 
 def run_benchmark():
 
@@ -174,7 +171,7 @@ def run_benchmark():
 
     env.reset()
     for _ in range(10000):
-        random_actions = np.random.randint(0,10, size=(env.n_players,))
+        random_actions = np.random.randint(0, 10, size=(env.n_players,))
         env.step(random_actions)
 
     time_taken_ms = (time.time() - start_time)
@@ -185,15 +182,19 @@ def run_benchmark():
 def main():
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, help="[bench|video|train]")
+    parser.add_argument('mode', type=str, help="[bench|train]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
     parser.add_argument('--device', type=str, help="[0|1|2|3|AUTO]", default="auto")
+    parser.add_argument('--scenario', type=str, help="[default|red2]", default="default")
+    parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=100)
 
     args = parser.parse_args()
 
     # setup config
     config.log_folder = f"run/{args.run}"
     config.device = args.device
+    config.scenario = args.scenario
+    config.epochs = args.epochs
 
     if config.device.lower() != "auto":
         print(f"Using GPU {config.device}")
@@ -203,8 +204,6 @@ def main():
 
     if args.mode == "bench":
         run_benchmark()
-    elif args.mode == "video":
-        generate_video()
     elif args.mode == "train":
         train_model()
     else:

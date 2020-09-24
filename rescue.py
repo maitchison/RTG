@@ -36,16 +36,43 @@ import os
 import matplotlib.pyplot as plt
 import math
 import gym.spaces
+import time
 
 from stable_baselines.common.misc_util import mpi_rank_or_zero
 
 from MARL import MultiAgentEnv
 
-# the initial health of each player
-PLAYER_MAX_HEALTH = 10
-
 CELL_SIZE = 3
-SIN_CHANNELS = 10 # 10 channels gets a frequence of 2^5, which suits maps around 32 tiles in length
+SIN_CHANNELS = 10 # 10 channels gets a frequencies of 2^5, which suits maps around 32 tiles in width/height
+
+class RescueTheGeneralScenario():
+    def __init__(self, **kwargs):
+
+        # defaults
+        self.easy_rewards = True  # enables some easy rewards, such as killing enemy players.
+        self.n_trees = 10
+        self.map_width = 32
+        self.map_height = 32
+        self.player_view_distance = 5
+        self.player_shoot_range = 4
+        self.timeout = 1000
+        self.general_always_visible = False
+        self.general_initial_health = 10
+        self.hidden_roles = True
+        self.location_encoding = "abs"  # none | sin | abs
+        self.player_counts = (2, 2, 2)
+        self.player_initial_health = 10
+
+        self.description = ""
+
+        # overrides
+        for k,v in kwargs.items():
+            setattr(self, k, v)
+
+    def __str__(self):
+        for k,v in vars(self):
+            print(f"{k:<20}={v}")
+
 
 class RescueTheGeneralEnv(MultiAgentEnv):
     """
@@ -119,12 +146,31 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     DX = [0, 0, -1, +1]
     DY = [-1, 1, 0, 0]
 
-    def __init__(self):
+    SCENARIOS = {
+        "default": {
+            "description": "This is the default scenario."
+        },
+
+        "red2": {
+            "description": "Two red players must find and kill general on small map.",
+            "map_width": 24,
+            "map_height": 24,
+            "player_counts": (2, 0, 0),
+        }
+    }
+
+    def __init__(self, scenario="default"):
         super().__init__()
+
+        self.env_create_time = time.time()
 
         self.log_folder = "./"
 
-        self.n_players_red, self.n_players_green, self.n_players_blue = 2, 2, 2
+        # setup our scenario
+        scenario_kwargs = self.SCENARIOS[scenario]
+        self.scenario = RescueTheGeneralScenario(**scenario_kwargs)
+
+        self.n_players_red, self.n_players_green, self.n_players_blue = self.scenario.player_counts
 
         self.id = mpi_rank_or_zero()
         self.counter = 0
@@ -136,55 +182,40 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.general_health = 0
 
         self.player_location = np.zeros((self.n_players, 2), dtype=np.int)
-        self.player_health = np.zeros((self.n_players), dtype=np.int)
-        self.player_seen_general = np.zeros((self.n_players), dtype=np.uint8)
-        self.player_team = np.zeros((self.n_players), dtype=np.int)
-        self.player_last_action = np.zeros((self.n_players), dtype=np.int)
+        self.player_health = np.zeros((self.n_players,), dtype=np.int)
+        self.player_seen_general = np.zeros((self.n_players,), dtype=np.uint8)
+        self.player_team = np.zeros((self.n_players,), dtype=np.int)
+        self.player_last_action = np.zeros((self.n_players,), dtype=np.int)
 
         self.team_scores = np.zeros([3], dtype=np.int)
-
-        # game rules
-        self.easy_rewards = True # enables some easy rewards, such as killing enemy players.
-        self.n_trees = 20
-        self.map_width = 32
-        self.map_height = 32
-        self.player_view_distance = 5
-        self.player_shoot_range = 4
-        self.timeout = 1000
-        self.general_always_visible = False
-        self.initial_general_health = 10
-        self.hidden_roles = False
-
-        # other rules
-        self.location_encoding = "abs" # none | sin | abs
 
         self.reward_logging = True # logs rewards to txt file
 
         self.stats_player_hit = np.zeros((3,3), dtype=np.int) # which teams killed who
-        self.stats_deaths = np.zeros((3), dtype=np.int)  # how many players died
-        self.stats_kills = np.zeros((3), dtype=np.int)  # how many players died
-        self.stats_general_shot = np.zeros((3), dtype=np.int)  # which teams shot general
-        self.stats_tree_harvested = np.zeros((3), dtype=np.int)  # which teams harvested trees
-        self.stats_shots_fired = np.zeros((3), dtype=np.int)  # how many times each team shot
-        self.stats_times_moved = np.zeros((3), dtype=np.int)  # how many times each team moved
-        self.stats_times_acted = np.zeros((3), dtype=np.int)  # how many times each team acted
-        self.stats_actions = np.zeros((3), dtype=np.int)  # how actions this team could have performed (sum_t(agents_alive))
+        self.stats_deaths = np.zeros((3,), dtype=np.int)  # how many players died
+        self.stats_kills = np.zeros((3,), dtype=np.int)  # how many players died
+        self.stats_general_shot = np.zeros((3,), dtype=np.int)  # which teams shot general
+        self.stats_tree_harvested = np.zeros((3,), dtype=np.int)  # which teams harvested trees
+        self.stats_shots_fired = np.zeros((3,), dtype=np.int)  # how many times each team shot
+        self.stats_times_moved = np.zeros((3,), dtype=np.int)  # how many times each team moved
+        self.stats_times_acted = np.zeros((3,), dtype=np.int)  # how many times each team acted
+        self.stats_actions = np.zeros((3,), dtype=np.int)  # how actions this team could have performed (sum_t(agents_alive))
 
         self.action_space = gym.spaces.Discrete(10)
 
         obs_channels = 3
-        if self.location_encoding == "none":
+        if self.scenario.location_encoding == "none":
             pass
-        elif self.location_encoding == "sin":
+        elif self.scenario.location_encoding == "sin":
             obs_channels += SIN_CHANNELS
-        elif self.location_encoding == "abs":
+        elif self.scenario.location_encoding == "abs":
             obs_channels += 2
         else:
-            raise Exception(f"Invalid location encoding {self.location_encoding} use [none|sin|abs].")
+            raise Exception(f"Invalid location encoding {self.scenario.location_encoding} use [none|sin|abs].")
 
         self.observation_space = gym.spaces.Box(
             low=0, high=255,
-            shape=((self.player_view_distance * 2 + 3) * CELL_SIZE, (self.player_view_distance * 2 + 3) * CELL_SIZE, obs_channels),
+            shape=((self.scenario.player_view_distance * 2 + 3) * CELL_SIZE, (self.scenario.player_view_distance * 2 + 3) * CELL_SIZE, obs_channels),
             dtype=np.uint8
         )
 
@@ -197,9 +228,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         px, py = self.player_location[player_id]
 
-        return max(abs(px - x), abs(py - y)) <= self.player_view_distance
+        return max(abs(px - x), abs(py - y)) <= self.scenario.player_view_distance
 
-    def player_at_pos(self, x, y, include_dead = False):
+    def player_at_pos(self, x, y, include_dead=False):
         """
         Returns first ID of player at given position or -1 if none
         :param x:
@@ -208,7 +239,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         """
 
         # todo: this could be a lot faster, maybe we need a lookup?
-
         for player_id in range(self.n_players):
             if (include_dead or not self.is_dead(player_id)) and tuple(self.player_location[player_id]) == (x,y):
                 return player_id
@@ -223,8 +253,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         assert 0 <= player_id < self.n_players, "Invalid player_id"
 
         x,y = self.player_location[player_id]
-        x = np.clip(x + dx, 0, self.map_width-1)
-        y = np.clip(y + dy, 0, self.map_height-1)
+        x = np.clip(x + dx, 0, self.scenario.map_width - 1)
+        y = np.clip(y + dy, 0, self.scenario.map_height - 1)
 
         if self.player_at_pos(x, y) == -1:
             # can not move on-top of other players.
@@ -232,7 +262,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # update general vision
         if self._in_vision(player_id, *self.general_location):
-
             # standing on general stops vision
             player_blocking = False
             for i in range(self.n_players):
@@ -282,7 +311,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 index = actions[player_id] - self.ACTION_SHOOT_UP
                 x, y = self.player_location[player_id]
 
-                for j in range(self.player_shoot_range):
+                for j in range(self.scenario.player_shoot_range):
                     # check location
 
                     x += self.DX[index]
@@ -348,12 +377,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # generate points
         general_killed = self.general_health <= 0
         general_rescued = rescue_counter >= 2 and not general_killed
-        game_timeout = self.counter >= self.timeout
+        game_timeout = self.counter >= self.scenario.timeout
 
         team_rewards = np.zeros([3], dtype=np.int)
 
         team_rewards[self.TEAM_GREEN] += green_tree_harvest_counter
-        if self.easy_rewards:
+        if self.scenario.easy_rewards:
             team_rewards[self.TEAM_RED] += red_team_good_kills
             team_rewards[self.TEAM_BLUE] += blue_team_good_kills
             team_rewards[self.TEAM_RED] -= blue_team_good_kills
@@ -457,12 +486,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if not self._needs_repaint:
             return self._map_cache.copy()
 
-        obs = np.zeros((self.map_width * CELL_SIZE, self.map_height * CELL_SIZE, 3), dtype=np.uint8)
+        obs = np.zeros((self.scenario.map_width * CELL_SIZE, self.scenario.map_height * CELL_SIZE, 3), dtype=np.uint8)
         obs[:, :, :] = self.COLOR_GRASS
 
         # paint trees
-        for x in range(self.map_width):
-            for y in range(self.map_height):
+        for x in range(self.scenario.map_width):
+            for y in range(self.scenario.map_height):
                 if self.map[x, y] == self.MAP_TREE:
                     self._draw_tile(obs, x, y, self.COLOR_TREE)
 
@@ -471,15 +500,15 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # positional encoding
         position_obs = None
-        if self.location_encoding == "none":
+        if self.scenario.location_encoding == "none":
             pass
-        elif self.location_encoding == "abs":
+        elif self.scenario.location_encoding == "abs":
             x = np.linspace(0, 1, obs.shape[0])
             y = np.linspace(0, 1, obs.shape[1])
             xs, ys = np.meshgrid(x, y)
             position_obs = np.stack([xs, ys], axis=-1)
             position_obs = np.asarray(position_obs * 255, dtype=np.uint8)
-        elif self.location_encoding == "sin":
+        elif self.scenario.location_encoding == "sin":
             x = np.linspace(0, 2*math.pi, obs.shape[0])
             y = np.linspace(0, 2*math.pi, obs.shape[1])
             xs, ys = np.meshgrid(x, y)
@@ -492,13 +521,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 position_obs.append(result)
             position_obs = np.stack(position_obs, axis=-1)
         else:
-            raise Exception(f"Invalid location encoding {self.location_encoding} use [none|sin|abs].")
+            raise Exception(f"Invalid location encoding {self.scenario.location_encoding} use [none|sin|abs].")
 
         if position_obs is not None:
             obs = np.concatenate([obs, position_obs], axis=2)
 
         # padding (makes cropping easier...)
-        self._map_padding = (self.player_view_distance + 1) # +1 for border
+        self._map_padding = (self.scenario.player_view_distance + 1) # +1 for border
         padding = (self._map_padding*CELL_SIZE, self._map_padding*CELL_SIZE)
         obs = np.pad(obs, (padding, padding, (0, 0)), mode="constant")
 
@@ -519,7 +548,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             with open(log_filename, "w") as f:
                 f.write("game_counter, game_length, score_red, score_green, score_blue, " +
                         "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, " +
-                        "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions, player_count\n")
+                        "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions, player_count," +
+                        "wall_time, date_time" +
+                        "\n")
 
         with open(log_filename, "a+") as f:
             for output_string in LOG_BUFFER:
@@ -544,13 +575,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         def nice_print(x):
             return " ".join(str(i) for i in x.reshape(-1))
 
+        time_since_env_started = time.time() - self.env_create_time
+
         output_string = ",".join(
             str(x) for x in [
                 self.game_counter,
                 self.counter,
                 *self.team_scores,
                 *(nice_print(x) for x in stats),
-                self.n_players
+                self.n_players,
+                time_since_env_started,
+                time.time()
+
             ]
         )
 
@@ -570,35 +606,29 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # paint soldiers, living over dead
         for i in range(self.n_players):
-
-            player_visible = (player_id == -1) or self._in_vision(player_id, *self.player_location[i])
-
-            if player_visible and self.is_dead(i):
+            if self.is_dead(i) and ((player_id == -1) or self._in_vision(player_id, *self.player_location[i])):
                 self._draw_soldier(
                     obs,
                     i,
-                    team_colors=(not self.hidden_roles) or (i == player_id) or (player_id == -1),
+                    team_colors=(not self.scenario.hidden_roles) or (i == player_id) or (player_id == -1),
                     padding=(self._map_padding, self._map_padding)
                 )
         for i in range(self.n_players):
-
-            player_visible = (player_id == -1) or self._in_vision(player_id, *self.player_location[i])
-
-            if player_visible and not self.is_dead(i):
+            if not self.is_dead(i) and ((player_id == -1) or self._in_vision(player_id, *self.player_location[i])):
                 self._draw_soldier(
                     obs,
                     i,
-                    team_colors=(not self.hidden_roles) or (i == player_id) or (player_id == -1),
+                    team_colors=(not self.scenario.hidden_roles) or (i == player_id) or (player_id == -1),
                     padding=(self._map_padding, self._map_padding)
                 )
 
         # ego centric view
         if player_id >= 0:
             # get our local view
-            left = (self._map_padding + self.player_location[player_id][0] - (self.player_view_distance + 1)) * CELL_SIZE
-            right = (self._map_padding + self.player_location[player_id][0] + (self.player_view_distance + 2)) * CELL_SIZE
-            top = (self._map_padding + self.player_location[player_id][1] - (self.player_view_distance + 1)) * CELL_SIZE
-            bottom = (self._map_padding + self.player_location[player_id][1] + (self.player_view_distance + 2)) * CELL_SIZE
+            left = (self._map_padding + self.player_location[player_id][0] - (self.scenario.player_view_distance + 1)) * CELL_SIZE
+            right = (self._map_padding + self.player_location[player_id][0] + (self.scenario.player_view_distance + 2)) * CELL_SIZE
+            top = (self._map_padding + self.player_location[player_id][1] - (self.scenario.player_view_distance + 1)) * CELL_SIZE
+            bottom = (self._map_padding + self.player_location[player_id][1] + (self.scenario.player_view_distance + 2)) * CELL_SIZE
             obs = obs[left:right, top:bottom, :]
         else:
             # just remove padding
@@ -612,8 +642,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             obs[:, :3, :3] = 64
             obs[:, -3:, :3] = 64
             # mark top and bottom with time and health
-            obs[3:-3, :3, :3] = int(self.counter / self.timeout * 255)
-            obs[3:-3, -3:, 0:2] = int(self.player_health[player_id] / PLAYER_MAX_HEALTH * 255)
+            obs[3:-3, :3, :3] = int(self.counter / self.scenario.timeout * 255)
+            obs[3:-3, -3:, 0:2] = int(self.player_health[player_id] / self.scenario.player_initial_health * 255)
 
             # darken edges a little
             # this is really just for aesthetics
@@ -628,11 +658,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             dx = self.general_location[0] - self.player_location[player_id][0]
             dy = self.general_location[1] - self.player_location[player_id][1]
 
-            if abs(dx) > self.player_view_distance or abs(dy) > self.player_view_distance:
-                dx += self.player_view_distance
-                dy += self.player_view_distance
-                dx = np.clip(dx, -1, self.player_view_distance * 2 + 1)
-                dy = np.clip(dy, -1, self.player_view_distance * 2 + 1)
+            if abs(dx) > self.scenario.player_view_distance or abs(dy) > self.scenario.player_view_distance:
+                dx += self.scenario.player_view_distance
+                dy += self.scenario.player_view_distance
+                dx = np.clip(dx, -1, self.scenario.player_view_distance * 2 + 1)
+                dy = np.clip(dy, -1, self.scenario.player_view_distance * 2 + 1)
                 self._draw_tile(obs, dx+1, dy+1, self.COLOR_GENERAL) #not sure about these +1...
 
         if player_id >= 0:
@@ -648,16 +678,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         """
 
         # general location
-        self.general_location = (np.random.randint(1, self.map_width - 2), np.random.randint(1, self.map_height - 2))
-        self.general_health = self.initial_general_health
+        self.general_location = (np.random.randint(1, self.scenario.map_width - 2), np.random.randint(1, self.scenario.map_height - 2))
+        self.general_health = self.scenario.general_initial_health
 
         self._needs_repaint = True
 
         # create map
-        self.map = np.zeros((self.map_width, self.map_height), dtype=np.uint8) + 1
+        self.map = np.zeros((self.scenario.map_width, self.scenario.map_height), dtype=np.uint8) + 1
 
-        all_locations = list(itertools.product(range(self.map_width), range(self.map_height)))
-        idxs = np.random.choice(len(all_locations), size=self.n_trees, replace=False)
+        all_locations = list(itertools.product(range(self.scenario.map_width), range(self.scenario.map_height)))
+        idxs = np.random.choice(len(all_locations), size=self.scenario.n_trees, replace=False)
         for loc in [all_locations[idx] for idx in idxs]:
             self.map[loc] = 2
 
@@ -694,8 +724,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         for i in range(self.n_players):
             self.player_location[i] = start_locations[i]
-            self.player_health[i] = PLAYER_MAX_HEALTH
-            self.player_seen_general[i] = self.player_team[i] == self.TEAM_BLUE or self.general_always_visible
+            self.player_health[i] = self.scenario.player_initial_health
+            self.player_seen_general[i] = self.player_team[i] == self.TEAM_BLUE or self.scenario.general_always_visible
             # this will update seen_general if player is close
             # which normally doesn't happen as I make sure players do not start close to the general
             self._move_player(i, 0, 0)
