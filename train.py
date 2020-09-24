@@ -30,6 +30,7 @@ from stable_baselines.common.policies import CnnLstmPolicy, CnnPolicy
 from stable_baselines.common import make_vec_env
 from stable_baselines.common.vec_env.vec_normalize import VecNormalize
 from stable_baselines import PPO2
+from CnnLstmPolicyEx import CnnLstmPolicyEx
 
 from new_models import cnn_default, cnn_fast
 
@@ -148,20 +149,28 @@ def make_model(env, model_name = None):
 
     model_name = model_name or config.model_name
 
+    model_func = lambda x: PPO2(
+        CnnLstmPolicyEx,
+        env,
+        verbose=1,
+        learning_rate=2.5e-4,
+        ent_coef=0.01,
+        n_steps=128,
+        n_cpu_tf_sess=1,    # limiting cpu count really helps performance a lot when using GPU
+        policy_kwargs=x
+    )
+
     if model_name == "cnn_lstm_default":
-        return PPO2(CnnLstmPolicy, env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, n_steps=128,
-                    n_cpu_tf_sess=1,    # limiting cpu count really helps performance a lot when using GPU
-                    policy_kwargs={
-                        "cnn_extractor": cnn_default,
-                        "n_lstm": 128
-                    })
+        return model_func({
+            "cnn_extractor": cnn_default,
+            "n_lstm": 128
+        })
+
     elif model_name == "cnn_lstm_fast":
-        return PPO2(CnnLstmPolicy, env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, n_steps=128,
-                    n_cpu_tf_sess=1,
-                    policy_kwargs={
-                        "cnn_extractor": cnn_fast,
-                        "n_lstm": 64
-                    })
+        return model_func({
+            "cnn_extractor": cnn_fast,
+            "n_lstm": 64
+        })
     else:
         raise ValueError(f"Invalid model name {model_name}")
 

@@ -225,7 +225,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "n_trees": 10,
             "reward_per_tree": 1,
             "hidden_roles": False,
-            "kill_rewards": True, # help them to not shoot eachother
         }
     }
 
@@ -303,7 +302,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         else:
             # lookup map only includes living players
             id = self.player_lookup[x, y]
-            return self.players[id] if id >= 0 else None
+
+            player = self.players[id] if id >= 0 else None
+
+            if player is not None:
+                assert player.x == x and player.y == y, "player_lookup has invalid value."
+
+            return player
 
     def move_player(self, player, dx, dy):
         """
@@ -337,7 +342,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # assign actions to players
         for id, player in enumerate(self.players):
-            player.action = actions[id]
+            player.action = self.ACTION_NOOP if player.is_dead else actions[id]
 
         # apply actions, we process actions in the following order..
         # shooting
@@ -345,7 +350,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         red_team_good_kills = 0
         blue_team_good_kills = 0
-        team_self_kills = [0,0,0]
+        team_self_kills = [0, 0, 0]
         team_deaths = [0, 0, 0]
 
         # shooting
@@ -390,7 +395,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                             elif player.team == self.TEAM_BLUE and other_player.team == self.TEAM_RED:
                                 blue_team_good_kills += 1
 
-                            self.player_lookup[player.x, player.y] = -1 # remove player from lookup
+                            self.player_lookup[other_player.x, other_player.y] = -1 # remove player from lookup
 
                         self.stats_player_hit[player.team, other_player.team] += 1
                         break
@@ -402,6 +407,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                         self.stats_general_shot[player.team] += 1
                         self._needs_repaint = True
                         break
+
+        # after shooting disable movement for any players who have died (they still got to shoot though)
+        for player in self.players:
+            if player.is_dead:
+                player.action = self.ACTION_NOOP
 
         # if we are within 1 range of general rescue him automatically
         for player in self.players:
@@ -453,11 +463,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if self.scenario.kill_rewards:
             team_rewards[self.TEAM_RED] += red_team_good_kills
             team_rewards[self.TEAM_BLUE] += blue_team_good_kills
-            team_rewards[self.TEAM_RED] -= blue_team_good_kills
-            team_rewards[self.TEAM_BLUE] -= red_team_good_kills
             for team in range(3):
                 team_rewards[team] -= team_self_kills[team]
                 team_rewards[team] -= team_deaths[team]
+
         if general_killed:
             team_rewards[self.TEAM_RED] += 10
             team_rewards[self.TEAM_BLUE] -= 10
