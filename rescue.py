@@ -285,7 +285,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         new_x = min(max(player.x + dx, 0), self.scenario.map_width - 1)
         new_y = min(max(player.y + dy, 0), self.scenario.map_height - 1)
 
-        if self.player_at_pos(player.x, player.y) is None:
+        if self.player_at_pos(new_x, new_y) is None:
             # can not move on-top of other players.
             self.player_lookup[player.x, player.y] = -1
             self.player_lookup[new_x, new_y] = player.id

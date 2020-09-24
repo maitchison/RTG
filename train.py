@@ -5,21 +5,19 @@ Author: Matthew Aitchison
 
 """
 
+import os
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 # disable tensorflow warnings
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # errors only
 import tensorflow as tf
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
-import os
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
-os.environ["OMP_NUM_THREADS"] = "1"
-
 from rescue import RescueTheGeneralEnv
 from MARL import MultiAgentVecEnv
-
-from contextlib import nullcontext
 
 import numpy as np
 import cv2
@@ -138,6 +136,7 @@ def train_model():
         model.learn(1000000, reset_num_timesteps=False, log_interval=10)
 
     model.save(f"{config.log_folder}/model_final.p")
+    export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", model, vec_env)
 
     # flush the log buffer
     for env in vec_env.envs:
@@ -154,14 +153,14 @@ def make_model(env, model_name = None):
                     n_cpu_tf_sess=1,    # limiting cpu count really helps performance a lot when using GPU
                     policy_kwargs={
                         "cnn_extractor": cnn_default,
-                        "n_lstm": 256
+                        "n_lstm": 128
                     })
     elif model_name == "cnn_lstm_fast":
         return PPO2(CnnLstmPolicy, env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, n_steps=128,
                     n_cpu_tf_sess=1,
                     policy_kwargs={
                         "cnn_extractor": cnn_fast,
-                        "n_lstm": 128
+                        "n_lstm": 64
                     })
     else:
         raise ValueError(f"Invalid model name {model_name}")

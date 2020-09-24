@@ -37,8 +37,7 @@ def cnn_default(scaled_images, **kwargs):
 
     #print(f"model created with final dims={layer_3.shape} and flat_dim={layer_3_flat.shape[-1]}")
 
-    layer_hidden = linear(layer_3_flat, "fc0", n_hidden=64, init_scale=np.sqrt(2))
-    return activ(linear(layer_hidden, 'fc1', n_hidden=64, init_scale=np.sqrt(2)))
+    return activ(linear(layer_3_flat, 'fc1', n_hidden=128, init_scale=np.sqrt(2)))
 
 def cnn_fast(scaled_images, **kwargs):
     """
@@ -68,5 +67,4 @@ def cnn_fast(scaled_images, **kwargs):
 
     #print(f"model created with final dims={layer_3.shape} and flat_dim={layer_3_flat.shape[-1]}")
 
-    layer_hidden = linear(layer_3_flat, "fc0", n_hidden=64, init_scale=np.sqrt(2))
-    return activ(linear(layer_hidden, 'fc1', n_hidden=64, init_scale=np.sqrt(2)))
+    return activ(linear(layer_3_flat, 'fc1', n_hidden=64, init_scale=np.sqrt(2)))
