@@ -11,6 +11,11 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # errors only
 import tensorflow as tf
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
+import os
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 from rescue import RescueTheGeneralEnv
 from MARL import MultiAgentVecEnv
 
@@ -165,26 +170,30 @@ def make_model(env, model_name = None):
 
 def run_benchmark():
 
-    print("Benchmarking environment...")
-    vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(16)])
+    def bench_scenario(scenario_name):
 
-    states = vec_env.reset()
-    steps = 0
+        vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario_name) for _ in range(16)])
 
-    start_time = time.time()
+        _ = vec_env.reset()
+        steps = 0
 
-    while time.time() - start_time < 10:
-        random_actions = np.random.randint(0, 10, size=[vec_env.num_envs])
-        states, _, _, _ = vec_env.step(random_actions)
-        steps += 16
+        start_time = time.time()
 
-    time_taken = (time.time() - start_time)
+        while time.time() - start_time < 10:
+            random_actions = np.random.randint(0, 10, size=[vec_env.num_envs])
+            states, _, _, _ = vec_env.step(random_actions)
+            steps += 16
 
-    print(f" - environment runs at {steps/time_taken:.0f} FPS.")
+        time_taken = (time.time() - start_time)
 
-    print("Benchmarking models...")
+        print(f" - scenario {scenario_name} runs at {steps/time_taken:.0f} FPS.")
 
-    def bench_model(model, model_name):
+    def bench_model(model_name):
+
+        vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(16)])
+        model = make_model(vec_env, model_name)
+
+        states = np.asarray(vec_env.reset())
 
         model_states = model.initial_state
         model_masks = np.zeros((vec_env.num_envs,), dtype=np.uint8)
@@ -194,7 +203,7 @@ def run_benchmark():
 
         while time.time() - start_time < 10:
 
-            actions, _, model_states, _ = model.step(np.asarray(states), model_states, model_masks)
+            actions, _, model_states, _ = model.step(states, model_states, model_masks)
 
             steps += 16
 
@@ -202,8 +211,13 @@ def run_benchmark():
 
         print(f" - model {model_name} runs at {steps / time_taken:.0f} FPS.")
 
+    print("Benchmarking environments...")
+    for scenario_name in ["default", "red2"]:
+        bench_scenario(scenario_name)
+
+    print("Benchmarking models...")
     for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
-        bench_model(make_model(vec_env, model_name), model_name)
+        bench_model(model_name)
 
 def main():
 

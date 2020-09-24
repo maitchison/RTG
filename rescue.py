@@ -274,7 +274,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         else:
             # lookup map only includes living players
             id = self.player_lookup[x, y]
-            return self.players[id] if id > 0 else None
+            return self.players[id] if id >= 0 else None
 
     def move_player(self, player, dx, dy):
         """
