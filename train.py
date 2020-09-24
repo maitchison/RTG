@@ -5,21 +5,11 @@ Author: Matthew Aitchison
 
 """
 
-"""
-Performance notes
-
-Model1
-8-8-16 no max-pool
-
-Model2
-32-64-64 maxpool on last 2 layers
-
-Optiplex    (CPU)  model1 = 300 FPS
-My computer (CPU)  model1 = 221 FPS 
-My computer (GPU)  model1 = 2100 FPS (at ~20% gpu) 
-My computer (GPU)  model2 = 1300 FPS (at ~60% gpu)
-
-"""
+# disable tensorflow warnings
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # errors only
+import tensorflow as tf
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 from rescue import RescueTheGeneralEnv
 from MARL import MultiAgentVecEnv
@@ -29,12 +19,8 @@ from contextlib import nullcontext
 import numpy as np
 import cv2
 import os
-import pickle
 import argparse
 import time
-import os
-
-import tensorflow as tf
 
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines.common.policies import CnnLstmPolicy, CnnPolicy
@@ -42,7 +28,7 @@ from stable_baselines.common import make_vec_env
 from stable_baselines.common.vec_env.vec_normalize import VecNormalize
 from stable_baselines import PPO2
 
-from new_models import single_layer_cnn
+from new_models import cnn_default, cnn_fast
 
 class config():
     """ Class to hold config files"""
@@ -50,6 +36,7 @@ class config():
     device = str()
     scenario = str()
     epochs = int()
+    model_name = str()
 
 def export_video(filename, model, env):
     """
@@ -74,7 +61,7 @@ def export_video(filename, model, env):
     team_scores = np.zeros([3], dtype=np.int)
 
     # don't like it that this is hard coded... not sure how to init the states?
-    agent_states = np.zeros((len(states), 512))
+    agent_states = model.initial_state
 
     n_players = env.envs[0].n_players
 
@@ -129,8 +116,7 @@ def train_model():
     print("Scenario parameters:")
     print(vec_env.envs[0].scenario)
 
-    model = PPO2(CnnLstmPolicy, vec_env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, n_steps=64,
-         policy_kwargs={"cnn_extractor": single_layer_cnn})
+    model = make_model(vec_env)
 
     for sub_env in vec_env.envs:
         sub_env.log_folder = config.log_folder
@@ -157,27 +143,75 @@ def train_model():
 
     # flush the log buffer
     for env in vec_env.envs:
-        env._write_log_buffer()
+        env.write_log_buffer()
 
     print("Finished training.")
 
+def make_model(env, model_name = None):
+
+    model_name = model_name or config.model_name
+
+    if model_name == "cnn_lstm_default":
+        return PPO2(CnnLstmPolicy, env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, n_steps=64,
+                    n_cpu_tf_sess=1,    # limiting cpu count really helps performance a lot when using GPU
+                    policy_kwargs={
+                        "cnn_extractor": cnn_default,
+                        "n_lstm": 256
+                    })
+    elif model_name == "cnn_lstm_fast":
+        return PPO2(CnnLstmPolicy, env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, n_steps=64,
+                    n_cpu_tf_sess=1,
+                    policy_kwargs={
+                        "cnn_extractor": cnn_fast,
+                        "n_lstm": 128
+                    })
+    else:
+        raise ValueError(f"Invalid model name {model_name}")
+
+
+
 def run_benchmark():
 
-    print("Benchmarking environment")
+    print("Benchmarking environment...")
+    vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(8)])
 
-    env = RescueTheGeneralEnv()
+
+    states = vec_env.reset()
+    steps = 0
 
     start_time = time.time()
 
-    env.reset()
-    for _ in range(10000):
-        random_actions = np.random.randint(0, 10, size=(env.n_players,))
-        env.step(random_actions)
+    while time.time() - start_time < 10:
+        random_actions = np.random.randint(0, 10, size=[vec_env.num_envs])
+        states, _, _, _ = vec_env.step(random_actions)
+        steps += 8
 
-    time_taken_ms = (time.time() - start_time)
+    time_taken = (time.time() - start_time)
 
-    print(f"Native environment runs at {10000/time_taken_ms:.0f} FPS.")
+    print(f" - environment runs at {steps/time_taken:.0f} FPS.")
 
+    print("Benchmarking models...")
+
+    def bench_model(model, model_name):
+
+        model_states = model.initial_state
+        model_masks = np.zeros((vec_env.num_envs,), dtype=np.uint8)
+        steps = 0
+
+        start_time = time.time()
+
+        while time.time() - start_time < 10:
+
+            actions, _, model_states, _ = model.step(np.asarray(states), model_states, model_masks)
+
+            steps += 8
+
+        time_taken = (time.time() - start_time)
+
+        print(f" - model {model_name} runs at {steps / time_taken:.0f} FPS.")
+
+    for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
+        bench_model(make_model(vec_env, model_name), model_name)
 
 def main():
 
@@ -187,6 +221,7 @@ def main():
     parser.add_argument('--device', type=str, help="[0|1|2|3|AUTO]", default="auto")
     parser.add_argument('--scenario', type=str, help="[default|red2]", default="default")
     parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=100)
+    parser.add_argument('--model', type=str, help="model to use [cnn_lstm_default|cnn_lstm_fast]", default="cnn_lstm_default")
 
     args = parser.parse_args()
 
@@ -195,6 +230,7 @@ def main():
     config.device = args.device
     config.scenario = args.scenario
     config.epochs = args.epochs
+    config.model_name = args.model
 
     if config.device.lower() != "auto":
         print(f"Using GPU {config.device}")

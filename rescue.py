@@ -70,8 +70,10 @@ class RescueTheGeneralScenario():
             setattr(self, k, v)
 
     def __str__(self):
-        for k,v in vars(self):
-            print(f"{k:<20}={v}")
+        result = []
+        for k,v in vars(self).items():
+            result.append(f"{k:<24} = {v}")
+        return "\n".join(result)
 
 
 class RescueTheGeneralEnv(MultiAgentEnv):
@@ -169,8 +171,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # setup our scenario
         scenario_kwargs = self.SCENARIOS[scenario]
         self.scenario = RescueTheGeneralScenario(**scenario_kwargs)
-
-        self.n_players_red, self.n_players_green, self.n_players_blue = self.scenario.player_counts
 
         self.id = mpi_rank_or_zero()
         self.counter = 0
@@ -558,6 +558,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         LOG_BUFFER.clear()
 
+        global LOG_BUFFER_LAST_WRITE_TIME
+        LOG_BUFFER_LAST_WRITE_TIME = time.time()
+
     def write_stats_to_log(self):
 
         stats = [
@@ -592,7 +595,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         LOG_BUFFER.append(output_string)
 
-        if len(LOG_BUFFER) > 10:
+        # write to buffer every 120 seconds
+        time_since_last_log_write = time.time() - LOG_BUFFER_LAST_WRITE_TIME
+        if time_since_last_log_write > 120:
             self.write_log_buffer()
 
     def _get_player_observation(self, player_id):
@@ -718,7 +723,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.team_scores *= 0
 
-        teams = [self.TEAM_RED] * self.n_players_red + [self.TEAM_GREEN] * self.n_players_green + [self.TEAM_BLUE] * self.n_players_blue
+        teams = [self.TEAM_RED] * self.scenario.player_counts[0] + \
+                [self.TEAM_GREEN] * self.scenario.player_counts[1] + \
+                [self.TEAM_BLUE] * self.scenario.player_counts[2]
+
         np.random.shuffle(teams)
         self.player_team[:] = teams
 
@@ -734,7 +742,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
     @property
     def n_players(self):
-        return self.n_players_red + self.n_players_green + self.n_players_blue
+        return sum(self.scenario.player_counts)
 
     def _render_human(self):
         raise NotImplemented("Sorry tile-map rendering not implemented yet")
@@ -789,8 +797,23 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         gw, gh, _ = global_frame.shape
         pw, ph, _ = player_frames[0].shape
 
-        grid_width = 3
-        grid_height = 2
+        if 0 <= self.n_players <= 1:
+            grid_width = 1
+            grid_height = 1
+        elif 2 <= self.n_players <= 4:
+            grid_width = 2
+            grid_height = 2
+        elif 5 <= self.n_players <= 6:
+            grid_width = 3
+            grid_height = 2
+        elif 7 <= self.n_players <= 8:
+            grid_width = 4
+            grid_height = 2
+        elif self.n_players <= 16:
+            grid_width = 4
+            grid_height = 4
+        else:
+            grid_width = grid_height = math.ceil(self.n_players ** 0.5)
 
         frame = np.zeros((gw+pw*grid_width, max(gh, ph*grid_height), 3), np.uint8)
         self._draw(frame, 0, 0, global_frame)
@@ -798,7 +821,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for x in range(grid_width):
             for y in range(grid_height):
                 # draw a darker version of player observations so they don't distract too much
-                self._draw(frame, gw + pw*x, ph*y, player_frames[i] * 0.75)
+                if i < len(player_frames):
+                    self._draw(frame, gw + pw*x, ph*y, player_frames[i] * 0.75)
                 i = i + 1
 
         # add video padding
@@ -821,3 +845,4 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
 # all envs share this log
 LOG_BUFFER = []
+LOG_BUFFER_LAST_WRITE_TIME = time.time()
