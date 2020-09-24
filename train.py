@@ -58,8 +58,6 @@ def export_video(filename, model, env):
 
     dones = [False] * len(states)
 
-    team_scores = np.zeros([3], dtype=np.int)
-
     # don't like it that this is hard coded... not sure how to init the states?
     agent_states = model.initial_state
 
@@ -72,9 +70,6 @@ def export_video(filename, model, env):
         actions, _, agent_states, _ = model.step(stacked_states, agent_states, dones)
 
         states, rewards, dones, infos = env.step(actions)
-
-        for i in range(n_players):
-            team_scores[env.envs[0].player_team[i]] += rewards[i]
 
         # generate frames from global perspective
         frame = env.envs[0].render("rgb_array")
@@ -93,8 +88,6 @@ def export_video(filename, model, env):
         video_out.write(frame*0)
 
     video_out.release()
-
-    return team_scores
 
 def train_model():
     """
@@ -152,14 +145,14 @@ def make_model(env, model_name = None):
     model_name = model_name or config.model_name
 
     if model_name == "cnn_lstm_default":
-        return PPO2(CnnLstmPolicy, env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, n_steps=64,
+        return PPO2(CnnLstmPolicy, env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, n_steps=128,
                     n_cpu_tf_sess=1,    # limiting cpu count really helps performance a lot when using GPU
                     policy_kwargs={
                         "cnn_extractor": cnn_default,
                         "n_lstm": 256
                     })
     elif model_name == "cnn_lstm_fast":
-        return PPO2(CnnLstmPolicy, env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, n_steps=64,
+        return PPO2(CnnLstmPolicy, env, verbose=1, learning_rate=2.5e-4, ent_coef=0.001, n_steps=128,
                     n_cpu_tf_sess=1,
                     policy_kwargs={
                         "cnn_extractor": cnn_fast,
@@ -173,8 +166,7 @@ def make_model(env, model_name = None):
 def run_benchmark():
 
     print("Benchmarking environment...")
-    vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(8)])
-
+    vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(16)])
 
     states = vec_env.reset()
     steps = 0
@@ -184,7 +176,7 @@ def run_benchmark():
     while time.time() - start_time < 10:
         random_actions = np.random.randint(0, 10, size=[vec_env.num_envs])
         states, _, _, _ = vec_env.step(random_actions)
-        steps += 8
+        steps += 16
 
     time_taken = (time.time() - start_time)
 
@@ -204,7 +196,7 @@ def run_benchmark():
 
             actions, _, model_states, _ = model.step(np.asarray(states), model_states, model_masks)
 
-            steps += 8
+            steps += 16
 
         time_taken = (time.time() - start_time)
 

@@ -45,7 +45,7 @@ def cnn_fast(scaled_images, **kwargs):
     CNN model optimized for speed
     It's a bit slow but it gets the job done (and much faster on CPU / low end GPU)
 
-    2080TI ~4,000 FPS
+    2080TI ~6,000 FPS
     CPU ~2,000 FPS
 
 
