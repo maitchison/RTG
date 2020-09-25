@@ -224,6 +224,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "n_trees": 10,
             "reward_per_tree": 1,
             "hidden_roles": False,
+            "initial_ammo": 1000,
         }
     }
 
