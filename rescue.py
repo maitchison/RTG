@@ -57,7 +57,7 @@ class RescueTheGeneralScenario():
         self.location_encoding = "abs"  # none | sin | abs
         self.player_counts = (4, 4, 4)
         self.hidden_roles = True
-        self.kill_rewards = False  # enables rewards for killing enemy players and penalties for being killed
+        self.battle_royal = False   # removes general from game, and adds kill rewards
 
         # new rules :)
         self.initial_ammo = 50
@@ -224,6 +224,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "n_trees": 10,
             "reward_per_tree": 1,
             "hidden_roles": False,
+            "initial_ammo": 1000,
+        },
+
+        # the idea here is to try and learn the other players identity
+        "rvb": {
+            "description": "Red vs Blue, two soldiers each, in hidden roles battle royal.",
+            "map_width": 16,
+            "map_height": 16,
+            "player_counts": (2, 0, 2),
+            "n_trees": 0,
+            "hidden_roles": True,
+            "battle_royal": True,
             "initial_ammo": 1000,
         }
     }
@@ -408,7 +420,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                         break
 
                     # check general
-                    if (x, y) == self.general_location:
+                    if not self.scenario.battle_royal and ((x, y) == self.general_location):
                         # general was hit
                         self.general_health -= (np.random.randint(1, 6) + np.random.randint(1, 6))
                         self.stats_general_shot[player.team] += 1
@@ -459,25 +471,51 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self.move_player(player, self.DX[index], self.DY[index])
 
         # generate points
-        general_killed = self.general_health <= 0
-        general_rescued = rescue_counter >= 2 and not general_killed
-        game_timeout = self.counter >= self.scenario.timeout
+        result_general_killed = self.general_health <= 0
+        result_general_rescued = rescue_counter >= 2 and not result_general_killed
+        result_game_timeout = self.counter >= self.scenario.timeout
+        result_all_players_dead = all(player.is_dead for player in self.players)
+        result_red_victory = False
+        result_blue_victory = False
 
         team_rewards = np.zeros([3], dtype=np.float)
 
         team_rewards[self.TEAM_GREEN] += green_tree_harvest_counter * self.scenario.reward_per_tree
 
-        if self.scenario.kill_rewards:
+        if self.scenario.battle_royal:
+
+            # battle royal has very different rewards
+
+            # gain points for killing enemy players
             team_rewards[self.TEAM_RED] += red_team_good_kills
             team_rewards[self.TEAM_BLUE] += blue_team_good_kills
+
+            # loose points for  deaths
             for team in range(3):
-                team_rewards[team] -= team_self_kills[team]
                 team_rewards[team] -= team_deaths[team]
 
-        if general_killed:
+            # loose a lot of points if non-one wins
+            if result_game_timeout:
+                team_rewards[self.TEAM_RED] -= 5
+                team_rewards[self.TEAM_GREEN] += 5
+                team_rewards[self.TEAM_BLUE] -= 5
+
+            # gain some points if all enemy players are eliminated
+            red_players = sum(not player.is_dead for player in self.players if player.team == self.TEAM_RED)
+            green_players = sum(not player.is_dead for player in self.players if player.team == self.TEAM_GREEN)
+            blue_players = sum(not player.is_dead for player in self.players if player.team == self.TEAM_BLUE)
+
+            if red_players > 0 and blue_players == 0:
+                team_rewards[self.TEAM_RED] += 10
+                result_red_victory = True
+            if blue_players > 0 and red_players == 0:
+                team_rewards[self.TEAM_BLUE] += 10
+                result_blue_victory = True
+
+        if result_general_killed:
             team_rewards[self.TEAM_RED] += 10
             team_rewards[self.TEAM_BLUE] -= 10
-        elif general_rescued:
+        elif result_general_rescued:
             team_rewards[self.TEAM_RED] -= 10
             team_rewards[self.TEAM_BLUE] += 10
 
@@ -485,8 +523,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             rewards[id] = team_rewards[player.team]
 
         self.team_scores += team_rewards
-
-        all_players_dead = all(player.is_dead for player in self.players)
 
         # count actions
         for player in self.players:
@@ -497,19 +533,28 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for id, player in enumerate(self.players):
             dones[id] = player.is_dead
 
-        game_finished = general_killed or general_rescued or game_timeout or all_players_dead
+        game_finished = result_general_killed or \
+                        result_general_rescued or \
+                        result_game_timeout or \
+                        result_all_players_dead or \
+                        result_red_victory or \
+                        result_blue_victory
 
         # game ends for everyone under these outcomes
         if game_finished:
 
-            if general_killed:
+            if result_general_killed:
                 self.stats_outcome = "general_killed"
-            elif general_rescued:
+            elif result_general_rescued:
                 self.stats_outcome = "general_rescued"
-            elif game_timeout:
+            elif result_game_timeout:
                 self.stats_outcome = "timeout"
-            elif all_players_dead:
+            elif result_all_players_dead:
                 self.stats_outcome = "all_players_dead"
+            elif result_red_victory:
+                self.stats_outcome = "red_win"
+            elif result_blue_victory:
+                self.stats_outcome = "blue_win"
 
             self.write_stats_to_log()
             dones[:] = True
@@ -563,6 +608,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             obs[dx + 0, dy + 1, :3] = fire_color
 
     def _draw_general(self, obs):
+
+        if self.scenario.battle_royal:
+            return
+
         x, y = self.general_location
         dx, dy = x * CELL_SIZE, y * CELL_SIZE
         c = self.COLOR_GENERAL if self.general_health > 0 else self.COLOR_DEAD
@@ -732,6 +781,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     team_colors=(not self.scenario.hidden_roles) or (player == observer) or (observer is None),
                     padding=(self._map_padding, self._map_padding)
                 )
+
+        # in the global view we paint general ontop of soldiers so we always know where he is
+        self._draw_general(obs)
 
         # ego centric view
         if observer_id >= 0:

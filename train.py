@@ -31,7 +31,6 @@ from stable_baselines.common.policies import CnnLstmPolicy, CnnPolicy
 from stable_baselines.common import make_vec_env
 from stable_baselines.common.vec_env.vec_normalize import VecNormalize
 from stable_baselines import PPO2
-from CnnLstmPolicyEx import CnnLstmPolicyEx
 
 from new_models import cnn_default, cnn_fast
 
@@ -170,7 +169,7 @@ def make_model(env, model_name = None):
     model_name = model_name or config.model_name
 
     model_func = lambda x: PPO2(
-        CnnLstmPolicyEx,
+        CnnLstmPolicy,
         env,
         verbose=1,
         learning_rate=2.5e-4,
