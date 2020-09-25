@@ -36,6 +36,13 @@ def wander(player_vision, env):
     """
     pass
 
+def follow(player_vision, env):
+    """
+    Agent tries to follow other agents
+    :return: the action
+    """
+    pass
+
 def save_general(player_vision, env):
     """
     Agent rushes to general to save them
@@ -51,9 +58,9 @@ def rush_general(player_vision, env):
     pass
 
 
-def survive(player_vision, env):
+def avoid(player_vision, env):
     """
-    Agent attempts to avoid other solidiers
+    Agent attempts to avoid other soldiers
     :return: the action
     """
     pass

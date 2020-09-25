@@ -69,11 +69,15 @@ class MultiAgentVecEnv(VecEnv):
 
             env_obs, env_rewards, env_dones, env_infos = env.step(env_actions)
 
+            # auto reset.
             if all(env_dones):
-                # auto reset.
-                # note: it would be good to save the final env_obs under info["terminal_observation"]
-                # this is required for vectorized frame stacking, but I'm ignore it here as I intend to use
-                # LSTM instead.
+
+                # save final terminal observation for later
+                frame = env.render("rgb_array") # only needed if video is required, and might slow things down a bit?
+                for this_info, this_obs in zip(env_infos, env_obs):
+                    this_info['terminal_observation'] = this_obs
+                    this_info['terminal_rgb'] = frame
+
                 env_obs = env.reset()
 
             obs.extend(env_obs)
@@ -81,7 +85,7 @@ class MultiAgentVecEnv(VecEnv):
             dones.extend(env_dones)
             infos.extend(env_infos)
 
-        # convert to np arrays?
+        # convert to np arrays
         obs = np.asarray(obs)
         rewards = np.asarray(rewards)
         dones = np.asarray(dones)

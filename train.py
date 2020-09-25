@@ -24,6 +24,7 @@ import cv2
 import os
 import argparse
 import time
+import shutil
 
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines.common.policies import CnnLstmPolicy, CnnPolicy
@@ -41,16 +42,18 @@ class config():
     scenario = str()
     epochs = int()
     model_name = str()
+    cpus = 1 if tf.test.is_gpu_available else None  # for GPU machines its best to use only 1 CPU core
 
-def export_video(filename, model, env):
+def export_video(filename, model, vec_env):
     """
     Exports a movie with agents playing randomly.
     """
 
     scale = 8
 
-    states = env.reset()
-    frame = env.envs[0].render("rgb_array")
+    states = vec_env.reset()
+    env = vec_env.envs[0]
+    frame = env.render("rgb_array")
 
     # work out our height
     height, width, channels = frame.shape
@@ -65,18 +68,28 @@ def export_video(filename, model, env):
     # don't like it that this is hard coded... not sure how to init the states?
     agent_states = model.initial_state
 
-    n_players = env.envs[0].n_players
+    n_players = env.n_players
+    is_terminal = False
+    outcome = ""
 
     # play the game...
-    while not np.all(dones[:n_players]):
+    while not is_terminal:
 
         stacked_states = np.asarray(states)
         actions, _, agent_states, _ = model.step(stacked_states, agent_states, dones)
 
-        states, rewards, dones, infos = env.step(actions)
+        states, rewards, dones, infos = vec_env.step(actions)
+
+        # terminal state needs to be handled a bit differently as state will now be first state of new game
+        # this is due to auto-reset.
+        is_terminal = "terminal_rgb" in infos[0]
 
         # generate frames from global perspective
-        frame = env.envs[0].render("rgb_array")
+        if is_terminal:
+            frame = infos[0]["terminal_rgb"]
+            outcome = infos[0]["outcome"]
+        else:
+            frame = env.render("rgb_array")
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
@@ -84,14 +97,21 @@ def export_video(filename, model, env):
         if frame.shape[0] != width or frame.shape[1] != height:
             frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 
-        assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format((width, height, 3), frame.shape)
+        assert \
+            frame.shape[1] == width and frame.shape[0] == height, \
+            "Frame should be {} but is {}".format((width, height, 3), frame.shape)
+
         video_out.write(frame)
 
-    for _ in range(15):
-        # this just makes it easier to see the last frame on some players
-        video_out.write(frame*0)
-
     video_out.release()
+
+    # rename video to include outcome
+    try:
+        modified_filename = f"{os.path.splitext(filename)[0]} [{outcome}].{os.path.splitext(filename)[1]}"
+        shutil.move(filename, modified_filename)
+    except:
+        print("Warning: could not rename video file.")
+
 
 def train_model():
     """
@@ -156,7 +176,7 @@ def make_model(env, model_name = None):
         learning_rate=2.5e-4,
         ent_coef=0.01,
         n_steps=128,
-        n_cpu_tf_sess=1,    # limiting cpu count really helps performance a lot when using GPU
+        n_cpu_tf_sess=config.cpus,    # limiting cpu count really helps performance a lot when using GPU
         policy_kwargs=x
     )
 
@@ -233,7 +253,7 @@ def main():
     parser.add_argument('mode', type=str, help="[bench|train]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
     parser.add_argument('--device', type=str, help="[0|1|2|3|AUTO]", default="auto")
-    parser.add_argument('--scenario', type=str, help="[full|red2]", default="default")
+    parser.add_argument('--scenario', type=str, help="[full|red2]", default="full")
     parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=100)
     parser.add_argument('--model', type=str, help="model to use [cnn_lstm_default|cnn_lstm_fast]", default="cnn_lstm_default")
 

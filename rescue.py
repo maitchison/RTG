@@ -24,12 +24,6 @@ score >9.9) in about 1M agent steps.
 
 """
 
-"""
-Benchmarking
-Start, 1591
-More efficent cropping, 3020  
-"""
-
 import numpy as np
 import itertools
 import os
@@ -52,8 +46,8 @@ class RescueTheGeneralScenario():
 
         self.n_trees = 20
         self.reward_per_tree = 0.5
-        self.map_width = 64
-        self.map_height = 64
+        self.map_width = 48
+        self.map_height = 48
         self.player_view_distance = 5
         self.player_shoot_range = 4
         self.timeout = 1000
@@ -65,7 +59,11 @@ class RescueTheGeneralScenario():
         self.hidden_roles = True
         self.kill_rewards = False  # enables rewards for killing enemy players and penalties for being killed
 
-        self.description = "The fi;; ga,e"
+        # new rules :)
+        self.initial_ammo = 50
+        self.reveal_team_on_death = False
+
+        self.description = "The full game"
 
         # overrides
         for k,v in kwargs.items():
@@ -86,6 +84,7 @@ class RTG_Player():
         self.health = int()
         self.team = int()
         self.action = int()
+        self.ammo = int()
         self.scenario = scenario
 
     @property
@@ -268,6 +267,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_times_moved = np.zeros((3,), dtype=np.int)  # how many times each team moved
         self.stats_times_acted = np.zeros((3,), dtype=np.int)  # how many times each team acted
         self.stats_actions = np.zeros((3,), dtype=np.int)  # how actions this team could have performed (sum_t(agents_alive))
+        self.stats_outcome = "" # outcome of game
 
         self.action_space = gym.spaces.Discrete(10)
 
@@ -339,10 +339,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         rewards = np.zeros([self.n_players], dtype=np.float)
         dones = np.zeros([self.n_players], dtype=np.bool)
+        infos = [{} for _ in range(self.n_players)]
 
-        # assign actions to players
+        # assign actions to players / remove invalid actions
         for id, player in enumerate(self.players):
             player.action = self.ACTION_NOOP if player.is_dead else actions[id]
+            if player.ammo == 0 and player.action in self.SHOOT_ACTIONS:
+                player.action = self.ACTION_NOOP
 
         # apply actions, we process actions in the following order..
         # shooting
@@ -360,6 +363,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 continue
 
             if player.action in self.SHOOT_ACTIONS:
+
+                assert player.ammo > 0, "Player attempted to shoot but had no ammo."
+                player.ammo -= 1
 
                 self.stats_shots_fired[player.team] += 1
 
@@ -487,17 +493,31 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self.stats_actions[player.team] += 1
 
         # send done notifications to players who are dead
-        # for the moment just end everything once everyone's dead...
-        # for i in range(self.n_players):
-        #   dones[i] = self.player_health[i] <= 0
+        for id, player in enumerate(self.players):
+            dones[id] = player.is_dead
+
+        game_finished = general_killed or general_rescued or game_timeout or all_players_dead
 
         # game ends for everyone under these outcomes
-        if general_killed or general_rescued or game_timeout or all_players_dead:
+        if game_finished:
+
+            if general_killed:
+                self.stats_outcome = "general_killed"
+            elif general_rescued:
+                self.stats_outcome = "general_rescued"
+            elif game_timeout:
+                self.stats_outcome = "timeout"
+            elif all_players_dead:
+                self.stats_outcome = "all_players_dead"
+
             self.write_stats_to_log()
             dones[:] = True
 
+            for info in infos:
+                # record the outcome in infos as it will be lost if environment is auto reset.
+                info["outcome"] = self.stats_outcome
+
         obs = self._get_observations()
-        infos = [{} for _ in range(self.n_players)]
 
         self.counter += 1
 
@@ -515,7 +535,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     def _draw_soldier(self, obs: np.ndarray, player: RTG_Player, team_colors=False, highlight=False, padding=(0, 0)):
 
         if player.is_dead:
-            ring_color = self.COLOR_DEAD
+            if not self.scenario.hidden_roles or self.scenario.reveal_team_on_death:
+                ring_color = (self.TEAM_COLOR[player.team]//2 + self.COLOR_DEAD//2)
+            else:
+                ring_color = self.COLOR_DEAD
         elif highlight:
             ring_color = self.COLOR_HIGHLIGHT
         else:
@@ -622,6 +645,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 f.write("game_counter, game_length, score_red, score_green, score_blue, " +
                         "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, " +
                         "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions, player_count," +
+                        "result_general_killed, result_general_rescued, result_timeout, result_all_players_dead," +
                         "wall_time, date_time" +
                         "\n")
 
@@ -645,7 +669,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.stats_shots_fired,
             self.stats_times_moved,
             self.stats_times_acted,
-            self.stats_actions
+            self.stats_actions,
         ]
 
         def nice_print(x):
@@ -660,6 +684,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 *self.team_scores,
                 *(nice_print(x) for x in stats),
                 self.n_players,
+                1 if self.stats_outcome == "general_killed" else 0,
+                1 if self.stats_outcome == "general_rescued" else 0,
+                1 if self.stats_outcome == "timeout" else 0,
+                1 if self.stats_outcome == "all_players_dead" else 0,
                 time_since_env_started,
                 time.time()
 
@@ -719,20 +747,21 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         if observer_id >= 0:
             # blank out frame
-            obs[:3, :, :3] = 64
-            obs[-3:, :, :3] = 64
-            obs[:, :3, :3] = 64
-            obs[:, -3:, :3] = 64
-            # mark top and bottom with time and health
-            obs[3:-3, :3, :3] = int(self.counter / self.scenario.timeout * 255)
-            obs[3:-3, -3:, 0:2] = int(observer.health / self.scenario.player_initial_health * 255)
+            obs[:3, :, :3] = 32
+            obs[-3:, :, :3] = 32
+            obs[:, :3, :3] = 32
+            obs[:, -3:, :3] = 32
 
-            # darken edges a little
-            # this is really just for aesthetics
-            obs[:1, :, :3] = 0
-            obs[-1:, :, :3] = 0
-            obs[:, :1, :3] = 0
-            obs[:, -1:, :3] = 0
+            # bars for time, health, and ammo
+            frame_width, frame_height, _ = obs[3:-3, 3:-3, :].shape
+            time_bar = int((self.scenario.timeout - self.counter) / self.scenario.timeout * frame_width)
+            health_bar = int(observer.health / self.scenario.player_initial_health * frame_width)
+            ammo_bar = int(observer.ammo / self.scenario.initial_ammo * frame_width)
+
+            obs[3:3 + time_bar, -3, :3] = (255, 255, 128)
+            obs[3:3 + health_bar, -2, :3] = (128, 255, 128)
+            obs[3:3 + ammo_bar, -1, :3] = (128, 128, 255)
+
 
         # show general off-screen location
         if (observer is not None) and (observer.team == self.TEAM_BLUE or self.scenario.general_always_visible):
@@ -743,8 +772,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             if abs(dx) > self.scenario.player_view_distance or abs(dy) > self.scenario.player_view_distance:
                 dx += self.scenario.player_view_distance
                 dy += self.scenario.player_view_distance
-                dx = max(min(dx, -1), self.scenario.player_view_distance * 2 + 1)
-                dy = max(min(dy, -1), self.scenario.player_view_distance * 2 + 1)
+                dx = min(max(dx, 0), self.scenario.player_view_distance * 2)
+                dy = min(max(dy, 0), self.scenario.player_view_distance * 2)
                 self.draw_tile(obs, dx + 1, dy + 1, self.COLOR_GENERAL)
 
         if observer_id >= 0:
@@ -784,6 +813,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_times_moved *= 0
         self.stats_times_acted *= 0
         self.stats_actions *= 0
+        self.stats_outcome = ""
 
         # initialize players to random start locations, and assign initial health
         general_filter = lambda p: abs(p[0] - self.general_location[0]) > 3 and abs(p[1] - self.general_location[1]) > 3
@@ -809,6 +839,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             player.x, player.y = start_locations[id]
             self.player_lookup[player.x, player.y] = id
             player.health = self.scenario.player_initial_health
+            player.ammo = self.scenario.initial_ammo
 
         return self._get_observations()
 
