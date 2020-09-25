@@ -42,6 +42,8 @@ class config():
     epochs = int()
     model_name = str()
     cpus = 1 if tf.test.is_gpu_available else None  # for GPU machines its best to use only 1 CPU core
+    parallel_envs = 64
+    n_steps = 40
 
 def export_video(filename, model, vec_env):
     """
@@ -128,7 +130,7 @@ def train_model():
         copyfile(filename, f"{config.log_folder}/{filename}")
 
     # our MARL environments are handled like vectorized environments
-    vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario=config.scenario) for _ in range(16)])
+    vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario=config.scenario) for _ in range(config.parallel_envs)])
     print("Scenario parameters:")
     print(vec_env.envs[0].scenario)
 
@@ -174,7 +176,7 @@ def make_model(env, model_name = None):
         verbose=1,
         learning_rate=2.5e-4,
         ent_coef=0.01,
-        n_steps=128,
+        n_steps=config.n_steps,
         n_cpu_tf_sess=config.cpus,    # limiting cpu count really helps performance a lot when using GPU
         policy_kwargs=x
     )
@@ -199,7 +201,7 @@ def run_benchmark():
 
     def bench_scenario(scenario_name):
 
-        vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario_name) for _ in range(16)])
+        vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario_name) for _ in range(config.parallel_envs)])
 
         _ = vec_env.reset()
         steps = 0
@@ -209,7 +211,7 @@ def run_benchmark():
         while time.time() - start_time < 10:
             random_actions = np.random.randint(0, 10, size=[vec_env.num_envs])
             states, _, _, _ = vec_env.step(random_actions)
-            steps += 16
+            steps += config.parallel_envs
 
         time_taken = (time.time() - start_time)
 
@@ -217,7 +219,7 @@ def run_benchmark():
 
     def bench_model(model_name):
 
-        vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(16)])
+        vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(config.parallel_envs)])
         model = make_model(vec_env, model_name)
 
         states = np.asarray(vec_env.reset())
@@ -232,7 +234,7 @@ def run_benchmark():
 
             actions, _, model_states, _ = model.step(states, model_states, model_masks)
 
-            steps += 16
+            steps += config.parallel_envs
 
         time_taken = (time.time() - start_time)
 

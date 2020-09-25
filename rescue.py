@@ -57,7 +57,7 @@ class RescueTheGeneralScenario():
         self.location_encoding = "abs"  # none | sin | abs
         self.player_counts = (4, 4, 4)
         self.hidden_roles = True
-        self.battle_royal = False   # removes general from game, and adds kill rewards
+        self.battle_royale = False   # removes general from game, and adds kill rewards
 
         # new rules :)
         self.initial_ammo = 50
@@ -228,14 +228,15 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         },
 
         # the idea here is to try and learn the other players identity
-        "rvb": {
-            "description": "Red vs Blue, two soldiers each, in hidden roles battle royal.",
-            "map_width": 16,
-            "map_height": 16,
+        "royale": {
+            "description": "Red vs Blue, two soldiers each, in hidden roles battle royale.",
+            "map_width": 24,
+            "map_height": 24,
             "player_counts": (2, 0, 2),
             "n_trees": 0,
             "hidden_roles": True,
-            "battle_royal": True,
+            "battle_royale": True,
+            "reveal_team_on_death": True,
             "initial_ammo": 1000,
         }
     }
@@ -420,7 +421,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                         break
 
                     # check general
-                    if not self.scenario.battle_royal and ((x, y) == self.general_location):
+                    if not self.scenario.battle_royale and ((x, y) == self.general_location):
                         # general was hit
                         self.general_health -= (np.random.randint(1, 6) + np.random.randint(1, 6))
                         self.stats_general_shot[player.team] += 1
@@ -482,7 +483,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         team_rewards[self.TEAM_GREEN] += green_tree_harvest_counter * self.scenario.reward_per_tree
 
-        if self.scenario.battle_royal:
+        if self.scenario.battle_royale:
 
             # battle royal has very different rewards
 
@@ -609,7 +610,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
     def _draw_general(self, obs):
 
-        if self.scenario.battle_royal:
+        if self.scenario.battle_royale:
             return
 
         x, y = self.general_location
@@ -696,6 +697,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                         "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, " +
                         "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions, player_count," +
                         "result_general_killed, result_general_rescued, result_timeout, result_all_players_dead," +
+                        "result_win_red, result_win_blue, " +
                         "wall_time, date_time" +
                         "\n")
 
@@ -738,6 +740,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 1 if self.stats_outcome == "general_rescued" else 0,
                 1 if self.stats_outcome == "timeout" else 0,
                 1 if self.stats_outcome == "all_players_dead" else 0,
+                1 if self.stats_outcome == "win_red" else 0,
+                1 if self.stats_outcome == "win_blue" else 0,
                 time_since_env_started,
                 time.time()
 
