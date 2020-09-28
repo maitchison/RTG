@@ -18,6 +18,7 @@ tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 from rescue import RescueTheGeneralEnv
 from MARL import MultiAgentVecEnv
+from tools import load_data
 
 import numpy as np
 import cv2
@@ -25,25 +26,28 @@ import os
 import argparse
 import time
 import shutil
+from ast import literal_eval
 
-from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
-from stable_baselines.common.policies import CnnLstmPolicy, CnnPolicy
-from stable_baselines.common import make_vec_env
-from stable_baselines.common.vec_env.vec_normalize import VecNormalize
+from stable_baselines.common.policies import CnnLstmPolicy
 from stable_baselines import PPO2
 
 from new_models import cnn_default, cnn_fast
 
-class config():
+class Config():
     """ Class to hold config files"""
-    log_folder = str()
-    device = str()
-    scenario = str()
-    epochs = int()
-    model_name = str()
-    cpus = 1 if tf.test.is_gpu_available else None  # for GPU machines its best to use only 1 CPU core
-    parallel_envs = 64
-    n_steps = 40
+
+    def __init__(self):
+        self.log_folder = str()
+        self.device = str()
+        self.scenario = str()
+        self.epochs = int()
+        self.model_name = str()
+        self.cpus = 1 if tf.test.is_gpu_available else None  # for GPU machines its best to use only 1 CPU core
+        self.parallel_envs = int()
+        self.algo_params = dict()
+
+    def __str__(self):
+        return str(dict(vars(self).items()))
 
 def export_video(filename, model, vec_env):
     """
@@ -129,6 +133,10 @@ def train_model():
     for filename in ["train.py", "rescue.py"]:
         copyfile(filename, f"{config.log_folder}/{filename}")
 
+    # make a copy of the environment parameters
+    with open(f"{config.log_folder}/config.txt", "w") as f:
+        f.write(str(config))
+
     # our MARL environments are handled like vectorized environments
     vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario=config.scenario) for _ in range(config.parallel_envs)])
     print("Scenario parameters:")
@@ -166,20 +174,16 @@ def train_model():
 
     print("Finished training.")
 
-def make_model(env, model_name = None):
+def make_model(env, model_name = None, verbose=1):
 
     model_name = model_name or config.model_name
 
     model_func = lambda x: PPO2(
         CnnLstmPolicy,
         env,
-        verbose=1,
-        learning_rate=2.5e-4,
-        ent_coef=0.01,
-        nminibatches=8,               # stub: reduce memory consumption...
-        n_steps=config.n_steps,
-        n_cpu_tf_sess=config.cpus,    # limiting cpu count really helps performance a lot when using GPU
-        policy_kwargs=x
+        verbose=verbose,
+        policy_kwargs=x,
+        **config.algo_params
     )
 
     if model_name == "cnn_lstm_default":
@@ -197,7 +201,6 @@ def make_model(env, model_name = None):
         raise ValueError(f"Invalid model name {model_name}")
 
 
-
 def run_benchmark():
 
     def bench_scenario(scenario_name):
@@ -212,11 +215,27 @@ def run_benchmark():
         while time.time() - start_time < 10:
             random_actions = np.random.randint(0, 10, size=[vec_env.num_envs])
             states, _, _, _ = vec_env.step(random_actions)
-            steps += config.parallel_envs
+            steps += vec_env.num_envs
 
         time_taken = (time.time() - start_time)
 
-        print(f" - scenario {scenario_name} runs at {steps/time_taken:.0f} FPS.")
+        print(f" - scenario {scenario_name} runs at {steps / time_taken / 1000:.1f}k AAPS.")
+
+    def bench_training(scenario_name, model_name):
+
+        vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario_name) for _ in range(config.parallel_envs)])
+        model = make_model(vec_env, model_name, verbose=0)
+
+        states = np.asarray(vec_env.reset())
+
+        # just to warm it up
+        model.learn(10)
+
+        start_time = time.time()
+        model.learn(10000)
+        time_taken = (time.time() - start_time)
+
+        print(f" - model {model_name} trains at {10000 / time_taken / 1000:.1f}k FPS.")
 
     def bench_model(model_name):
 
@@ -235,11 +254,15 @@ def run_benchmark():
 
             actions, _, model_states, _ = model.step(states, model_states, model_masks)
 
-            steps += config.parallel_envs
+            steps += vec_env.num_envs
 
         time_taken = (time.time() - start_time)
 
-        print(f" - model {model_name} runs at {steps / time_taken:.0f} FPS.")
+        print(f" - model {model_name} runs at {steps / time_taken / 1000:.1f}k AAPS.")
+
+    print("Benchmarking training...")
+    for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
+        bench_training("red2", model_name)
 
     print("Benchmarking environments...")
     for scenario_name in ["full", "medium", "red2"]:
@@ -249,15 +272,64 @@ def run_benchmark():
     for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
         bench_model(model_name)
 
+def regression_test():
+
+    print("Performing regression test, this could take some time.")
+
+    start_time = time.time()
+
+    def run_test(scenario_name, n_steps=int(2e6)):
+
+        destination_folder = os.path.join(config.log_folder, scenario_name)
+        os.makedirs(destination_folder, exist_ok=True)
+
+        # our MARL environments are handled like vectorized environments
+        vec_env = MultiAgentVecEnv(
+            [lambda: RescueTheGeneralEnv(scenario=scenario_name) for _ in range(config.parallel_envs)])
+        model = make_model(vec_env, verbose=0)
+
+        for sub_env in vec_env.envs:
+            sub_env.log_folder = destination_folder
+
+        model.learn(n_steps, reset_num_timesteps=False)
+        export_video(f"{destination_folder}/{scenario_name}.mp4", model, vec_env)
+
+        # flush the log buffer
+        for env in vec_env.envs:
+            env.write_log_buffer()
+
+        # check scores
+        results = load_data(destination_folder)
+
+        return results
+
+    for scenario_name, score_to_check, required_score in [
+        ("red2", "score_red", 9.5),
+        ("green2", "score_green", 9.5),
+        ("blue2", "score_blue", 9.5),
+    ]:
+        score = np.mean(run_test(scenario_name)[score_to_check][-100:])
+        result = "FAIL" if score < required_score else "PASS"
+        print(f"  [{result:}] {scenario_name:<20} ({score:.1f})")
+
+    time_taken = time.time() - start_time
+    print(f"Finished tests in {time_taken/60:.1f}m.")
+
+
 def main():
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, help="[bench|train]")
+    parser.add_argument('mode', type=str, help="[bench|train|test]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
     parser.add_argument('--device', type=str, help="[0|1|2|3|AUTO]", default="auto")
     parser.add_argument('--scenario', type=str, help="[full|red2]", default="full")
     parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=100)
     parser.add_argument('--model', type=str, help="model to use [cnn_lstm_default|cnn_lstm_fast]", default="cnn_lstm_default")
+
+    parser.add_argument('--algo_params', type=str, default="{"+\
+            "'learning_rate':2.5e-4, 'n_steps':128, 'ent_coef':0.01, 'n_cpu_tf_sess':1" +\
+            "}")
+    parser.add_argument('--parallel_envs', type=int, default=16)
 
     args = parser.parse_args()
 
@@ -267,6 +339,8 @@ def main():
     config.scenario = args.scenario
     config.epochs = args.epochs
     config.model_name = args.model
+    config.parallel_envs = args.parallel_envs
+    config.algo_params = literal_eval(args.algo_params)
 
     if config.device.lower() != "auto":
         print(f"Using GPU {config.device}")
@@ -278,8 +352,11 @@ def main():
         run_benchmark()
     elif args.mode == "train":
         train_model()
+    elif args.mode == "test":
+        regression_test()
     else:
         raise Exception(f"Invalid mode {args.mode}")
 
 if __name__ == "__main__":
+    config = Config()
     main()

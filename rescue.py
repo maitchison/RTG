@@ -230,6 +230,31 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "reward_per_tree": 1,
             "hidden_roles": False,
             "initial_ammo": 1000,
+            "timeout": 1000,
+        },
+
+        "green2": {
+            "description": "Two green players must harvest trees uncontested on a small map.",
+            "map_width": 24,
+            "map_height": 24,
+            "player_counts": (0, 2, 0),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+            "hidden_roles": False,
+            "initial_ammo": 1000,
+            "timeout": 1000,
+        },
+
+        "blue2": {
+            "description": "Two blue players must rescue the general on a small map.",
+            "map_width": 24,
+            "map_height": 24,
+            "player_counts": (0, 0, 2),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+            "hidden_roles": False,
+            "initial_ammo": 1000,
+            "timeout": 1000,
         },
 
         # the idea here is to try and learn the other players identity
@@ -361,8 +386,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         infos = [{} for _ in range(self.n_players)]
 
         # assign actions to players / remove invalid actions
-        for id, player in enumerate(self.players):
-            player.action = self.ACTION_NOOP if player.is_dead else actions[id]
+        for player in self.players:
+            player.action = self.ACTION_NOOP if player.is_dead else actions[player.id]
             if player.ammo == 0 and player.action in self.SHOOT_ACTIONS:
                 player.action = self.ACTION_NOOP
 
@@ -525,8 +550,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             team_rewards[self.TEAM_RED] -= 10
             team_rewards[self.TEAM_BLUE] += 10
 
-        for id, player in enumerate(self.players):
-            rewards[id] = team_rewards[player.team]
+        for player in self.players:
+            rewards[player.id] = team_rewards[player.team]
 
         self.team_scores += team_rewards
 
@@ -536,8 +561,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self.stats_actions[player.team] += 1
 
         # send done notifications to players who are dead
-        for id, player in enumerate(self.players):
-            dones[id] = player.is_dead
+        for player in self.players:
+            dones[player.id] = player.is_dead
 
         game_finished = result_general_killed or \
                         result_general_rescued or \
@@ -613,13 +638,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         elif player.action == self.ACTION_SHOOT_DOWN:
             obs[dx + 0, dy + 1, :3] = fire_color
 
-    def _draw_general(self, obs):
+    def _draw_general(self, obs, padding=(0, 0)):
 
         if self.scenario.battle_royale:
             return
 
         x, y = self.general_location
-        dx, dy = x * CELL_SIZE, y * CELL_SIZE
+        dx, dy = x+padding[0] * CELL_SIZE, y+padding[1] * CELL_SIZE
         c = self.COLOR_GENERAL if self.general_health > 0 else self.COLOR_DEAD
 
         obs[dx + 1, dy + 1, :3] = c
@@ -791,8 +816,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     padding=(self._map_padding, self._map_padding)
                 )
 
-        # in the global view we paint general ontop of soldiers so we always know where he is
-        self._draw_general(obs)
+        # in the global view we paint general on-top of soldiers so we always know where he is
+        self._draw_general(obs, (self._map_padding, self._map_padding))
 
         # ego centric view
         if observer_id >= 0:

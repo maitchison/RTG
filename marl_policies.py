@@ -40,7 +40,6 @@ class CentralCritic():
         """
 
         # todo: implement grad clipping maybe?
-        # todo: tf logs
 
         # setup inputs
         self.observations_placeholder = tf.placeholder(tf.uint8, [None, *observation_space])
