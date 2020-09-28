@@ -149,16 +149,7 @@ def train_model():
 
     print("=============================================================")
 
-    # special case for first epoch, we want some early results
-    for mini_epoch in range(0, 10):
-        print("Generating video...")
-        export_video(f"{config.log_folder}/ppo_run_000_{mini_epoch}_M.mp4", model, vec_env)
-        if mini_epoch == 0:
-            model.save(f"{config.log_folder}/model_000_M.p")
-        print("Training...")
-        model.learn(100000, reset_num_timesteps=False, log_interval=10)
-
-    for epoch in range(1, config.epochs):
+    for epoch in range(0, config.epochs):
         print("Generating video...")
         export_video(f"{config.log_folder}/ppo_run_{epoch:03}_M.mp4", model, vec_env)
         model.save(f"{config.log_folder}/model_{epoch:03}_M.p")

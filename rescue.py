@@ -50,7 +50,7 @@ class RescueTheGeneralScenario():
         self.map_height = 48
         self.player_view_distance = 5
         self.player_shoot_range = 4
-        self.timeout = 1000
+        self.timeout = 500
         self.general_always_visible = False
         self.general_initial_health = 10
         self.player_initial_health = 10
@@ -644,7 +644,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             return
 
         x, y = self.general_location
-        dx, dy = x+padding[0] * CELL_SIZE, y+padding[1] * CELL_SIZE
+        dx, dy = (x+padding[0]) * CELL_SIZE, (y+padding[1]) * CELL_SIZE
         c = self.COLOR_GENERAL if self.general_health > 0 else self.COLOR_DEAD
 
         obs[dx + 1, dy + 1, :3] = c

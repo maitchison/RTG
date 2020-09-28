@@ -25,7 +25,7 @@ def parse(s):
     except:
         return s
 
-def plot_experiment(path, plots=(("score_red", "score_green", "score_blue"), ("game_length")), **kwargs):
+def plot_experiment(path, plots=(("score_red", "score_green", "score_blue"), ("game_length",)), **kwargs):
     print("=" * 60)
 
     for y_axis in plots:
