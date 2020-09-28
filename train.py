@@ -108,7 +108,7 @@ def export_video(filename, model, vec_env):
 
     # rename video to include outcome
     try:
-        modified_filename = f"{os.path.splitext(filename)[0]} [{outcome}].{os.path.splitext(filename)[1]}"
+        modified_filename = f"{os.path.splitext(filename)[0]} [{outcome}]{os.path.splitext(filename)[1]}"
         shutil.move(filename, modified_filename)
     except:
         print("Warning: could not rename video file.")
@@ -176,6 +176,7 @@ def make_model(env, model_name = None):
         verbose=1,
         learning_rate=2.5e-4,
         ent_coef=0.01,
+        nminibatches=8,               # stub: reduce memory consumption...
         n_steps=config.n_steps,
         n_cpu_tf_sess=config.cpus,    # limiting cpu count really helps performance a lot when using GPU
         policy_kwargs=x
@@ -241,7 +242,7 @@ def run_benchmark():
         print(f" - model {model_name} runs at {steps / time_taken:.0f} FPS.")
 
     print("Benchmarking environments...")
-    for scenario_name in ["default", "red2"]:
+    for scenario_name in ["full", "medium", "red2"]:
         bench_scenario(scenario_name)
 
     print("Benchmarking models...")

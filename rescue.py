@@ -192,6 +192,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "description": "This is the default scenario."
         },
 
+        "8blue": {
+            "description": "Eight blue two red, no green.",
+            "player_counts": (8, 0, 2),
+        },
+
         "full_known_roles": {
             "description": "The full game but with known roles.",
             "hidden_roles": False,
@@ -241,7 +246,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         }
     }
 
-    def __init__(self, scenario="default"):
+    def __init__(self, scenario="full"):
         super().__init__()
 
         self.env_create_time = time.time()
