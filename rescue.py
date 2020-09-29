@@ -58,6 +58,7 @@ class RescueTheGeneralScenario():
         self.player_counts = (4, 4, 4)
         self.hidden_roles = True
         self.battle_royale = False   # removes general from game, and adds kill rewards
+        self.enable_signals = True
 
         self.shooting_timeout = 3    # number of turns between shooting
         self.reveal_team_on_death = False
@@ -294,13 +295,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self._log_buffer = []
 
         self.general_location = (0,0)
-        self.general_health = 0
+        self.general_health = int()
+        self.general_closest_tiles_from_edge = int()
+        self.blue_rewards_for_winning = int()
 
         self.players = [RTG_Player(id, self.scenario) for id in range(self.n_players)]
 
         self.team_scores = np.zeros([3], dtype=np.float)
-
-        self.reward_logging = True # logs rewards to txt file
 
         # create map, and a lookup (just for optimization
         self.map = np.zeros((self.scenario.map_width, self.scenario.map_height), dtype=np.int)
@@ -378,7 +379,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         """
         assert len(actions) == self.n_players, "Invalid number of players"
 
-        rescue_counter = 0
         green_tree_harvest_counter = 0
 
         rewards = np.zeros([self.n_players], dtype=np.float)
@@ -464,27 +464,33 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for player in self.players:
             player.shooting_timeout = max(0, player.shooting_timeout - 1)
 
-        # ---------------------------
-        # general rescue
-        for player in self.living_players:
-
-            if player.team == self.TEAM_BLUE and not player.is_dead:
-                dx = player.x - self.general_location[0]
-                dy = player.y - self.general_location[1]
-                if abs(dx) + abs(dy) <= 1:
-                    rescue_counter += 1
-
         # -------------------------
-        # acting harvest tree
+        # action button
+        general_has_been_moved = False
+        general_is_closer_to_edge = False
         for player in self.living_players:
 
-            if player.action == self.ACTION_ACT:
-                if self.map[(player.x, player.y)] == self.MAP_TREE:
-                    self.stats_tree_harvested[player.team] += 1
-                    if player.team == self.TEAM_GREEN:
-                        green_tree_harvest_counter += 1
-                    self.map[(player.x, player.y)] = self.MAP_GRASS
-                    self._needs_repaint = True
+            if player.action != self.ACTION_ACT:
+                continue
+
+            # harvest a tree if we are standing on it
+            if self.map[(player.x, player.y)] == self.MAP_TREE:
+                self.stats_tree_harvested[player.team] += 1
+                if player.team == self.TEAM_GREEN:
+                    green_tree_harvest_counter += 1
+                self.map[(player.x, player.y)] = self.MAP_GRASS
+                self._needs_repaint = True
+                continue
+
+            # move general by one tile if we are standing next to them
+            if not general_has_been_moved and abs(player.x - self.general_location[0]) + abs(player.y - self.general_location[1]) == 1:
+                self.general_location = (player.x, player.y)
+                # moving the general is a once per turn thing
+                general_has_been_moved = True
+                # award some score if general is closer to the edge than they used to be
+                if self.general_tiles_from_edge < self.general_closest_tiles_from_edge:
+                    self.general_closest_tiles_from_edge = self.general_tiles_from_edge
+                    general_is_closer_to_edge = True
 
         # ------------------------
         # moving
@@ -497,7 +503,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # ------------------------
         # generate points
         result_general_killed = self.general_health <= 0
-        result_general_rescued = rescue_counter >= 2 and not result_general_killed
+        result_general_rescued = self.general_tiles_from_edge == 0
         result_game_timeout = self.counter >= self.scenario.timeout
         result_all_players_dead = all(player.is_dead for player in self.players)
         result_red_victory = False
@@ -516,8 +522,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if np.sum(team_players_alive) == team_players_alive[self.TEAM_GREEN] and team_players_alive[self.TEAM_GREEN] >= 1:
             # check for harvesting complete
             unique, counts = np.unique(self.map, return_counts=True)
-            if not 1 in unique:
+            if self.MAP_TREE not in unique:
                 result_green_victory = True
+
+        if general_is_closer_to_edge:
+            # give a very small reward for moving general closer to the edge
+            small_reward = (1/self.scenario.map_width)
+            team_rewards[self.TEAM_BLUE] += small_reward
+            self.blue_rewards_for_winning -= small_reward # make sure blue always gets the same number of points for winning
 
         if self.scenario.battle_royale:
 
@@ -554,7 +566,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             team_rewards[self.TEAM_BLUE] -= 10
         elif result_general_rescued:
             team_rewards[self.TEAM_RED] -= 10
-            team_rewards[self.TEAM_BLUE] += 10
+            team_rewards[self.TEAM_BLUE] += self.blue_rewards_for_winning
 
         for player in self.players:
             rewards[player.id] = team_rewards[player.team]
@@ -585,7 +597,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             elif result_all_players_dead:
                 self.stats_outcome = "all_players_dead"
             elif result_red_victory:
-                self.stats_outcome = "red_win"
+                self.stats_outcome = "red_win" # royale wins
             elif result_blue_victory:
                 self.stats_outcome = "blue_win"
             elif result_green_victory:
@@ -637,7 +649,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             dx, dy = self.DX[index], self.DY[index]
             obs[draw_x + dx, draw_y + dy, :3] = self.FIRE_COLOR
 
-        if player.action in self.SIGNAL_ACTIONS:
+        if self.scenario.enable_signals and player.action in self.SIGNAL_ACTIONS:
             index = player.action - self.ACTION_SIGNAL_UP
             dx, dy = self.DX[index], self.DY[index]
             obs[draw_x + dx, draw_y + dy, :3] = self.SIGNAL_COLOR
@@ -762,7 +774,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             str(x) for x in [
                 self.game_counter, self.counter, *self.team_scores,
                 *(nice_print(x) for x in stats),
-                self.n_players, self.stats_outcome, time_since_env_started, time.time()
+                self.scenario.player_counts, self.stats_outcome, time_since_env_started, time.time()
             ]
         )
 
@@ -857,6 +869,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         return obs
 
+    @property
+    def general_tiles_from_edge(self):
+        x,y = self.general_location
+        return min(
+            x, y, self.scenario.map_width - x - 1, self.scenario.map_height - y - 1
+        )
+
     def reset(self):
         """
         Reset game.
@@ -864,8 +883,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         """
 
         # general location
-        self.general_location = (np.random.randint(1, self.scenario.map_width - 2), np.random.randint(1, self.scenario.map_height - 2))
+        self.general_location = (np.random.randint(3, self.scenario.map_width - 5), np.random.randint(3, self.scenario.map_height - 5))
         self.general_health = self.scenario.general_initial_health
+        self.general_closest_tiles_from_edge = self.general_tiles_from_edge
+        self.blue_rewards_for_winning = 10
 
         self._needs_repaint = True
 
