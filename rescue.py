@@ -313,12 +313,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_tree_harvested = np.zeros((3,), dtype=np.int)  # which teams harvested trees
 
         self.stats_actions = np.zeros((3, self.action_space.n))
-
-        self.stats_shots_fired = np.zeros((3,), dtype=np.int)  # how many times each team shot
-        self.stats_times_moved = np.zeros((3,), dtype=np.int)  # how many times each team moved
-        self.stats_times_acted = np.zeros((3,), dtype=np.int)  # how many times each team acted
-
-        self.stats_actions = np.zeros((3,), dtype=np.int)  # how actions this team could have performed (sum_t(agents_alive))
         self.stats_outcome = "" # outcome of game
 
         obs_channels = 3
@@ -397,6 +391,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             if player.shooting_timeout != 0 and player.action in self.SHOOT_ACTIONS:
                 player.action = self.ACTION_NOOP
 
+        # count actions
+        for player in self.players:
+            self.stats_actions[player.team, player.action] += 1
+
         # apply actions, we process actions in the following order..
         # shooting
         # moving + acting
@@ -414,8 +412,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
             if player.action not in self.SHOOT_ACTIONS:
                 continue
-
-            self.stats_shots_fired[player.team] += 1
 
             index = player.action - self.ACTION_SHOOT_UP
             x = player.x
@@ -483,7 +479,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for player in self.living_players:
 
             if player.action == self.ACTION_ACT:
-                self.stats_times_acted[player.team] += 1
                 if self.map[(player.x, player.y)] == self.MAP_TREE:
                     self.stats_tree_harvested[player.team] += 1
                     if player.team == self.TEAM_GREEN:
@@ -496,7 +491,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for player in self.living_players:
 
             if player.action in self.MOVE_ACTIONS:
-                self.stats_times_moved[player.team] += 1
                 index = player.action - self.ACTION_MOVE_UP
                 self.move_player(player, self.DX[index], self.DY[index])
 
@@ -566,11 +560,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             rewards[player.id] = team_rewards[player.team]
 
         self.team_scores += team_rewards
-
-        # count actions
-        for player in self.players:
-            if not player.is_dead:
-                self.stats_actions[player.team] += 1
 
         # send done notifications to players who are dead
         for player in self.players:
@@ -740,11 +729,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if not os.path.exists(log_filename):
             with open(log_filename, "w") as f:
                 f.write("game_counter, game_length, score_red, score_green, score_blue, " +
-                        "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, " +
-                        "stats_shots_fired, stats_times_moved, stats_times_acted, stats_actions, player_count," +
-                        "result_general_killed, result_general_rescued, result_timeout, result_all_players_dead," +
-                        "result_win_red, result_win_blue, " +
-                        "wall_time, date_time" +
+                        "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, stats_actions" +
+                        "player_count, result, wall_time, date_time" +
                         "\n")
 
         with open(log_filename, "a+") as f:
@@ -764,9 +750,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.stats_kills,
             self.stats_general_shot,
             self.stats_tree_harvested,
-            self.stats_shots_fired,
-            self.stats_times_moved,
-            self.stats_times_acted,
             self.stats_actions,
         ]
 
@@ -777,21 +760,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         output_string = ",".join(
             str(x) for x in [
-                self.game_counter,
-                self.counter,
-                *self.team_scores,
+                self.game_counter, self.counter, *self.team_scores,
                 *(nice_print(x) for x in stats),
-                self.n_players,
-                # todo: switch this away from the 1-hot system
-                1 if self.stats_outcome == "general_killed" else 0,
-                1 if self.stats_outcome == "general_rescued" else 0,
-                1 if self.stats_outcome == "timeout" else 0,
-                1 if self.stats_outcome == "all_players_dead" else 0,
-                1 if self.stats_outcome == "win_red" else 0,
-                1 if self.stats_outcome == "win_blue" else 0,
-                time_since_env_started,
-                time.time()
-
+                self.n_players, self.stats_outcome, time_since_env_started, time.time()
             ]
         )
 
@@ -913,9 +884,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_kills *= 0
         self.stats_general_shot *= 0
         self.stats_tree_harvested *= 0
-        self.stats_shots_fired *= 0
-        self.stats_times_moved *= 0
-        self.stats_times_acted *= 0
         self.stats_actions *= 0
         self.stats_outcome = ""
 
