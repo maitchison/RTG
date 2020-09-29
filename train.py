@@ -31,6 +31,8 @@ from ast import literal_eval
 
 from stable_baselines.common.policies import CnnLstmPolicy
 from stable_baselines import PPO2
+from ppo_ma import PPO_MA
+from policy_ma import CnnLstmPolicy_MA
 
 from new_models import cnn_default, cnn_fast
 
@@ -46,9 +48,37 @@ class Config():
         self.cpus = 1 if tf.test.is_gpu_available else None  # for GPU machines its best to use only 1 CPU core
         self.parallel_envs = int()
         self.algo_params = dict()
+        self.algo = str()
+
+        self.default_algo_params = {
+            'learning_rate': 2.5e-4,
+            'n_steps': 128,
+            'ent_coef': 0.01,
+            'n_cpu_tf_sess': 1,
+            'mini_batch_size': 2048,
+            'max_grad_norm': 2.0,
+            'cliprange_vf': -1  # this has been shown to not be effective so I disable it
+        }
 
     def __str__(self):
         return str(dict(vars(self).items()))
+
+    def setup(self, args):
+        # setup config from command line args
+        self.device = args.device
+        self.scenario = args.scenario
+        self.epochs = args.epochs
+        self.model_name = args.model
+        self.parallel_envs = args.parallel_envs
+        self.algo_params = self.default_algo_params.copy()
+        self.algo_params.update(literal_eval(args.algo_params))
+        self.uuid = uuid.uuid4().hex[-8:]
+        self.log_folder = f"run/{args.run} [{self.uuid}]"
+        self.algo = args.algo
+
+        if self.device.lower() != "auto":
+            os.environ["CUDA_VISIBLE_DEVICES"] = self.device
+
 
 def export_video(filename, model, vec_env):
     """
@@ -163,10 +193,14 @@ def train_model():
             model.learn(100000, reset_num_timesteps=False, log_interval=10)
             epoch_time = time.time() - start_epoch_time
             fps = 100000 / epoch_time
-            if sub_epoch==0:
+            if sub_epoch == 0:
                 print(f"FPS: {fps:.0f} .", end='', flush=True)
             else:
                 print(".", end='', flush=True)
+
+            if config.epochs <= 2:
+                # export extra videos for short training
+                export_video(f"{config.log_folder}/temp_{config.epochs:03}_{sub_epoch}.mp4", model, vec_env)
         print()
 
         # flush the log buffer and print scores
@@ -192,30 +226,36 @@ def make_model(env, model_name = None, verbose=0):
     n_mini_batches = batch_size // config.algo_params["mini_batch_size"]
 
     params = config.algo_params.copy()
+
     del params["mini_batch_size"]
 
-    model_func = lambda x: PPO2(
-        CnnLstmPolicy,
-        env,
-        verbose=verbose,
-        nminibatches=n_mini_batches,
-        policy_kwargs=x,
-        **params
-    )
-
     if model_name == "cnn_lstm_default":
-        return model_func({
+        policy_kwargs = {
             "cnn_extractor": cnn_default,
             "n_lstm": 128
-        })
+        }
 
     elif model_name == "cnn_lstm_fast":
-        return model_func({
+        policy_kwargs = {
             "cnn_extractor": cnn_fast,
             "n_lstm": 64
-        })
+        }
     else:
         raise ValueError(f"Invalid model name {model_name}")
+
+    params["verbose"] = verbose
+    params["nminibatches"] = n_mini_batches
+    params["policy_kwargs"] = policy_kwargs
+
+    if config.algo == "ppo":
+        model = PPO2(CnnLstmPolicy, env, **params)
+    elif config.algo == "marl":
+        model = PPO_MA(CnnLstmPolicy_MA, env, **params)
+    else:
+        raise Exception(f"Invalid algorithm {config.algo}")
+
+    return model
+
 
 
 def run_benchmark():
@@ -336,26 +376,17 @@ def regression_test():
     ]:
 
         results = run_test(scenario_name)
-        score = get_score_alt(results, team)
+        score = get_score(results, team)
+        score_alt = get_score_alt(results, team)
 
         result = "FAIL" if score < required_score else "PASS"
-        print(f"  [{result:}] {scenario_name:<20} ({score:.1f})")
+        print(f"  [{result:}] {scenario_name:<20} ({score:.1f}, {score_alt:.1f})")
 
     time_taken = time.time() - start_time
     print(f"Finished tests in {time_taken/60:.1f}m.")
 
 
 def main():
-
-    DEFAULT_ALGO_PARAMS = {
-        'learning_rate': 2.5e-4,
-        'n_steps': 128,
-        'ent_coef': 0.01,
-        'n_cpu_tf_sess': 1,
-        'mini_batch_size': 2048,
-        'max_grad_norm': 2.0,
-        'cliprange_vf': -1      # this has been shown to not be effective so I disable it
-    }
 
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, help="[bench|train|test]")
@@ -364,26 +395,13 @@ def main():
     parser.add_argument('--scenario', type=str, help="[full|red2]", default="full")
     parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=100)
     parser.add_argument('--model', type=str, help="model to use [cnn_lstm_default|cnn_lstm_fast]", default="cnn_lstm_default")
+    parser.add_argument('--algo', type=str, help="algorithm to use for training [ppo|marl]", default="ppo")
 
     parser.add_argument('--algo_params', type=str, default="{}")
     parser.add_argument('--parallel_envs', type=int, default=32)
 
     args = parser.parse_args()
-
-    # setup config
-    config.device = args.device
-    config.scenario = args.scenario
-    config.epochs = args.epochs
-    config.model_name = args.model
-    config.parallel_envs = args.parallel_envs
-    config.algo_params = DEFAULT_ALGO_PARAMS
-    config.algo_params.update(literal_eval(args.algo_params))
-    config.uuid = uuid.uuid4().hex[-8:]
-    config.log_folder = f"run/{args.run} [{config.uuid}]"
-
-
-    if config.device.lower() != "auto":
-        os.environ["CUDA_VISIBLE_DEVICES"] = config.device
+    config.setup(args)
 
     print()
     print(f"Starting {config.log_folder} on device {config.device}")

@@ -50,6 +50,25 @@ class MultiAgentVecEnv(VecEnv):
 
         self.actions = None
 
+    @property
+    def n_players(self):
+        return self.envs[0].n_players
+
+    def get_roles(self):
+        """
+        Returns numpy array containing roles for each player
+        :return: tensor of dims [n_envs, n_players]
+        """
+        roles = []
+        for env in self.envs:
+            env_roles = []
+            for player in env.players:
+                env_roles.append(player.team)
+            for _ in env.players:
+                roles.append(env_roles)
+        return np.asarray(roles, dtype=np.int)
+
+
     def step_async(self, actions):
         self.actions = actions
 

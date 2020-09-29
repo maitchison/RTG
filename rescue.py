@@ -133,7 +133,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     * If players are stacked and are hit by a bullet a random  player on tile is hit
     * If a player shoots but other players are stacked ontop then a random player at the shooters location is hit (other
        than the shooter themselves)
-    * If game times out then any green players still alive are awared 5 points
+    * If game times out then any green players still alive are awarded 5 points
 
 
     ---- new rules
@@ -232,12 +232,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         "blue2": {
             "description": "Two blue players must rescue the general on a small map.",
-            "map_width": 24,
-            "map_height": 24,
+            "map_width": 16,    # a very small map is required for agents to learn this easily
+            "map_height": 16,
             "player_counts": (0, 0, 2),
             "n_trees": 10,
             "reward_per_tree": 1,
             "timeout": 1000,
+            "shooting_timeout": 1000 # No shooting...
         },
 
         # the idea here is to try and learn the other players identity
@@ -462,13 +463,21 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self._needs_repaint = True
                 continue
 
-            # move general by one tile if we are standing next to them
-            if not general_has_been_moved and abs(player.x - self.general_location[0]) + abs(player.y - self.general_location[1]) == 1:
+            if general_has_been_moved:
+                continue
 
+            # move general by one tile if we are standing next to them
+            player_distance_from_general = abs(player.x - self.general_location[0]) + abs(player.y - self.general_location[1])
+
+            if player_distance_from_general == 1:
+                previous_general_location = self.general_location
                 self.general_location = (player.x, player.y)
                 # moving the general is a once per turn thing
                 general_has_been_moved = True
                 self._needs_repaint = True
+                # stub show numbers
+                #print(f"\n{previous_general_location}->{self.general_location} dst:{self.general_tiles_from_edge} (best {self.general_closest_tiles_from_edge})")
+
                 # award some score if general is closer to the edge than they used to be
                 if self.general_tiles_from_edge < self.general_closest_tiles_from_edge:
                     self.general_closest_tiles_from_edge = self.general_tiles_from_edge
@@ -510,7 +519,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         if general_is_closer_to_edge:
             # give a very small reward for moving general closer to the edge
-            small_reward = (10/self.scenario.map_width)
+            small_reward = self.blue_rewards_for_winning / 20 # give 5% of remaining points
             team_rewards[self.TEAM_BLUE] += small_reward
             self.blue_rewards_for_winning -= small_reward # make sure blue always gets the same number of points for winning
 
@@ -523,7 +532,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if blue_player_standing_next_to_general and not self.blue_has_stood_next_to_general:
             # very small bonus for standing next to general for the first time, might remove this later?
             # or have it as an option maybe. I think it's needed for fast training on blue2 scenario
-            small_reward = 2
+            small_reward = 1
             team_rewards[self.TEAM_BLUE] += small_reward
             self.blue_rewards_for_winning -= small_reward  # make sure blue always gets the same number of points for winning
             self.blue_has_stood_next_to_general = True
@@ -908,7 +917,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     def general_tiles_from_edge(self):
         x,y = self.general_location
         return min(
-            x, y, self.scenario.map_width - x - 1, self.scenario.map_height - y - 1
+            x, y, (self.scenario.map_width - 1) - x, (self.scenario.map_height - 1) - y
         )
 
     def reset(self):
@@ -918,7 +927,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         """
 
         # general location
-        self.general_location = (np.random.randint(3, self.scenario.map_width - 5), np.random.randint(3, self.scenario.map_height - 5))
+        self.general_location = (np.random.randint(3, self.scenario.map_width - 2), np.random.randint(3, self.scenario.map_height - 2))
         self.general_health = self.scenario.general_initial_health
         self.general_closest_tiles_from_edge = self.general_tiles_from_edge
         self.blue_has_stood_next_to_general = False
@@ -964,11 +973,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for id, team in enumerate(teams):
             self.players[id].team = team
 
-        for id, player in enumerate(self.players):
-            player.x, player.y = start_locations[id]
-            self.player_lookup[player.x, player.y] = id
+        for player in self.players:
+            player.x, player.y = start_locations[player.id]
+            self.player_lookup[player.x, player.y] = player.id
             player.health = self.scenario.player_initial_health
-            player.shooting_timeout = 0
+            player.shooting_timeout = self.scenario.shooting_timeout
 
         return self._get_observations()
 
@@ -1062,6 +1071,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # add video padding
         padding = (CELL_SIZE, CELL_SIZE)
         frame = np.pad(frame, (padding, padding, (0, 0)), mode="constant")
+
+        # show current scores
+        for team in range(3):
+            length = max(0, int(self.team_scores[team] * 10))
+            for x in range(length):
+                frame[x, team, team] = 255
 
         frame = frame.swapaxes(0, 1) # I'm using x,y, but video needs y,x
 

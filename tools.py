@@ -35,7 +35,7 @@ def plot_experiment(path, plots=(("score_red", "score_green", "score_blue"), ("g
     for y_axis in plots:
         plot_graph(results, path, y_axis=y_axis, **kwargs)
 
-    scores = tuple(round(get_score_alt(results, team), 2) for team in ["red", "green", "blue"])
+    scores = tuple(round(get_score(results, team), 2) for team in ["red", "green", "blue"])
     print(f"Scores {scores}")
 
 def get_score(results, team, n_episodes=100):
@@ -44,7 +44,7 @@ def get_score(results, team, n_episodes=100):
 
 def get_score_alt(results, team, n_episodes=100):
     # get the score, which is a combination of the time taken to win and the score acheived
-    return np.mean((results[f"score_{team}"] * 0.997 ** np.asarray(results["game_length"]))[-100:])
+    return np.mean((results[f"score_{team}"] * 0.99 ** np.asarray(results["game_length"]))[-100:])
 
 def load_results(path):
 
