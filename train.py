@@ -292,10 +292,10 @@ def print_scores():
     try:
         results = load_results(config.log_folder)
     except:
-        # this just means results have not generated yet
+        # this usually just means results have not generated yet
         return
 
-    scores = tuple(round(get_score(results, team)) for team in ["red", "green", "blue"])
+    scores = tuple(round(get_score(results, team), 1) for team in ["red", "green", "blue"])
     print(f"Team scores: {scores}")
 
 def regression_test():
