@@ -660,7 +660,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         if player.is_dead:
             if team_colors:
-                ring_color = (self.TEAM_COLOR[player.team] // 2 + self.DEAD_COLOR // 2)
+                ring_color = (self.TEAM_COLOR[player.team] // 3 + self.DEAD_COLOR // 2)
             else:
                 ring_color = self.DEAD_COLOR
         elif highlight:
