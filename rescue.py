@@ -200,32 +200,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         },
 
         "8blue": {
-            "description": "Eight blue two red, no green.",
+            "description": "Eight blue two red, no green, default map",
             "player_counts": (8, 0, 2),
-        },
-
-        "full_known_roles": {
-            "description": "The full game but with known roles.",
-            "hidden_roles": False,
-        },
-
-        "medium": {
-            "description": "A smaller version of the complete game.",
-            "map_width": 32,
-            "map_height": 32,
-            "player_counts": (2, 2, 2),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-        },
-
-        "medium_known_roles": {
-            "description": "A smaller version of the complete game. (roles are known)",
-            "map_width": 32,
-            "map_height": 32,
-            "player_counts": (2, 2, 2),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": False,
         },
 
         "red2": {
@@ -653,7 +629,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             index = player.action - self.ACTION_SIGNAL_UP
             dx, dy = self.DX[index], self.DY[index]
             obs[draw_x + dx, draw_y + dy, :3] = self.SIGNAL_COLOR
-
 
     def _draw_general(self, obs, padding=(0, 0)):
 
