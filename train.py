@@ -18,8 +18,9 @@ tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 from rescue import RescueTheGeneralEnv
 from MARL import MultiAgentVecEnv
-from tools import load_data
+from tools import load_results, get_score, get_score_alt
 
+import uuid
 import numpy as np
 import cv2
 import os
@@ -124,9 +125,7 @@ def train_model():
     :return:
     """
 
-    print("=============================================================")
-
-    print("Starting environment")
+    print("="*60)
 
     # copy source files for later
     from shutil import copyfile
@@ -147,34 +146,50 @@ def train_model():
     for sub_env in vec_env.envs:
         sub_env.log_folder = config.log_folder
 
-    print("=============================================================")
+    print("="*60)
+
+    start_time = time.time()
 
     for epoch in range(0, config.epochs):
-        print("Generating video...")
+
         export_video(f"{config.log_folder}/ppo_run_{epoch:03}_M.mp4", model, vec_env)
         model.save(f"{config.log_folder}/model_{epoch:03}_M.p")
+        print()
         print(f"Training epoch {epoch} on experiment {config.log_folder}")
+        print()
         model.learn(1000000, reset_num_timesteps=False, log_interval=10)
+
+        # flush the log buffer and print scores
+        for env in vec_env.envs:
+            env.write_log_buffer()
+        print_scores()
 
     model.save(f"{config.log_folder}/model_final.p")
     export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", model, vec_env)
 
-    # flush the log buffer
-    for env in vec_env.envs:
-        env.write_log_buffer()
-
-    print("Finished training.")
+    time_taken = time.time() - start_time
+    print(f"Finished training after {time_taken/60/60:.1f}h.")
 
 def make_model(env, model_name = None, verbose=1):
 
     model_name = model_name or config.model_name
 
+    # figure out a mini_batch size
+    batch_size = config.algo_params["n_steps"] * env.num_envs
+    assert batch_size % config.algo_params["mini_batch_size"] == 0, \
+        f"Invalid mini_batch size {config.algo_params['mini_batch_size']}, must divide batch size {batch_size}."
+    n_mini_batches = batch_size // config.algo_params["mini_batch_size"]
+
+    params = config.algo_params.copy()
+    del params["mini_batch_size"]
+
     model_func = lambda x: PPO2(
         CnnLstmPolicy,
         env,
         verbose=verbose,
+        nminibatches=n_mini_batches,
         policy_kwargs=x,
-        **config.algo_params
+        **params
     )
 
     if model_name == "cnn_lstm_default":
@@ -216,8 +231,6 @@ def run_benchmark():
 
         vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario_name) for _ in range(config.parallel_envs)])
         model = make_model(vec_env, model_name, verbose=0)
-
-        states = np.asarray(vec_env.reset())
 
         # just to warm it up
         model.learn(10)
@@ -263,6 +276,20 @@ def run_benchmark():
     for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
         bench_model(model_name)
 
+def print_scores():
+    """ Print current scores"""
+    try:
+        results = load_results(config.log_folder)
+    except:
+        # this just means results have not generated yet
+        return
+
+    print("Team scores:")
+    for team in ("red", "green", "blue"):
+        score = get_score(results, team)
+        alt_score = get_score_alt(results, team)
+        print(f"  {team}: {score:<4.1f} {alt_score:<4.1f}")
+
 def regression_test():
 
     print("Performing regression test, this could take some time.")
@@ -290,16 +317,19 @@ def regression_test():
             env.write_log_buffer()
 
         # check scores
-        results = load_data(destination_folder)
+        results = load_results(destination_folder)
 
         return results
 
-    for scenario_name, score_to_check, required_score in [
-        ("red2", "score_red", 9.5),
-        ("green2", "score_green", 9.5),
-        ("blue2", "score_blue", 9.5),
+    for scenario_name, team, required_score in [
+        ("red2", "red", 7.5),
+        ("green2", "green", 7.5),
+        ("blue2", "blue", 7.5),
     ]:
-        score = np.mean(run_test(scenario_name)[score_to_check][-100:])
+
+        results = run_test(scenario_name)
+        score = get_score_alt(results, team)
+
         result = "FAIL" if score < required_score else "PASS"
         print(f"  [{result:}] {scenario_name:<20} ({score:.1f})")
 
@@ -309,6 +339,14 @@ def regression_test():
 
 def main():
 
+    DEFAULT_ALGO_PARAMS = {
+        'learning_rate': 2.5e-4,
+        'n_steps': 128,
+        'ent_coef': 0.01,
+        'n_cpu_tf_sess': 1,
+        'mini_batch_size': 2048
+    }
+
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, help="[bench|train|test]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
@@ -317,25 +355,28 @@ def main():
     parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=100)
     parser.add_argument('--model', type=str, help="model to use [cnn_lstm_default|cnn_lstm_fast]", default="cnn_lstm_default")
 
-    parser.add_argument('--algo_params', type=str, default="{"+\
-            "'learning_rate':2.5e-4, 'n_steps':128, 'ent_coef':0.01, 'n_cpu_tf_sess':1" +\
-            "}")
-    parser.add_argument('--parallel_envs', type=int, default=16)
+    parser.add_argument('--algo_params', type=str, default="{}")
+    parser.add_argument('--parallel_envs', type=int, default=32)
 
     args = parser.parse_args()
 
     # setup config
-    config.log_folder = f"run/{args.run}"
     config.device = args.device
     config.scenario = args.scenario
     config.epochs = args.epochs
     config.model_name = args.model
     config.parallel_envs = args.parallel_envs
-    config.algo_params = literal_eval(args.algo_params)
+    config.algo_params = DEFAULT_ALGO_PARAMS
+    config.algo_params.update(literal_eval(args.algo_params))
+    config.uuid = uuid.uuid4().hex[-8:]
+    config.log_folder = f"run/{args.run} [{config.uuid}]"
+
 
     if config.device.lower() != "auto":
-        print(f"Using GPU {config.device}")
         os.environ["CUDA_VISIBLE_DEVICES"] = config.device
+
+    print()
+    print(f"Starting {config.log_folder} on device {config.device}")
 
     os.makedirs(config.log_folder, exist_ok=True)
 

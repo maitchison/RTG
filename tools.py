@@ -32,7 +32,15 @@ def plot_experiment(path, plots=(("score_red", "score_green", "score_blue"), ("g
         plot_graph(path=f"run/{path}", y_axis=y_axis, **kwargs)
 
 
-def load_data(path):
+def get_score(results, team, n_episodes=100):
+    # get the score
+    return np.mean(results[f"score_{team}"][-100:])
+
+def get_score_alt(results, team, n_episodes=100):
+    # get the score, which is a combination of the time taken to win and the score acheived
+    return np.mean((results[f"score_{team}"] * 0.99 ** results["game_length"])[-100:])
+
+def load_results(path):
 
     # this format was a terraible idea, all columns should be single values, not lists with spaces inbetween
     types = [np.int] * 2 + [np.float] * 3 + ["U128"] * 9 + [np.float] * 2
@@ -138,7 +146,7 @@ def plot_graph(path, xlim=None, smooth='auto', y_axis=("score_red", "score_green
 
     y_units_map.update({vs: "Hits" for vs in vs_order})
 
-    data = load_data(path)
+    data = load_results(path)
     x = data["x"]
 
     plt.title(path)
