@@ -312,7 +312,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_general_shot = np.zeros((3,), dtype=np.int)  # which teams shot general
         self.stats_tree_harvested = np.zeros((3,), dtype=np.int)  # which teams harvested trees
 
-        self.stats_actions = np.zeros((3, self.action_space.n))
+        self.stats_actions = np.zeros((3, self.action_space.n), dtype=np.int)
         self.stats_outcome = "" # outcome of game
 
         obs_channels = 3
@@ -729,7 +729,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if not os.path.exists(log_filename):
             with open(log_filename, "w") as f:
                 f.write("game_counter, game_length, score_red, score_green, score_blue, " +
-                        "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, stats_actions" +
+                        "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, stats_actions, " +
                         "player_count, result, wall_time, date_time" +
                         "\n")
 
