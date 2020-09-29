@@ -164,9 +164,9 @@ def train_model():
             epoch_time = time.time() - start_epoch_time
             fps = 100000 / epoch_time
             if sub_epoch==0:
-                print(f"   -FPS: {fps:.0f} .", end='')
+                print(f"FPS: {fps:.0f} .", end='', flush=True)
             else:
-                print(".", end='')
+                print(".", end='', flush=True)
         print()
 
         # flush the log buffer and print scores
@@ -299,7 +299,7 @@ def print_scores():
     for team in ("red", "green", "blue"):
         score = get_score(results, team)
         alt_score = get_score_alt(results, team)
-        print(f"  {team}: {score:<4.1f} {alt_score:<4.1f}")
+        print(f"  {team:<8}: {score:<4.1f} {alt_score:<4.1f}")
 
 def regression_test():
 

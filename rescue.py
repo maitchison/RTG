@@ -205,7 +205,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "description": "This is the default scenario."
         },
 
-        "8blue": {
+        "blue8": {
             "description": "Eight blue two red, no green, default map",
             "player_counts": (8, 0, 2),
         },
