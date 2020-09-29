@@ -157,11 +157,22 @@ def train_model():
         print()
         print(f"Training epoch {epoch} on experiment {config.log_folder}")
         print()
-        model.learn(1000000, reset_num_timesteps=False, log_interval=10)
+
+        for sub_epoch in range(10):
+            start_epoch_time = time.time()
+            model.learn(100000, reset_num_timesteps=False, log_interval=10)
+            epoch_time = time.time() - start_epoch_time
+            fps = 100000 / epoch_time
+            if sub_epoch==0:
+                print(f"   -FPS: {fps:.0f} .", end='')
+            else:
+                print(".", end='')
+        print()
 
         # flush the log buffer and print scores
         for env in vec_env.envs:
             env.write_log_buffer()
+
         print_scores()
 
     model.save(f"{config.log_folder}/model_final.p")
@@ -170,7 +181,7 @@ def train_model():
     time_taken = time.time() - start_time
     print(f"Finished training after {time_taken/60/60:.1f}h.")
 
-def make_model(env, model_name = None, verbose=1):
+def make_model(env, model_name = None, verbose=0):
 
     model_name = model_name or config.model_name
 
@@ -344,7 +355,9 @@ def main():
         'n_steps': 128,
         'ent_coef': 0.01,
         'n_cpu_tf_sess': 1,
-        'mini_batch_size': 2048
+        'mini_batch_size': 2048,
+        'max_grad_norm': 2.0,
+        'cliprange_vf': -1      # this has been shown to not be effective so I disable it
     }
 
     parser = argparse.ArgumentParser()

@@ -28,9 +28,15 @@ def parse(s):
 def plot_experiment(path, plots=(("score_red", "score_green", "score_blue"), ("game_length",)), **kwargs):
     print("=" * 60)
 
-    for y_axis in plots:
-        plot_graph(path=f"run/{path}", y_axis=y_axis, **kwargs)
+    path = f"run/{path}"
 
+    results = load_results(path)
+
+    for y_axis in plots:
+        plot_graph(results, path, y_axis=y_axis, **kwargs)
+
+    scores = tuple(round(get_score_alt(results, team), 2) for team in ["red", "green", "blue"])
+    print(f"Scores {scores}")
 
 def get_score(results, team, n_episodes=100):
     # get the score
@@ -38,36 +44,32 @@ def get_score(results, team, n_episodes=100):
 
 def get_score_alt(results, team, n_episodes=100):
     # get the score, which is a combination of the time taken to win and the score acheived
-    return np.mean((results[f"score_{team}"] * 0.99 ** results["game_length"])[-100:])
+    return np.mean((results[f"score_{team}"] * 0.99 ** np.asarray(results["game_length"]))[-100:])
 
 def load_results(path):
-
 
     # the idea here is to read in the csv files as a np table then convert it to a dictionary of columns
 
     filename = os.path.join(path, 'env.0.csv')
 
-    csv_data = np.genfromtxt(filename, delimiter=",", names=True)
+    types = [np.int] * 2 + [np.float] * 3 + ["U256"] * 10
 
+    csv_data = np.genfromtxt(filename, delimiter=",", dtype=types, names=True)
+
+    # create the hits stats
     data = {}
     for p1 in "RGB":
         for p2 in "RGB":
             data[f"{p1}v{p2}"] = []
 
-    # add result fields
-    for result in ["result_red", "result_blue", "result_timeout"]:
-        data[result] = []
+    player_count = np.sum([int(x) for x in csv_data["player_count"][0].split(" ")])
 
-    for team in ["red", "green", "blue"]:
-        data[f"shots_missed_{team}"] = []
+    simple_columns = [
+        "game_counter", "game_length", "score_red", "score_green", "score_blue"
+    ]
 
-    for column_name in csv_data.dtype.names:
-        data[column_name] = csv_data[column_name]
-
-    if "player_count" in data:
-        player_count = data["player_count"][0]
-    else:
-        player_count = 2  # just guess...?
+    for column in simple_columns:
+        data[column] = []
 
     x = []
     step_counter = 0
@@ -75,33 +77,37 @@ def load_results(path):
         x.append(step_counter / 1e6)
         # step_counter += sum(int(actions) for actions in row["stats_actions"].split(" "))
         step_counter += row["game_length"] * player_count
-        # extract out the players it stats we need
 
+        # move data across
+        for column in simple_columns:
+            data[column].append(float(row[column]))
+
+        # extract out the players it stats we need
         for i, vs in enumerate(vs_order):
             data[vs].append(int(row["stats_player_hit"].split(" ")[i]))
 
         # calculate shots missed by each team
-        for i in range(3):
-            shots_hit = np.sum(int(row["stats_player_hit"].split(" ")[i]) for i in range(i*3, i*3+3))
-            shots_fired = int(row["stats_shots_fired"].split(" ")[i])
-            shots_missed = shots_fired - shots_hit
-            if i == 0:
-                data["shots_missed_red"].append(shots_missed)
-            if i == 1:
-                data["shots_missed_green"].append(shots_missed)
-            if i == 2:
-                data["shots_missed_blue"].append(shots_missed)
+        # for i in range(3):
+        #     shots_hit = np.sum(int(row["stats_player_hit"].split(" ")[i]) for i in range(i*3, i*3+3))
+        #     shots_fired = int(row["stats_shots_fired"].split(" ")[i])
+        #     shots_missed = shots_fired - shots_hit
+        #     if i == 0:
+        #         data["shots_missed_red"].append(shots_missed)
+        #     if i == 1:
+        #         data["shots_missed_green"].append(shots_missed)
+        #     if i == 2:
+        #         data["shots_missed_blue"].append(shots_missed)
 
         # generate result statistics (this should really be in stats... but infer it for now)
-        data["result_red"].append(1 if row["score_red"] == 10 else 0)
-        data["result_blue"].append(1 if row["score_blue"] == 10 else 0)
-        data["result_timeout"].append(1 if row["game_length"] == 1000 else 0)
+        # data["result_red"].append(1 if row["score_red"] == 10 else 0)
+        # data["result_blue"].append(1 if row["score_blue"] == 10 else 0)
+        # data["result_timeout"].append(1 if row["game_length"] == 1000 else 0)
 
     data["x"] = x
 
     return data
 
-def plot_graph(path, xlim=None, smooth='auto', y_axis=("score_red", "score_green", "score_blue")):
+def plot_graph(data, title, xlim=None, smooth='auto', y_axis=("score_red", "score_green", "score_blue")):
     color_map = {
         "score_red": "lightcoral",
         "score_green": "lightgreen",
@@ -142,10 +148,9 @@ def plot_graph(path, xlim=None, smooth='auto', y_axis=("score_red", "score_green
 
     y_units_map.update({vs: "Hits" for vs in vs_order})
 
-    data = load_results(path)
     x = data["x"]
 
-    plt.title(path)
+    plt.title(title)
 
     show_raw = True
     remove_blank_data = True

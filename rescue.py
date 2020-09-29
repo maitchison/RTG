@@ -38,6 +38,7 @@ from MARL import MultiAgentEnv
 
 CELL_SIZE = 3
 SIN_CHANNELS = 10 # 10 channels gets a frequencies of 2^5, which suits maps around 32 tiles in width/height
+DAMAGE_PER_SHOT = 5 # this means it takes 2 shots to kill
 
 class RescueTheGeneralScenario():
     def __init__(self, **kwargs):
@@ -56,9 +57,14 @@ class RescueTheGeneralScenario():
         self.player_initial_health = 10
         self.location_encoding = "abs"  # none | sin | abs
         self.player_counts = (4, 4, 4)
-        self.hidden_roles = True
         self.battle_royale = False   # removes general from game, and adds kill rewards
         self.enable_signals = True
+
+        # default is red knows red, but all others are hidden
+        # all is all roles are hidden
+        # none is all roles are visible
+
+        self.hidden_roles = "default"
 
         self.shooting_timeout = 3    # number of turns between shooting
         self.reveal_team_on_death = False
@@ -211,7 +217,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "player_counts": (2, 0, 0),
             "n_trees": 10,
             "reward_per_tree": 1,
-            "hidden_roles": False,
             "timeout": 1000,
         },
 
@@ -222,7 +227,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "player_counts": (0, 2, 0),
             "n_trees": 10,
             "reward_per_tree": 1,
-            "hidden_roles": False,
             "timeout": 1000,
         },
 
@@ -233,7 +237,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "player_counts": (0, 0, 2),
             "n_trees": 10,
             "reward_per_tree": 1,
-            "hidden_roles": False,
             "timeout": 1000,
         },
 
@@ -244,7 +247,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "map_height": 24,
             "player_counts": (2, 0, 2),
             "n_trees": 0,
-            "hidden_roles": True,
+            "hidden_roles": "all",
             "battle_royale": True,
             "reveal_team_on_death": True
         }
@@ -273,6 +276,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.general_location = (0,0)
         self.general_health = int()
         self.general_closest_tiles_from_edge = int()
+        self.blue_has_stood_next_to_general = bool()
         self.blue_rewards_for_winning = int()
 
         self.players = [RTG_Player(id, self.scenario) for id in range(self.n_players)]
@@ -408,7 +412,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 other_player = self.player_at_pos(x, y)
                 if other_player is not None:
                     # a soldier was hit...
-                    other_player.damage(np.random.randint(1,6) + np.random.randint(1,6))
+                    other_player.damage(DAMAGE_PER_SHOT)
                     if other_player.is_dead:
                         # we killed the target player
                         self.stats_deaths[other_player.team] += 1
@@ -431,7 +435,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 # check general
                 if not self.scenario.battle_royale and ((x, y) == self.general_location):
                     # general was hit
-                    self.general_health -= (np.random.randint(1, 6) + np.random.randint(1, 6))
+                    self.general_health -= DAMAGE_PER_SHOT
                     self.stats_general_shot[player.team] += 1
                     self._needs_repaint = True
                     break
@@ -460,9 +464,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
             # move general by one tile if we are standing next to them
             if not general_has_been_moved and abs(player.x - self.general_location[0]) + abs(player.y - self.general_location[1]) == 1:
+
                 self.general_location = (player.x, player.y)
                 # moving the general is a once per turn thing
                 general_has_been_moved = True
+                self._needs_repaint = True
                 # award some score if general is closer to the edge than they used to be
                 if self.general_tiles_from_edge < self.general_closest_tiles_from_edge:
                     self.general_closest_tiles_from_edge = self.general_tiles_from_edge
@@ -477,7 +483,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self.move_player(player, self.DX[index], self.DY[index])
 
         # ------------------------
-        # generate points
+        # generate team rewards and look for outcomes
+
         result_general_killed = self.general_health <= 0
         result_general_rescued = self.general_tiles_from_edge == 0
         result_game_timeout = self.counter >= self.scenario.timeout
@@ -503,9 +510,23 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         if general_is_closer_to_edge:
             # give a very small reward for moving general closer to the edge
-            small_reward = (1/self.scenario.map_width)
+            small_reward = (10/self.scenario.map_width)
             team_rewards[self.TEAM_BLUE] += small_reward
             self.blue_rewards_for_winning -= small_reward # make sure blue always gets the same number of points for winning
+
+        blue_player_standing_next_to_general = False
+        for player in self.living_players:
+            if player.team == self.TEAM_BLUE:
+                if abs(player.x - self.general_location[0]) + abs(player.y - self.general_location[1]) == 1:
+                    blue_player_standing_next_to_general = True
+
+        if blue_player_standing_next_to_general and not self.blue_has_stood_next_to_general:
+            # very small bonus for standing next to general for the first time, might remove this later?
+            # or have it as an option maybe. I think it's needed for fast training on blue2 scenario
+            small_reward = 2
+            team_rewards[self.TEAM_BLUE] += small_reward
+            self.blue_rewards_for_winning -= small_reward  # make sure blue always gets the same number of points for winning
+            self.blue_has_stood_next_to_general = True
 
         if self.scenario.battle_royale:
 
@@ -543,6 +564,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         elif result_general_rescued:
             team_rewards[self.TEAM_RED] -= 10
             team_rewards[self.TEAM_BLUE] += self.blue_rewards_for_winning
+
+        # ----------------------------------------
+        # assign team rewards
 
         for player in self.players:
             rewards[player.id] = team_rewards[player.team]
@@ -601,10 +625,41 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         dx, dy = x*CELL_SIZE, y*CELL_SIZE
         obs[dx:dx+CELL_SIZE, dy:dy+CELL_SIZE, :3] = c
 
+    def can_see_role(self, observer: RTG_Player, player: RTG_Player):
+        """ Returns if player_a can see player_b's role """
+
+        if observer is None:
+            # global observer
+            return True
+
+        if self.scenario.reveal_team_on_death and player.is_dead:
+            return True
+
+        if self.scenario.hidden_roles == "all":
+            return observer == player
+        elif self.scenario.hidden_roles == "none":
+            return True
+        elif self.scenario.hidden_roles == "default":
+            if observer.team == self.TEAM_RED:
+                return True
+            else:
+                return observer == player
+        else:
+            raise Exception(f"Invalid hidden role setting {self.scenario.hidden_roles}, use [all|none|default]")
+
     def _draw_soldier(self, obs: np.ndarray, player: RTG_Player, team_colors=False, highlight=False, padding=(0, 0)):
+        """
+        Draw soldier
+        :param obs:
+        :param player:
+        :param team_colors: if true solider will have team colors, otherwise will draw drawn gray
+        :param highlight:
+        :param padding:
+        :return:
+        """
 
         if player.is_dead:
-            if not self.scenario.hidden_roles or self.scenario.reveal_team_on_death:
+            if team_colors:
                 ring_color = (self.TEAM_COLOR[player.team] // 2 + self.DEAD_COLOR // 2)
             else:
                 ring_color = self.DEAD_COLOR
@@ -775,20 +830,24 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # paint soldiers, living over dead
         for player in self.players:
             player_is_visible = (observer is None) or observer.in_vision(player.x, player.y)
+            team_colors = self.can_see_role(observer, player)
+
             if player.is_dead and player_is_visible:
                 self._draw_soldier(
                     obs,
                     player,
-                    team_colors=(not self.scenario.hidden_roles) or (player == observer) or (observer is None),
+                    team_colors=team_colors,
                     padding=(self._map_padding, self._map_padding)
                 )
         for player in self.players:
             player_is_visible = (observer is None) or observer.in_vision(player.x, player.y)
+            team_colors = self.can_see_role(observer, player)
+
             if not player.is_dead and player_is_visible:
                 self._draw_soldier(
                     obs,
                     player,
-                    team_colors=(not self.scenario.hidden_roles) or (player == observer) or (observer is None),
+                    team_colors=team_colors,
                     padding=(self._map_padding, self._map_padding)
                 )
 
@@ -862,6 +921,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.general_location = (np.random.randint(3, self.scenario.map_width - 5), np.random.randint(3, self.scenario.map_height - 5))
         self.general_health = self.scenario.general_initial_health
         self.general_closest_tiles_from_edge = self.general_tiles_from_edge
+        self.blue_has_stood_next_to_general = False
         self.blue_rewards_for_winning = 10
 
         self._needs_repaint = True
