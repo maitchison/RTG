@@ -738,6 +738,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.stats_general_shot,
             self.stats_tree_harvested,
             self.stats_actions,
+            self.scenario.player_counts
         ]
 
         def nice_print(x):
@@ -749,7 +750,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             str(x) for x in [
                 self.game_counter, self.counter, *self.team_scores,
                 *(nice_print(x) for x in stats),
-                self.scenario.player_counts, self.stats_outcome, time_since_env_started, time.time()
+                self.stats_outcome, time_since_env_started, time.time()
             ]
         )
 

@@ -42,16 +42,12 @@ def get_score_alt(results, team, n_episodes=100):
 
 def load_results(path):
 
-    # this format was a terraible idea, all columns should be single values, not lists with spaces inbetween
-    types = [np.int] * 2 + [np.float] * 3 + ["U128"] * 9 + [np.float] * 2
+
+    # the idea here is to read in the csv files as a np table then convert it to a dictionary of columns
 
     filename = os.path.join(path, 'env.0.csv')
-    with open(filename, "r") as f:
-        header = f.readline()
-        cols = header.split(",")
-    types = types[:len(cols)]  # remove columns that arn't there (compatability with older versions)
 
-    csv_data = np.genfromtxt(filename, dtype=types, delimiter=",", names=True)
+    csv_data = np.genfromtxt(filename, delimiter=",", names=True)
 
     data = {}
     for p1 in "RGB":
