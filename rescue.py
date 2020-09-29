@@ -738,7 +738,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.stats_general_shot,
             self.stats_tree_harvested,
             self.stats_actions,
-            self.scenario.player_counts
+            np.asarray(self.scenario.player_counts, dtype=np.int)
         ]
 
         def nice_print(x):
