@@ -295,11 +295,8 @@ def print_scores():
         # this just means results have not generated yet
         return
 
-    print("Team scores:")
-    for team in ("red", "green", "blue"):
-        score = get_score(results, team)
-        alt_score = get_score_alt(results, team)
-        print(f"  {team:<8}: {score:<4.1f} {alt_score:<4.1f}")
+    scores = tuple(round(get_score(results, team)) for team in ["red", "green", "blue"])
+    print(f"Team scores: {scores}")
 
 def regression_test():
 

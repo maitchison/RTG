@@ -207,7 +207,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         "blue8": {
             "description": "Eight blue two red, no green, default map",
-            "player_counts": (8, 0, 2),
+            "player_counts": (2, 0, 8),
         },
 
         "red2": {
