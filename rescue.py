@@ -304,7 +304,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_tree_harvested = np.zeros((3,), dtype=np.int)  # which teams harvested trees
 
         self.stats_actions = np.zeros((3, self.action_space.n), dtype=np.int)
-        self.stats_outcome = "" # outcome of game
+        self.outcome = str() # outcome of game
 
         obs_channels = 3
         if self.scenario.location_encoding == "none":
@@ -367,8 +367,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :param actions: np array of actions of dims [n_players]
         :return: observations, rewards, dones, infos
         """
-        assert len(actions) == self.n_players, "Invalid number of players"
-        assert self.stats_outcome == "", "Game has concluded, reset must be called."
+        assert len(actions) == self.n_players, f"{self.name}: Invalid number of players"
+        assert self.outcome == "", f"{self.name}: Game has concluded with result {self.outcome}, reset must be called."
 
         green_tree_harvest_counter = 0
 
@@ -617,28 +617,31 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if game_finished:
 
             if result_general_killed:
-                self.stats_outcome = "general_killed"
+                self.outcome = "general_killed"
             elif result_general_rescued:
-                self.stats_outcome = "general_rescued"
+                self.outcome = "general_rescued"
             elif result_game_timeout:
-                self.stats_outcome = "timeout"
+                self.outcome = "timeout"
             elif result_all_players_dead:
-                self.stats_outcome = "all_players_dead"
+                self.outcome = "all_players_dead"
             elif result_red_victory:
-                self.stats_outcome = "red_win" # royale wins
+                self.outcome = "red_win" # royale wins
             elif result_blue_victory:
-                self.stats_outcome = "blue_win"
+                self.outcome = "blue_win"
             elif result_green_victory:
-                self.stats_outcome = "green_win"
+                self.outcome = "green_win"
+            else:
+                # general end of game tag, this shouldn't happen
+                self.outcome = "complete"
 
             self.write_stats_to_log()
             dones[:] = True
 
-            print(f"{self.name}: round finished at step {self.counter}", self.team_scores, rewards)
+            #print(f"{self.name}: round finished at step {self.counter}", self.team_scores, rewards)
 
             for info in infos:
                 # record the outcome in infos as it will be lost if environment is auto reset.
-                info["outcome"] = self.stats_outcome
+                info["outcome"] = self.outcome
 
         obs = self._get_observations()
 
@@ -835,7 +838,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             str(x) for x in [
                 self.game_counter, self.counter, *self.team_scores,
                 *(nice_print(x) for x in stats),
-                self.stats_outcome, time_since_env_started, time.time()
+                self.outcome, time_since_env_started, time.time()
             ]
         )
 
@@ -947,7 +950,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :return: observations
         """
 
-        print(f"{self.name}: reset at {self.counter}")
+        #print(f"{self.name}: reset at {self.counter}")
 
         # general location
         self.general_location = (np.random.randint(3, self.scenario.map_width - 2), np.random.randint(3, self.scenario.map_height - 2))
@@ -967,6 +970,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for loc in [all_locations[idx] for idx in idxs]:
             self.map[loc] = 2
 
+        self.outcome = ""
+
         # reset stats
         self.stats_player_hit *= 0
         self.stats_deaths *= 0
@@ -974,7 +979,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_general_shot *= 0
         self.stats_tree_harvested *= 0
         self.stats_actions *= 0
-        self.stats_outcome = ""
+
 
         # initialize players to random start locations, and assign initial health
         general_filter = lambda p: \

@@ -50,7 +50,7 @@ def load_results(path):
 
     # the idea here is to read in the csv files as a np table then convert it to a dictionary of columns
 
-    filename = os.path.join(path, 'env.0.csv')
+    filename = os.path.join(path, 'env_log.csv')
 
     types = [np.int] * 2 + [np.float] * 3 + ["U256"] * 10
 

@@ -82,12 +82,15 @@ class Config():
             os.environ["CUDA_VISIBLE_DEVICES"] = self.device
 
 
-def export_video(filename, model, vec_env):
+def export_video(filename, model):
     """
     Exports a movie with agents playing randomly.
     """
 
     scale = 8
+
+    # make a new environment so we don't mess the settings up on the one used for training.
+    vec_env = make_env(config.scenario, parallel_envs=1)
 
     states = vec_env.reset()
     env = vec_env.envs[0]
@@ -112,40 +115,32 @@ def export_video(filename, model, vec_env):
     # this is required to make sure the last frame is visible
     vec_env.auto_reset = False
 
-    try:
+    # play the game...
+    while outcome == "":
 
-        # play the game...
-        while not is_terminal:
+        stacked_states = np.asarray(states)
+        actions, _, agent_states, _ = model.step(stacked_states, agent_states, dones)
 
-            stacked_states = np.asarray(states)
-            actions, _, agent_states, _ = model.step(stacked_states, agent_states, dones)
+        states, rewards, dones, infos = vec_env.step(actions)
 
-            states, rewards, dones, infos = vec_env.step(actions)
+        outcome = env.outcome
 
-            is_terminal = all(dones[:env.n_players])
+        # generate frames from global perspective
+        frame = env.render("rgb_array")
 
-            # generate frames from global perspective
-            frame = env.render("rgb_array")
-            if is_terminal:
-                outcome = infos[0]["outcome"]
+        # for some reason cv2 wants BGR instead of RGB
+        frame[:, :, :] = frame[:, :, ::-1]
 
-            # for some reason cv2 wants BGR instead of RGB
-            frame[:, :, :] = frame[:, :, ::-1]
+        if frame.shape[0] != width or frame.shape[1] != height:
+            frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 
-            if frame.shape[0] != width or frame.shape[1] != height:
-                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
+        assert \
+            frame.shape[1] == width and frame.shape[0] == height, \
+            "Frame should be {} but is {}".format((width, height, 3), frame.shape)
 
-            assert \
-                frame.shape[1] == width and frame.shape[0] == height, \
-                "Frame should be {} but is {}".format((width, height, 3), frame.shape)
+        video_out.write(frame)
 
-            video_out.write(frame)
-
-        video_out.release()
-
-    finally:
-
-        vec_env.auto_reset = True
+    video_out.release()
 
     # rename video to include outcome
     try:
@@ -153,6 +148,14 @@ def export_video(filename, model, vec_env):
         shutil.move(filename, modified_filename)
     except:
         print("Warning: could not rename video file.")
+
+def make_env(scenario = None, parallel_envs = None):
+    scenario = scenario or config.scenario
+    parallel_envs = parallel_envs or config.parallel_envs
+    # our MARL environments are handled like vectorized environments
+    make_env_fn = lambda counter: RescueTheGeneralEnv(scenario=scenario, name=f"{counter:<2.0f}")
+    vec_env = MultiAgentVecEnv([make_env_fn for _ in range(config.parallel_envs)])
+    return vec_env
 
 def train_model():
     """
@@ -171,9 +174,8 @@ def train_model():
     with open(f"{config.log_folder}/config.txt", "w") as f:
         f.write(str(config))
 
-    # our MARL environments are handled like vectorized environments
-    make_env = lambda counter: RescueTheGeneralEnv(scenario=config.scenario, name=f"{counter:<2.0f}")
-    vec_env = MultiAgentVecEnv([make_env for _ in range(config.parallel_envs)])
+
+    vec_env = make_env()
 
     print("Scenario parameters:")
     print(vec_env.envs[0].scenario)
@@ -189,7 +191,7 @@ def train_model():
 
     for epoch in range(0, config.epochs):
 
-        export_video(f"{config.log_folder}/ppo_run_{epoch:03}_M.mp4", model, vec_env)
+        export_video(f"{config.log_folder}/ppo_run_{epoch:03}_M.mp4", model)
         model.save(f"{config.log_folder}/model_{epoch:03}_M.p")
         print()
         print(f"Training epoch {epoch} on experiment {config.log_folder}")
@@ -220,7 +222,7 @@ def train_model():
         print_scores()
 
     model.save(f"{config.log_folder}/model_final.p")
-    export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", model, vec_env)
+    export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", model)
 
     time_taken = time.time() - start_time
     print(f"Finished training after {time_taken/60/60:.1f}h.")
@@ -272,7 +274,7 @@ def run_benchmark():
 
     def bench_scenario(scenario_name):
 
-        vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario_name) for _ in range(config.parallel_envs)])
+        vec_env = make_env(scenario_name)
 
         _ = vec_env.reset()
         steps = 0
@@ -290,7 +292,7 @@ def run_benchmark():
 
     def bench_training(scenario_name, model_name):
 
-        vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario_name) for _ in range(config.parallel_envs)])
+        vec_env = make_env(scenario_name)
         model = make_model(vec_env, model_name, verbose=0)
 
         # just to warm it up
@@ -304,7 +306,7 @@ def run_benchmark():
 
     def bench_model(model_name):
 
-        vec_env = MultiAgentVecEnv([RescueTheGeneralEnv for _ in range(config.parallel_envs)])
+        vec_env = make_env("full")
         model = make_model(vec_env, model_name)
 
         states = np.asarray(vec_env.reset())
@@ -370,7 +372,7 @@ def regression_test():
             sub_env.log_folder = destination_folder
 
         model.learn(n_steps, reset_num_timesteps=False)
-        export_video(f"{destination_folder}/{scenario_name}.mp4", model, vec_env)
+        export_video(f"{destination_folder}/{scenario_name}.mp4", model)
 
         # flush the log buffer
         for env in vec_env.envs:
