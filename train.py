@@ -90,9 +90,10 @@ def export_video(filename, model):
     scale = 8
 
     # make a new environment so we don't mess the settings up on the one used for training.
+    # it also makes sure that results from the video are not included in the log
     vec_env = make_env(config.scenario, parallel_envs=1)
 
-    states = vec_env.reset()
+    env_states = vec_env.reset()
     env = vec_env.envs[0]
     frame = env.render("rgb_array")
 
@@ -104,26 +105,28 @@ def export_video(filename, model):
     # create video recorder
     video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 15, (width, height), isColor=True)
 
-    dones = [False] * len(states)
-
     # don't like it that this is hard coded... not sure how to init the states?
     agent_states = model.initial_state
 
-    is_terminal = False
     outcome = ""
 
     # this is required to make sure the last frame is visible
     vec_env.auto_reset = False
 
+    env_state_shape = env_states.shape[1:]
+    states = np.zeros((model.n_envs, *env_state_shape), dtype=np.uint8)
+
     # play the game...
-    while outcome == "":
+    while env.outcome == "":
 
-        stacked_states = np.asarray(states)
-        actions, _, agent_states, _ = model.step(stacked_states, agent_states, dones)
+        # model expects parallel_env environments but we're running only 1, so duplicate...
+        # (this is a real shame, would be better if this just worked with a flexable input size)
 
-        states, rewards, dones, infos = vec_env.step(actions)
+        # state will be [n, h, w, c], this process will duplicate it.
+        states[:env.n_players] = env_states
+        actions, _, agent_states, _ = model.step(states, agent_states, [False] * model.n_envs)
 
-        outcome = env.outcome
+        env_states, env_rewards, env_dones, env_infos = vec_env.step(actions[:env.n_players])
 
         # generate frames from global perspective
         frame = env.render("rgb_array")
@@ -144,7 +147,7 @@ def export_video(filename, model):
 
     # rename video to include outcome
     try:
-        modified_filename = f"{os.path.splitext(filename)[0]} [{outcome}]{os.path.splitext(filename)[1]}"
+        modified_filename = f"{os.path.splitext(filename)[0]} [{env.outcome}]{os.path.splitext(filename)[1]}"
         shutil.move(filename, modified_filename)
     except:
         print("Warning: could not rename video file.")
@@ -154,7 +157,7 @@ def make_env(scenario = None, parallel_envs = None):
     parallel_envs = parallel_envs or config.parallel_envs
     # our MARL environments are handled like vectorized environments
     make_env_fn = lambda counter: RescueTheGeneralEnv(scenario=scenario, name=f"{counter:<2.0f}")
-    vec_env = MultiAgentVecEnv([make_env_fn for _ in range(config.parallel_envs)])
+    vec_env = MultiAgentVecEnv([make_env_fn for _ in range(parallel_envs)])
     return vec_env
 
 def train_model():
@@ -173,7 +176,6 @@ def train_model():
     # make a copy of the environment parameters
     with open(f"{config.log_folder}/config.txt", "w") as f:
         f.write(str(config))
-
 
     vec_env = make_env()
 

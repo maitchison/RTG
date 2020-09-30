@@ -263,7 +263,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.env_create_time = time.time()
 
-        self.log_folder = "./"
+        self.log_folder = None
         self._needs_repaint = True
 
         # setup our scenario
@@ -803,7 +803,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         if not os.path.exists(log_filename):
             with open(log_filename, "w") as f:
-                f.write("game_counter, game_length, score_red, score_green, score_blue, " +
+                f.write("env_name, game_counter, game_length, score_red, score_green, score_blue, " +
                         "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, stats_actions, " +
                         "player_count, result, wall_time, date_time" +
                         "\n")
@@ -836,18 +836,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         output_string = ",".join(
             str(x) for x in [
-                self.game_counter, self.counter, *self.team_scores,
+                self.name, self.game_counter, self.counter, *self.team_scores,
                 *(nice_print(x) for x in stats),
                 self.outcome, time_since_env_started, time.time()
             ]
         )
 
-        LOG_BUFFER.append(output_string)
-
-        # write to buffer every 120 seconds
-        time_since_last_log_write = time.time() - LOG_BUFFER_LAST_WRITE_TIME
-        if time_since_last_log_write > 120:
-            self.write_log_buffer()
+        # handle logging
+        if self.log_folder is not None:
+            LOG_BUFFER.append(output_string)
+            time_since_last_log_write = time.time() - LOG_BUFFER_LAST_WRITE_TIME
+            if time_since_last_log_write > 120:
+                self.write_log_buffer()
 
     def _get_player_observation(self, observer_id):
         """

@@ -118,7 +118,7 @@ class MultiAgentVecEnv(VecEnv):
         obs = []
         for env in self.envs:
             obs.extend(env.reset())
-        return obs
+        return np.asarray(obs)
 
     def close(self):
         for env in self.envs:
