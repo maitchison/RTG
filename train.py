@@ -106,7 +106,6 @@ def export_video(filename, model, vec_env):
     # don't like it that this is hard coded... not sure how to init the states?
     agent_states = model.initial_state
 
-    n_players = env.n_players
     is_terminal = False
     outcome = ""
 
@@ -123,7 +122,7 @@ def export_video(filename, model, vec_env):
 
             states, rewards, dones, infos = vec_env.step(actions)
 
-            is_terminal = all(dones)
+            is_terminal = all(dones[:env.n_players])
 
             # generate frames from global perspective
             frame = env.render("rgb_array")
