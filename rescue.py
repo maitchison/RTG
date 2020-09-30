@@ -1092,8 +1092,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # show current scores
         for team in range(3):
             length = max(0, int(self.team_scores[team] * 10))
-            for x in range(length):
-                frame[x, team, team] = 255
+            frame[0:100, team, team] = 50
+            frame[0:length, team, team] = 255
 
         frame = frame.swapaxes(0, 1) # I'm using x,y, but video needs y,x
 

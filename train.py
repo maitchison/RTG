@@ -20,7 +20,6 @@ from rescue import RescueTheGeneralEnv
 from MARL import MultiAgentVecEnv
 from tools import load_results, get_score, get_score_alt
 
-from pympler import muppy, summary
 import pickle
 import uuid
 import numpy as np
@@ -124,9 +123,7 @@ def export_video(filename, model, vec_env):
 
             states, rewards, dones, infos = vec_env.step(actions)
 
-            # terminal state needs to be handled a bit differently as state will now be first state of new game
-            # this is due to auto-reset.
-            is_terminal = "terminal_rgb" in infos[0]
+            is_terminal = all(dones)
 
             # generate frames from global perspective
             frame = env.render("rgb_array")
@@ -157,15 +154,6 @@ def export_video(filename, model, vec_env):
         shutil.move(filename, modified_filename)
     except:
         print("Warning: could not rename video file.")
-
-def print_memory_use(vec_env):
-    all_objects = muppy.get_objects()
-    sum = summary.summarize(all_objects)
-    summary.print_(sum)
-    # stub write out vecenv to see if it's growing
-    print("env size", len(pickle.dumps(vec_env)))
-    print("log size", len(pickle.dumps(rescue.LOG_BUFFER)))
-
 
 def train_model():
     """
@@ -220,11 +208,9 @@ def train_model():
             else:
                 print(".", end='', flush=True)
 
-        print()
+            gc.collect()
 
-        # stub cleanup...
-        gc.collect()
-        print_memory_use(vec_env)
+        print()
 
         # flush the log buffer and print scores
         for env in vec_env.envs:
