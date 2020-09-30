@@ -172,7 +172,9 @@ def train_model():
         f.write(str(config))
 
     # our MARL environments are handled like vectorized environments
-    vec_env = MultiAgentVecEnv([lambda: RescueTheGeneralEnv(scenario=config.scenario) for _ in range(config.parallel_envs)])
+    make_env = lambda counter: RescueTheGeneralEnv(scenario=config.scenario, name=f"{counter:<2.0f}")
+    vec_env = MultiAgentVecEnv([make_env for _ in range(config.parallel_envs)])
+
     print("Scenario parameters:")
     print(vec_env.envs[0].scenario)
 
@@ -358,8 +360,10 @@ def regression_test():
         os.makedirs(destination_folder, exist_ok=True)
 
         # our MARL environments are handled like vectorized environments
-        vec_env = MultiAgentVecEnv(
-            [lambda: RescueTheGeneralEnv(scenario=scenario_name) for _ in range(config.parallel_envs)])
+
+        make_env = lambda counter: RescueTheGeneralEnv(scenario=scenario_name, name=f"{counter:<2.0f}")
+        vec_env = MultiAgentVecEnv([make_env for _ in range(config.parallel_envs)])
+
         model = make_model(vec_env, verbose=0)
 
         for sub_env in vec_env.envs:

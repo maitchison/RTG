@@ -41,11 +41,10 @@ class MultiAgentVecEnv(VecEnv):
         :param make_env: List of functions to make given environment
         """
 
-        self.envs = [make_env() for make_env in make_marl_envs]
+        self.envs = [make_env(counter) for counter, make_env in enumerate(make_marl_envs)]
         self.num_envs = sum(env.n_players for env in self.envs)
 
         env = self.envs[0]
-
         VecEnv.__init__(self, self.num_envs, env.observation_space, env.action_space)
 
         self.actions = None

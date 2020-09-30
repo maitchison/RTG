@@ -83,9 +83,14 @@ class RescueTheGeneralScenario():
 
 class RTG_Player():
 
-    def __init__(self, id, scenario):
-        self.id = id
+    def __init__(self, index, scenario):
+        # the player's index, this is fixed and used to index into the players array, i.e. self.players[id]
+        self.index = index
+        # this is the id number used to identify which player this is. These id values are randomized each round
+        self.public_id = 0
+        # position of player
         self.x, self.y = int(), int()
+
         self.health = int()
         self.team = int()
         self.action = int()
@@ -98,7 +103,7 @@ class RTG_Player():
 
     @property
     def id_color(self):
-        return RescueTheGeneralEnv.ID_COLOR[self.id]
+        return RescueTheGeneralEnv.ID_COLOR[self.public_id]
 
     @property
     def is_dead(self):
@@ -113,12 +118,10 @@ class RTG_Player():
     def damage(self, damage):
         """
         Causes player to receive given damage.
-        :param player_id:
         :param damage:
         :return:
         """
         self.health = max(0, self.health - damage)
-
 
 class RescueTheGeneralEnv(MultiAgentEnv):
     """
@@ -253,7 +256,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         }
     }
 
-    def __init__(self, scenario="full"):
+    def __init__(self, scenario="full", name="env"):
         super().__init__()
 
         self.action_space = gym.spaces.Discrete(14)
@@ -267,7 +270,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         scenario_kwargs = self.SCENARIOS[scenario]
         self.scenario = RescueTheGeneralScenario(**scenario_kwargs)
 
-        self.id = mpi_rank_or_zero()
+        self.name = name
         self.counter = 0
         self.game_counter = 0
 
@@ -279,7 +282,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.blue_has_stood_next_to_general = bool()
         self.blue_rewards_for_winning = int()
 
-        self.players = [RTG_Player(id, self.scenario) for id in range(self.n_players)]
+        # create players and assign teams
+        self.players = [RTG_Player(index, self.scenario) for index in range(self.n_players)]
+        teams = [self.TEAM_RED] * self.scenario.player_counts[0] + \
+                [self.TEAM_GREEN] * self.scenario.player_counts[1] + \
+                [self.TEAM_BLUE] * self.scenario.player_counts[2]
+
+        for index, team in enumerate(teams):
+            self.players[index].team = team
 
         self.team_scores = np.zeros([3], dtype=np.float)
 
@@ -326,9 +336,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     return player
         else:
             # lookup map only includes living players
-            id = self.player_lookup[x, y]
+            index = self.player_lookup[x, y]
 
-            player = self.players[id] if id >= 0 else None
+            player = self.players[index] if index >= 0 else None
 
             if player is not None:
                 assert player.x == x and player.y == y, "player_lookup has invalid value."
@@ -347,7 +357,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if self.player_at_pos(new_x, new_y) is None:
             # can not move on-top of other players.
             self.player_lookup[player.x, player.y] = -1
-            self.player_lookup[new_x, new_y] = player.id
+            self.player_lookup[new_x, new_y] = player.index
             player.x = new_x
             player.y = new_y
 
@@ -358,6 +368,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :return: observations, rewards, dones, infos
         """
         assert len(actions) == self.n_players, "Invalid number of players"
+        assert self.stats_outcome == "", "Game has concluded, reset must be called."
 
         green_tree_harvest_counter = 0
 
@@ -366,8 +377,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         infos = [{} for _ in range(self.n_players)]
 
         # assign actions to players / remove invalid actions
-        for player in self.players:
-            player.action = self.ACTION_NOOP if player.is_dead else actions[player.id]
+        for action, player in zip(actions, self.players):
+            player.action = self.ACTION_NOOP if player.is_dead else action
             if player.shooting_timeout != 0 and player.action in self.SHOOT_ACTIONS:
                 player.action = self.ACTION_NOOP
 
@@ -586,13 +597,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # assign team rewards
 
         for player in self.players:
-            rewards[player.id] = team_rewards[player.team]
+            rewards[player.index] = team_rewards[player.team]
 
         self.team_scores += team_rewards
 
         # send done notifications to players who are dead
         for player in self.players:
-            dones[player.id] = player.is_dead
+            dones[player.index] = player.is_dead
 
         game_finished = result_general_killed or \
                         result_general_rescued or \
@@ -622,6 +633,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
             self.write_stats_to_log()
             dones[:] = True
+
+            print(f"{self.name}: round finished at step {self.counter}", self.team_scores, rewards)
 
             for info in infos:
                 # record the outcome in infos as it will be lost if environment is auto reset.
@@ -783,7 +796,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         """
 
         # append outcome to a log
-        log_filename = f"{self.log_folder}/env.{self.id}.csv"
+        log_filename = f"{self.log_folder}/env_log.csv"
 
         if not os.path.exists(log_filename):
             with open(log_filename, "w") as f:
@@ -934,6 +947,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :return: observations
         """
 
+        print(f"{self.name}: reset at {self.counter}")
+
         # general location
         self.general_location = (np.random.randint(3, self.scenario.map_width - 2), np.random.randint(3, self.scenario.map_height - 2))
         self.general_health = self.scenario.general_initial_health
@@ -979,20 +994,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.team_scores *= 0
 
-        # assign teams
-        teams = [self.TEAM_RED] * self.scenario.player_counts[0] + \
-                [self.TEAM_GREEN] * self.scenario.player_counts[1] + \
-                [self.TEAM_BLUE] * self.scenario.player_counts[2]
+        ids = list(range(self.n_players))
+        np.random.shuffle(ids)
 
-        np.random.shuffle(teams)
-        for id, team in enumerate(teams):
-            self.players[id].team = team
+        # setup the players
+        for id, player in zip(ids, self.players):
 
-        for player in self.players:
-
+            player.public_id = id
             player.x, player.y = red_start_locations.pop() if player.team == self.TEAM_RED else other_start_locations.pop()
 
-            self.player_lookup[player.x, player.y] = player.id
+            self.player_lookup[player.x, player.y] = player.index
             player.health = self.scenario.player_initial_health
             player.shooting_timeout = self.scenario.shooting_timeout
 
@@ -1107,6 +1118,26 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             return self._render_rgb(use_location=use_location)
         else:
             raise ValueError(f"Invalid render mode {mode}")
+
+
+class RTG_ScriptedEnv(RescueTheGeneralEnv):
+    """
+    Allows some players within the RTG environment to be scripted
+    """
+
+    def __init__(self, scenario="full"):
+        super().__init__(scenario)
+
+    def step(self, actions):
+        pass
+
+    def reset(self):
+
+        return super().reset()
+
+        # work on the mapping from input actions to this environment
+
+
 
 
 # all envs share this log
