@@ -962,10 +962,17 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_outcome = ""
 
         # initialize players to random start locations, and assign initial health
-        general_filter = lambda p: abs(p[0] - self.general_location[0]) > 3 and abs(p[1] - self.general_location[1]) > 3
+        general_filter = lambda p: \
+            abs(p[0] - self.general_location[0]) > self.scenario.player_view_distance and \
+            abs(p[1] - self.general_location[1]) > self.scenario.player_view_distance
 
-        valid_start_locations = list(filter(general_filter, all_locations))
-        start_locations = [valid_start_locations[idx] for idx in np.random.choice(len(valid_start_locations), size=self.n_players, replace=False)]
+        # make sure red doesn't start in vision of general
+        red_players = self.scenario.player_counts[self.TEAM_RED]
+        other_players = (self.scenario.player_counts[self.TEAM_GREEN] + self.scenario.player_counts[self.TEAM_BLUE])
+        valid_red_start_locations = list(filter(general_filter, all_locations))
+        red_start_locations = [valid_red_start_locations[idx] for idx in np.random.choice(len(valid_red_start_locations), size=red_players, replace=False)]
+        valid_other_start_locations = list(set(all_locations) - set(red_start_locations))
+        other_start_locations = [valid_other_start_locations[idx] for idx in np.random.choice(len(valid_other_start_locations), size=other_players, replace=False)]
 
         self.counter = 0
         self.game_counter += 1
@@ -982,7 +989,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.players[id].team = team
 
         for player in self.players:
-            player.x, player.y = start_locations[player.id]
+
+            player.x, player.y = red_start_locations.pop() if player.team == self.TEAM_RED else other_start_locations.pop()
+
             self.player_lookup[player.x, player.y] = player.id
             player.health = self.scenario.player_initial_health
             player.shooting_timeout = self.scenario.shooting_timeout
