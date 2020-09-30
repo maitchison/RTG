@@ -168,10 +168,10 @@ class PPO_MA(ActorCriticRLModel):
                     pred_role_logits = tf.reshape(train_model._role_fn, [n_batch_train * n_players, n_roles])
                     self.true_roles_ph = tf.placeholder(tf.int32, [n_batch_train, n_players], name="true_roles_ph")
 
-                    self.role_prediction_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+                    self.role_prediction_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
                         labels=tf.reshape(self.true_roles_ph, [n_batch_train * n_players]),
                         logits=pred_role_logits
-                    )
+                    ))
 
 
                     # Value function clipping: not present in the original PPO

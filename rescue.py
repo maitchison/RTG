@@ -44,7 +44,6 @@ class RescueTheGeneralScenario():
     def __init__(self, **kwargs):
 
         # defaults
-
         self.n_trees = 20
         self.reward_per_tree = 0.5
         self.map_width = 48
@@ -217,7 +216,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "player_counts": (2, 0, 0),
             "n_trees": 10,
             "reward_per_tree": 1,
-            "timeout": 1000,
+            "timeout": 1000
         },
 
         "green2": {
@@ -227,7 +226,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "player_counts": (0, 2, 0),
             "n_trees": 10,
             "reward_per_tree": 1,
-            "timeout": 1000,
+            "timeout": 1000
         },
 
         "blue2": {
@@ -375,6 +374,15 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # count actions
         for player in self.players:
             self.stats_actions[player.team, player.action] += 1
+
+        # count predictions (if given)
+        # todo... (requires player.prediction to be set)
+        # for player in self.living_players:
+        #     for target_player in self.players:
+        #         if player.prediction[target_player.id] == target_player.team:
+        #             self.stats_predictions_correct[player.team] += 1
+        #         else:
+        #             self.stats_predictions_wrong[player.team] += 1
 
         # apply actions, we process actions in the following order..
         # shooting

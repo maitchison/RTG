@@ -20,6 +20,8 @@ from rescue import RescueTheGeneralEnv
 from MARL import MultiAgentVecEnv
 from tools import load_results, get_score, get_score_alt
 
+from pympler import muppy, summary
+import pickle
 import uuid
 import numpy as np
 import cv2
@@ -28,16 +30,27 @@ import argparse
 import time
 import shutil
 from ast import literal_eval
+import gc
 
 from stable_baselines.common.policies import CnnLstmPolicy
 from stable_baselines import PPO2
 from ppo_ma import PPO_MA
 from policy_ma import CnnLstmPolicy_MA
-
+import rescue
 from new_models import cnn_default, cnn_fast
 
 class Config():
     """ Class to hold config files"""
+
+    default_algo_params = {
+        'learning_rate': 2.5e-4,
+        'n_steps': 128,
+        'ent_coef': 0.01,
+        'n_cpu_tf_sess': 1,
+        'mini_batch_size': 2048,
+        'max_grad_norm': 2.0,
+        'cliprange_vf': -1  # this has been shown to not be effective so I disable it
+    }
 
     def __init__(self):
         self.log_folder = str()
@@ -49,16 +62,6 @@ class Config():
         self.parallel_envs = int()
         self.algo_params = dict()
         self.algo = str()
-
-        self.default_algo_params = {
-            'learning_rate': 2.5e-4,
-            'n_steps': 128,
-            'ent_coef': 0.01,
-            'n_cpu_tf_sess': 1,
-            'mini_batch_size': 2048,
-            'max_grad_norm': 2.0,
-            'cliprange_vf': -1  # this has been shown to not be effective so I disable it
-        }
 
     def __str__(self):
         return str(dict(vars(self).items()))
@@ -108,38 +111,45 @@ def export_video(filename, model, vec_env):
     is_terminal = False
     outcome = ""
 
-    # play the game...
-    while not is_terminal:
+    # this is required to make sure the last frame is visible
+    vec_env.auto_reset = False
 
-        stacked_states = np.asarray(states)
-        actions, _, agent_states, _ = model.step(stacked_states, agent_states, dones)
+    try:
 
-        states, rewards, dones, infos = vec_env.step(actions)
+        # play the game...
+        while not is_terminal:
 
-        # terminal state needs to be handled a bit differently as state will now be first state of new game
-        # this is due to auto-reset.
-        is_terminal = "terminal_rgb" in infos[0]
+            stacked_states = np.asarray(states)
+            actions, _, agent_states, _ = model.step(stacked_states, agent_states, dones)
 
-        # generate frames from global perspective
-        if is_terminal:
-            frame = infos[0]["terminal_rgb"]
-            outcome = infos[0]["outcome"]
-        else:
+            states, rewards, dones, infos = vec_env.step(actions)
+
+            # terminal state needs to be handled a bit differently as state will now be first state of new game
+            # this is due to auto-reset.
+            is_terminal = "terminal_rgb" in infos[0]
+
+            # generate frames from global perspective
             frame = env.render("rgb_array")
+            if is_terminal:
+                outcome = infos[0]["outcome"]
 
-        # for some reason cv2 wants BGR instead of RGB
-        frame[:, :, :] = frame[:, :, ::-1]
+            # for some reason cv2 wants BGR instead of RGB
+            frame[:, :, :] = frame[:, :, ::-1]
 
-        if frame.shape[0] != width or frame.shape[1] != height:
-            frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
+            if frame.shape[0] != width or frame.shape[1] != height:
+                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 
-        assert \
-            frame.shape[1] == width and frame.shape[0] == height, \
-            "Frame should be {} but is {}".format((width, height, 3), frame.shape)
+            assert \
+                frame.shape[1] == width and frame.shape[0] == height, \
+                "Frame should be {} but is {}".format((width, height, 3), frame.shape)
 
-        video_out.write(frame)
+            video_out.write(frame)
 
-    video_out.release()
+        video_out.release()
+
+    finally:
+
+        vec_env.auto_reset = True
 
     # rename video to include outcome
     try:
@@ -147,6 +157,14 @@ def export_video(filename, model, vec_env):
         shutil.move(filename, modified_filename)
     except:
         print("Warning: could not rename video file.")
+
+def print_memory_use(vec_env):
+    all_objects = muppy.get_objects()
+    sum = summary.summarize(all_objects)
+    summary.print_(sum)
+    # stub write out vecenv to see if it's growing
+    print("env size", len(pickle.dumps(vec_env)))
+    print("log size", len(pickle.dumps(rescue.LOG_BUFFER)))
 
 
 def train_model():
@@ -189,19 +207,24 @@ def train_model():
         print()
 
         for sub_epoch in range(10):
+
             start_epoch_time = time.time()
-            model.learn(100000, reset_num_timesteps=False, log_interval=10)
+            model.learn(100000, reset_num_timesteps=False)
             epoch_time = time.time() - start_epoch_time
+
+            # todo: calculate the actual number of steps we've done, as it'll be a multiple of model.n_batch
             fps = 100000 / epoch_time
+
             if sub_epoch == 0:
                 print(f"FPS: {fps:.0f} .", end='', flush=True)
             else:
                 print(".", end='', flush=True)
 
-            if config.epochs <= 2:
-                # export extra videos for short training
-                export_video(f"{config.log_folder}/temp_{config.epochs:03}_{sub_epoch}.mp4", model, vec_env)
         print()
+
+        # stub cleanup...
+        gc.collect()
+        print_memory_use(vec_env)
 
         # flush the log buffer and print scores
         for env in vec_env.envs:
@@ -284,13 +307,13 @@ def run_benchmark():
         model = make_model(vec_env, model_name, verbose=0)
 
         # just to warm it up
-        model.learn(10)
+        model.learn(model.n_batch)
 
         start_time = time.time()
-        model.learn(10000)
+        model.learn(2 * model.n_batch)
         time_taken = (time.time() - start_time)
 
-        print(f" - model {model_name} trains at {10000 / time_taken / 1000:.1f}k FPS.")
+        print(f" - model {model_name} trains at {2 * model.n_batch / time_taken / 1000:.1f}k FPS.")
 
     def bench_model(model_name):
 

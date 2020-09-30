@@ -67,7 +67,7 @@ class CnnLstmPolicy_MA(RecurrentActorCriticPolicy):
 
             # policy
             self._proba_distribution, self._policy, self.q_value = \
-                self.pdtype.proba_distribution_from_latent(rnn_output, rnn_output, init_scale=0.01)
+                self.pdtype.proba_distribution_from_latent(rnn_output, rnn_output, init_scale=1)
 
             # role prediction for each player
             role_logits = linear(rnn_output, 'role', n_players * n_roles)

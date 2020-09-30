@@ -49,6 +49,7 @@ class MultiAgentVecEnv(VecEnv):
         VecEnv.__init__(self, self.num_envs, env.observation_space, env.action_space)
 
         self.actions = None
+        self.auto_reset = True
 
     @property
     def n_players(self):
@@ -89,14 +90,10 @@ class MultiAgentVecEnv(VecEnv):
             env_obs, env_rewards, env_dones, env_infos = env.step(env_actions)
 
             # auto reset.
-            if all(env_dones):
-
+            if self.auto_reset and all(env_dones):
                 # save final terminal observation for later
-                frame = env.render("rgb_array") # only needed if video is required, and might slow things down a bit?
                 for this_info, this_obs in zip(env_infos, env_obs):
                     this_info['terminal_observation'] = this_obs
-                    this_info['terminal_rgb'] = frame
-
                 env_obs = env.reset()
 
             obs.extend(env_obs)
