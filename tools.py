@@ -74,63 +74,56 @@ def get_score_alt(results, team, n_episodes=100):
     return np.mean((results[f"score_{team}"] * 0.99 ** np.asarray(results["game_length"]))[-100:])
 
 def load_results(path):
-
-    # the idea here is to read in the csv files as a np table then convert it to a dictionary of columns
+    """
+    return a dictionary of columns
+    can't use genfromtex because of weird format for arrays that I used
+    :param path:
+    :return:
+    """
 
     filename = os.path.join(path, 'env_log.csv')
 
-    types = [np.int] * 2 + [np.float] * 3 + ["U256"] * 10
+    data = {
+        'x': []
+    }
 
-    csv_data = np.genfromtxt(filename, delimiter=",", dtype=types, names=True)
+    column_casts = {
+        "env_name": str,
+        "game_counter": int,
+        "game_length": int,
+        "score_red": float,
+        "score_green": float,
+        "score_blue": float,
+        "wall_time": float,
+        "date_time": float
+    }
 
-    # create the hits stats
-    data = {}
-    for p1 in "RGB":
-        for p2 in "RGB":
-            data[f"{p1}v{p2}"] = []
-
-    player_count = np.sum([int(x) for x in csv_data["player_count"][0].split(" ")])
-
-    simple_columns = [
-        "game_counter", "game_length", "score_red", "score_green", "score_blue"
-    ]
-
-    for column in simple_columns:
-        data[column] = []
-
-    x = []
+    # load in data
     step_counter = 0
-    for row in csv_data:
-        x.append(step_counter / 1e6)
-        # step_counter += sum(int(actions) for actions in row["stats_actions"].split(" "))
-        step_counter += row["game_length"] * player_count
+    player_count = None
+    with open(filename, "r") as f:
+        header = f.readline()
+        column_names = [name.strip() for name in header.split(",")]
+        for name in column_names:
+            data[name] = []
 
-        # move data across
-        for column in simple_columns:
-            data[column].append(float(row[column]))
+        for line in f:
+            row = line.split(",")
 
-        # extract out the players it stats we need
-        for i, vs in enumerate(vs_order):
-            data[vs].append(int(row["stats_player_hit"].split(" ")[i]))
+            for name, value, in zip(column_names, row):
+                if name in column_casts:
+                    value = column_casts[name](value)
+                else:
+                    value = str(value)
+                data[name].append(value)
 
-        # calculate shots missed by each team
-        # for i in range(3):
-        #     shots_hit = np.sum(int(row["stats_player_hit"].split(" ")[i]) for i in range(i*3, i*3+3))
-        #     shots_fired = int(row["stats_shots_fired"].split(" ")[i])
-        #     shots_missed = shots_fired - shots_hit
-        #     if i == 0:
-        #         data["shots_missed_red"].append(shots_missed)
-        #     if i == 1:
-        #         data["shots_missed_green"].append(shots_missed)
-        #     if i == 2:
-        #         data["shots_missed_blue"].append(shots_missed)
+            if player_count is None:
+                player_count = sum([int(x) for x in data["player_count"][0].split(" ")])
 
-        # generate result statistics (this should really be in stats... but infer it for now)
-        # data["result_red"].append(1 if row["score_red"] == 10 else 0)
-        # data["result_blue"].append(1 if row["score_blue"] == 10 else 0)
-        # data["result_timeout"].append(1 if row["game_length"] == 1000 else 0)
+            step_counter += data["game_length"][-1] * player_count
+            #step_counter += sum([int(x) for x in data["stats_actions"][0].split(" ")])
 
-    data["x"] = x
+            data["x"].append(int(step_counter))
 
     return data
 

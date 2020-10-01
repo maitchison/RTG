@@ -218,7 +218,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "description": "Two red player and two green players on medium map",
             "map_width": 32,
             "map_height": 32,
-            "player_counts": (2, 0, 2),
+            "player_counts": (2, 2, 0),
             "n_trees": 10,
             "reward_per_tree": 1,
             "timeout": 1000

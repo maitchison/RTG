@@ -160,12 +160,18 @@ def export_video(filename, model):
     except:
         print("Warning: could not rename video file.")
 
-def make_env(scenario = None, parallel_envs = None):
+def make_env(scenario = None, parallel_envs = None, log_folder = None):
     scenario = scenario or config.scenario
     parallel_envs = parallel_envs or config.parallel_envs
     # our MARL environments are handled like vectorized environments
     make_env_fn = lambda counter: RescueTheGeneralEnv(scenario=scenario, name=f"{counter:<2.0f}")
     vec_env = MultiAgentVecEnv([make_env_fn for _ in range(parallel_envs)])
+
+    if log_folder is not None:
+        for sub_env in vec_env.envs:
+            sub_env.log_folder = log_folder
+
+
     return vec_env
 
 def train_model():
@@ -185,19 +191,19 @@ def train_model():
     with open(f"{config.log_folder}/config.txt", "w") as f:
         f.write(str(config))
 
-    vec_env = make_env()
+    vec_env = make_env(log_folder=config.log_folder)
 
     print("Scenario parameters:")
     print(vec_env.envs[0].scenario)
 
     model = make_model(vec_env)
 
-    for sub_env in vec_env.envs:
-        sub_env.log_folder = config.log_folder
 
     print("="*60)
 
     start_time = time.time()
+
+    step_counter = 0
 
     for epoch in range(0, config.epochs):
 
@@ -205,24 +211,31 @@ def train_model():
         model.save(f"{config.log_folder}/model_{epoch:03}_M.p")
         print()
         print(f"Training epoch {epoch} on experiment {config.log_folder}")
-        print()
 
-        for sub_epoch in range(10):
+        sub_epoch = 0
 
+        while step_counter < (epoch+1)*1e6:
+
+            # silly baselines, will round down to nearest batch. Our batches are often around 49k, so running
+            # .learn(100000) will only actually generate 88k steps. To keep all the numbers correct I therefore
+            # run each batch individually. For large batch sizes this should be fine.
+            learn_steps = model.n_batch
             start_epoch_time = time.time()
-            model.learn(100000, reset_num_timesteps=False)
+            model.learn(learn_steps, reset_num_timesteps=step_counter==0)
+            step_counter += learn_steps
             epoch_time = time.time() - start_epoch_time
 
-            # todo: calculate the actual number of steps we've done, as it'll be a multiple of model.n_batch
-            fps = 100000 / epoch_time
+            fps = learn_steps / epoch_time
 
             if sub_epoch == 0:
-                print(f"FPS: {fps:.0f} .", end='', flush=True)
+                print(f" -FPS: {fps:.0f} .", end='', flush=True)
             else:
                 print(".", end='', flush=True)
 
             # this is needed to stop a memory leak
             gc.collect()
+
+            sub_epoch += 1
 
         print()
 
