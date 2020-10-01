@@ -32,13 +32,30 @@ import math
 import gym.spaces
 import time
 
-from stable_baselines.common.misc_util import mpi_rank_or_zero
-
 from MARL import MultiAgentEnv
 
 CELL_SIZE = 3
 SIN_CHANNELS = 10 # 10 channels gets a frequencies of 2^5, which suits maps around 32 tiles in width/height
 DAMAGE_PER_SHOT = 5 # this means it takes 2 shots to kill
+
+ACTION_NOOP = 0
+ACTION_MOVE_UP = 1
+ACTION_MOVE_DOWN = 2
+ACTION_MOVE_LEFT = 3
+ACTION_MOVE_RIGHT = 4
+ACTION_SHOOT_UP = 5
+ACTION_SHOOT_DOWN = 6
+ACTION_SHOOT_LEFT = 7
+ACTION_SHOOT_RIGHT = 8
+ACTION_ACT = 9
+ACTION_SIGNAL_UP = 10
+ACTION_SIGNAL_DOWN = 11
+ACTION_SIGNAL_LEFT = 12
+ACTION_SIGNAL_RIGHT = 13
+
+SHOOT_ACTIONS = [ACTION_SHOOT_UP, ACTION_SHOOT_DOWN, ACTION_SHOOT_LEFT, ACTION_SHOOT_RIGHT]
+SIGNAL_ACTIONS = [ACTION_SIGNAL_UP, ACTION_SIGNAL_DOWN, ACTION_SIGNAL_LEFT, ACTION_SIGNAL_RIGHT]
+MOVE_ACTIONS = [ACTION_MOVE_UP, ACTION_MOVE_DOWN, ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT]
 
 class RescueTheGeneralScenario():
     def __init__(self, **kwargs):
@@ -180,25 +197,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         (25,25,255)
     ], dtype=np.uint8)
 
-    ACTION_NOOP = 0
-    ACTION_MOVE_UP = 1
-    ACTION_MOVE_DOWN = 2
-    ACTION_MOVE_LEFT = 3
-    ACTION_MOVE_RIGHT = 4
-    ACTION_SHOOT_UP = 5
-    ACTION_SHOOT_DOWN = 6
-    ACTION_SHOOT_LEFT = 7
-    ACTION_SHOOT_RIGHT = 8
-    ACTION_ACT = 9
-    ACTION_SIGNAL_UP = 10
-    ACTION_SIGNAL_DOWN = 11
-    ACTION_SIGNAL_LEFT = 12
-    ACTION_SIGNAL_RIGHT = 13
-
-    SHOOT_ACTIONS = [ACTION_SHOOT_UP, ACTION_SHOOT_DOWN, ACTION_SHOOT_LEFT, ACTION_SHOOT_RIGHT]
-    SIGNAL_ACTIONS = [ACTION_SIGNAL_UP, ACTION_SIGNAL_DOWN, ACTION_SIGNAL_LEFT, ACTION_SIGNAL_RIGHT]
-    MOVE_ACTIONS = [ACTION_MOVE_UP, ACTION_MOVE_DOWN, ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT]
-
     DX = [0, 0, -1, +1]
     DY = [-1, 1, 0, 0]
 
@@ -268,14 +266,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         }
     }
 
-    def __init__(self, scenario="full", name="env"):
+    def __init__(self, scenario="full", name="env", enable_logging=False):
         super().__init__()
 
         self.action_space = gym.spaces.Discrete(14)
 
         self.env_create_time = time.time()
 
-        self.log_folder = None
+        self.enable_logging = enable_logging
         self._needs_repaint = True
 
         # setup our scenario
@@ -390,9 +388,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # assign actions to players / remove invalid actions
         for action, player in zip(actions, self.players):
-            player.action = self.ACTION_NOOP if player.is_dead else action
-            if player.shooting_timeout != 0 and player.action in self.SHOOT_ACTIONS:
-                player.action = self.ACTION_NOOP
+            player.action = ACTION_NOOP if player.is_dead else action
+            if player.shooting_timeout != 0 and player.action in SHOOT_ACTIONS:
+                player.action = ACTION_NOOP
 
         # count actions
         for player in self.players:
@@ -422,10 +420,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # combat still get to shoot this round
         for player in self.living_players:
 
-            if player.action not in self.SHOOT_ACTIONS:
+            if player.action not in SHOOT_ACTIONS:
                 continue
 
-            index = player.action - self.ACTION_SHOOT_UP
+            index = player.action - ACTION_SHOOT_UP
             x = player.x
             y = player.y
 
@@ -482,7 +480,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         general_is_closer_to_edge = False
         for player in self.living_players:
 
-            if player.action != self.ACTION_ACT:
+            if player.action != ACTION_ACT:
                 continue
 
             # harvest a tree if we are standing on it
@@ -518,8 +516,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # moving
         for player in self.living_players:
 
-            if player.action in self.MOVE_ACTIONS:
-                index = player.action - self.ACTION_MOVE_UP
+            if player.action in MOVE_ACTIONS:
+                index = player.action - ACTION_MOVE_UP
                 self.move_player(player, self.DX[index], self.DY[index])
 
         # ------------------------
@@ -661,6 +659,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         rewards *= self.REWARD_SCALE
 
+        obs = np.asarray(obs)
+        rewards = np.asarray(rewards)
+        dones = np.asarray(dones)
+
         return obs, rewards, dones, infos
 
     def _get_observations(self):
@@ -720,13 +722,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         obs[draw_x - 1:draw_x + 2, draw_y - 1:draw_y + 2, :3] = ring_color
         obs[draw_x, draw_y, :3] = inner_color
 
-        if player.action in self.SHOOT_ACTIONS:
-            index = player.action - self.ACTION_SHOOT_UP
+        if player.action in SHOOT_ACTIONS:
+            index = player.action - ACTION_SHOOT_UP
             dx, dy = self.DX[index], self.DY[index]
             obs[draw_x + dx, draw_y + dy, :3] = self.FIRE_COLOR
 
-        if self.scenario.enable_signals and player.action in self.SIGNAL_ACTIONS:
-            index = player.action - self.ACTION_SIGNAL_UP
+        if self.scenario.enable_signals and player.action in SIGNAL_ACTIONS:
+            index = player.action - ACTION_SIGNAL_UP
             dx, dy = self.DX[index], self.DY[index]
             obs[draw_x + dx, draw_y + dy, :3] = self.SIGNAL_COLOR
 
@@ -804,31 +806,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self._needs_repaint = False
         return self._map_cache.copy()
 
-    def write_log_buffer(self):
-        """
-        Write buffer to disk
-        :return:
-        """
-
-        # append outcome to a log
-        log_filename = f"{self.log_folder}/env_log.csv"
-
-        if not os.path.exists(log_filename):
-            with open(log_filename, "w") as f:
-                f.write("env_name, game_counter, game_length, score_red, score_green, score_blue, " +
-                        "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, stats_actions, " +
-                        "player_count, result, wall_time, date_time" +
-                        "\n")
-
-        with open(log_filename, "a+") as f:
-            for output_string in LOG_BUFFER:
-                f.write(output_string + "\n")
-
-        LOG_BUFFER.clear()
-
-        global LOG_BUFFER_LAST_WRITE_TIME
-        LOG_BUFFER_LAST_WRITE_TIME = time.time()
-
     def write_stats_to_log(self):
 
         stats = [
@@ -855,11 +832,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         )
 
         # handle logging
-        if self.log_folder is not None:
+        if self.enable_logging is not None:
             LOG_BUFFER.append(output_string)
             time_since_last_log_write = time.time() - LOG_BUFFER_LAST_WRITE_TIME
             if time_since_last_log_write > 120:
-                self.write_log_buffer()
+                write_log_buffer()
 
     def _get_player_observation(self, observer_id):
         """
@@ -1025,7 +1002,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             player.health = self.scenario.player_initial_health
             player.shooting_timeout = self.scenario.shooting_timeout
 
-        return self._get_observations()
+        return np.asarray(self._get_observations())
 
     @property
     def n_players(self):
@@ -1145,8 +1122,36 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         else:
             raise ValueError(f"Invalid render mode {mode}")
 
+# This logging code isn't great, all environments share the one buffer. This could be a problem if different
+# environments want to log to different files. It'll do the for the moment though
+#
 
+def write_log_buffer():
+    """
+    Write buffer to disk
+    :return:
+    """
+
+    # append outcome to a log
+    log_filename = f"{LOG_FILENAME}/env_log.csv"
+
+    if not os.path.exists(log_filename):
+        with open(log_filename, "w") as f:
+            f.write("env_name, game_counter, game_length, score_red, score_green, score_blue, " +
+                    "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, stats_actions, " +
+                    "player_count, result, wall_time, date_time" +
+                    "\n")
+
+    with open(log_filename, "a+") as f:
+        for output_string in LOG_BUFFER:
+            f.write(output_string + "\n")
+
+    LOG_BUFFER.clear()
+
+    global LOG_BUFFER_LAST_WRITE_TIME
+    LOG_BUFFER_LAST_WRITE_TIME = time.time()
 
 # all envs share this log
+LOG_FILENAME = ""
 LOG_BUFFER = []
 LOG_BUFFER_LAST_WRITE_TIME = time.time()

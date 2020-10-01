@@ -3,9 +3,8 @@ import pickle
 import matplotlib.pyplot as plt
 import os
 import numpy as np
-import matplotlib.pyplot as plt
 
-def ema(X, gamma='auto'):
+def ema(X, gamma:[str, float]='auto'):
     if gamma == "auto":
         window_length = (len(X) ** 0.5)
         gamma = 1 - (1 / window_length)

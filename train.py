@@ -31,6 +31,8 @@ import shutil
 from ast import literal_eval
 import gc
 
+import strategies
+from strategies import RTG_ScriptedEnv
 from stable_baselines.common.policies import CnnLstmPolicy
 from stable_baselines import PPO2
 from ppo_ma import PPO_MA
@@ -56,29 +58,48 @@ class Config():
         self.device = str()
         self.scenario = str()
         self.epochs = int()
-        self.model_name = str()
+        self.model = str()
         self.cpus = 1 if tf.test.is_gpu_available else None  # for GPU machines its best to use only 1 CPU core
         self.parallel_envs = int()
         self.algo_params = dict()
         self.algo = str()
+        self.run = str()
         self.force_cpu = bool()
+        self.script_blue_team = str()
 
     def __str__(self):
-        return str(dict(vars(self).items()))
+        lines = []
+        for k,v in vars(self).items():
+            key_string = k+":"
+            lines.append(f"{key_string:<20}{v}")
+        return "{\n"+("\n".join(lines))+"\n}"
+
 
     def setup(self, args):
+
+        config_vars = set(k for k,v in vars(self).items())
+
         # setup config from command line args
-        self.device = args.device
-        self.scenario = args.scenario
-        self.epochs = args.epochs
-        self.model_name = args.model
-        self.parallel_envs = args.parallel_envs
-        self.algo_params = self.default_algo_params.copy()
-        self.algo_params.update(literal_eval(args.algo_params))
+        # most of these just get copied across directly
+        for arg_k,arg_v in vars(args).items():
+            # check if this matches a config variable
+            if arg_k in config_vars:
+                vars(self)[arg_k] = arg_v
+
         self.uuid = uuid.uuid4().hex[-8:]
         self.log_folder = f"run/{args.run} [{self.uuid}]"
-        self.force_cpu = args.force_cpu
-        self.algo = args.algo
+        rescue.LOG_FILENAME = self.log_folder
+        self.algo_params = self.default_algo_params.copy()
+        self.algo_params.update(literal_eval(args.algo_params))
+
+        # self.device = args.device
+        # self.scenario = args.scenario
+        # self.epochs = args.epochs
+        # self.model_name = args.model
+        # self.parallel_envs = args.parallel_envs
+        # self.force_cpu = args.force_cpu
+        # self.algo = args.algo
+        # self.script_blue_team = args.script_blue_team
 
         if self.device.lower() != "auto":
             os.environ["CUDA_VISIBLE_DEVICES"] = self.device
@@ -115,8 +136,6 @@ def export_video(filename, model):
 
     # don't like it that this is hard coded... not sure how to init the states?
     agent_states = model.initial_state
-
-    outcome = ""
 
     # this is required to make sure the last frame is visible
     vec_env.auto_reset = False
@@ -160,17 +179,21 @@ def export_video(filename, model):
     except:
         print("Warning: could not rename video file.")
 
-def make_env(scenario = None, parallel_envs = None, log_folder = None):
+def make_env(scenario = None, parallel_envs = None, enable_logging=False):
     scenario = scenario or config.scenario
     parallel_envs = parallel_envs or config.parallel_envs
     # our MARL environments are handled like vectorized environments
-    make_env_fn = lambda counter: RescueTheGeneralEnv(scenario=scenario, name=f"{counter:<2.0f}")
+
+    if config.script_blue_team is not None:
+        if config.script_blue_team == "save_general":
+            strat = strategies.save_general
+        else:
+            raise Exception(f"Invalid strategy {config.script_blue_team}")
+        make_env_fn = lambda counter: RTG_ScriptedEnv(scenario=scenario, name=f"{counter:<2.0f}", blue_strategy=strat, enable_logging=enable_logging)
+    else:
+        make_env_fn = lambda counter: RescueTheGeneralEnv(scenario=scenario, name=f"{counter:<2.0f}", enable_logging=enable_logging)
+
     vec_env = MultiAgentVecEnv([make_env_fn for _ in range(parallel_envs)])
-
-    if log_folder is not None:
-        for sub_env in vec_env.envs:
-            sub_env.log_folder = log_folder
-
 
     return vec_env
 
@@ -191,10 +214,12 @@ def train_model():
     with open(f"{config.log_folder}/config.txt", "w") as f:
         f.write(str(config))
 
-    vec_env = make_env(log_folder=config.log_folder)
+    vec_env = make_env(enable_logging=True)
 
     print("Scenario parameters:")
     print(vec_env.envs[0].scenario)
+    print("Config:")
+    print(config)
 
     model = make_model(vec_env)
 
@@ -240,8 +265,7 @@ def train_model():
         print()
 
         # flush the log buffer and print scores
-        for env in vec_env.envs:
-            env.write_log_buffer()
+        rescue.write_log_buffer()
 
         print_scores(epoch=epoch)
 
@@ -253,7 +277,7 @@ def train_model():
 
 def make_model(env, model_name = None, verbose=0):
 
-    model_name = model_name or config.model_name
+    model_name = model_name or config.model
 
     # figure out a mini_batch size
     batch_size = config.algo_params["n_steps"] * env.num_envs
@@ -435,6 +459,7 @@ def main():
     parser.add_argument('--model', type=str, help="model to use [cnn_lstm_default|cnn_lstm_fast]", default="cnn_lstm_default")
     parser.add_argument('--algo', type=str, help="algorithm to use for training [ppo|marl]", default="ppo")
     parser.add_argument('--force_cpu', type=bool, default=False)
+    parser.add_argument('--script_blue_team', type=str, default=None)
 
     parser.add_argument('--algo_params', type=str, default="{}")
     parser.add_argument('--parallel_envs', type=int, default=32)

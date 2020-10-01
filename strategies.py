@@ -1,30 +1,172 @@
 """
 Hard coded stratigies for rescue the general.
 
-Note: some of these stratigies are allowed to cheat (i.e have access to global or hidden information)
+Note: these stratagies control hte player directly and do not necessarly follow the normal game observational rules
+(i.e. they might know who everyone is.
+
+
 
 """
 
-from rescue import RescueTheGeneralEnv
+from gym import Wrapper
+from rescue import RescueTheGeneralEnv, RTG_Player
+from MARL import MultiAgentEnv
+import rescue as rtg
+import numpy as np
 
-class RTG_ScriptedEnv(RescueTheGeneralEnv):
+
+class RTG_ScriptedEnv(Wrapper, MultiAgentEnv):
     """
-    Allows some players within the RTG environment to be scripted
+    Wrapper that allows some players within the RTG environment to be scripted.
+    Each team gets a separate controller, teams without controllers use actions provided to environment
+
     """
 
-    def __init__(self, scenario="full"):
-        super().__init__(scenario)
+    def __init__(self, scenario="full", name="scripted", red_strategy=None, green_strategy=None, blue_strategy=None,
+                 enable_logging=False):
+
+        env = RescueTheGeneralEnv(scenario=scenario, name=name, enable_logging=enable_logging)
+        super().__init__(env)
+
+        self.controllers = [red_strategy, green_strategy, blue_strategy]
+        self._n_players = sum(
+            count for team, count in enumerate(self.env.scenario.player_counts) if self.controllers[team] is None)
+
+        # selects which players observations to pass through
+        self.player_filter = []
 
     def step(self, actions):
-        pass
+
+        reversed_actions = actions[::-1]
+
+        all_actions = []
+
+        for player in self.env.players:
+            controller = self.controllers[player.team]
+            if controller is None:
+                action = reversed_actions.pop()
+            else:
+                action = controller(player, self.env)
+
+            all_actions.append(action)
+
+        obs, rewards, dones, infos = self.env.step(all_actions)
+
+        return obs[self.player_filter],\
+            rewards[self.player_filter],\
+            dones[self.player_filter],\
+            [infos[i] for i in self.player_filter]
 
     def reset(self):
 
-        return super().reset()
+        obs = self.env.reset()
+
+        # figure out which players to pass through
+        self.player_filter = []
+        for player in self.env.players:
+            if self.controllers[player.team] is None:
+                self.player_filter.append(player.index)
+
+        return obs[self.player_filter]
+
+    def render(self, mode='human', **kwargs):
+        return self.env.render(mode, **kwargs)
+
+    @property
+    def n_players(self):
+        return self._n_players
+
+    # pass these through
+
+    @property
+    def scenario(self):
+        return self.env.scenario
 
 
+def stand_still(player:RTG_Player, env:RescueTheGeneralEnv):
+    """
+    Agent presses random keys
+    :return: the action
+    """
+    return rtg.ACTION_NOOP
 
-def seek_and_destroy(player_vision, env):
+def random(player:RTG_Player, env:RescueTheGeneralEnv):
+    """
+    Agent presses random keys
+    :return: the action
+    """
+    return np.random.choice(range(env.action_space.n))
+
+def wander(player:RTG_Player, env:RescueTheGeneralEnv):
+    """
+    Agent wanders around map
+    :return: the action
+    """
+    return np.random.choice(rtg.MOVE_ACTIONS)
+
+def stand_and_shoot(player:RTG_Player, env:RescueTheGeneralEnv):
+    """
+    Agent wanders around map
+    :return: the action
+    """
+    return np.random.choice(rtg.SHOOT_ACTIONS)
+
+def save_general(player:RTG_Player, env:RescueTheGeneralEnv):
+    """
+    Agent rushes to general to save them
+    :return: the action
+    """
+    assert player.team == env.TEAM_BLUE
+
+    # move towards general
+    dx = player.x - env.general_location[0]
+    dy = player.y - env.general_location[1]
+
+    l1_distance = abs(dx) + abs(dy)
+
+    # we are standing next to general
+    if l1_distance == 1:
+        return rtg.ACTION_ACT
+    else:
+        return move_to(player, *env.general_location)
+
+def rush_general_cheat(player:RTG_Player, env:RescueTheGeneralEnv):
+    """
+    Agent rushes to general to kill them. (not this agent cheats)
+    :return: the action
+    """
+    assert player.team != env.TEAM_BLUE
+
+    shoot_action = fire_at(player, env, *env.general_location)
+    if shoot_action != rtg.ACTION_NOOP:
+        return shoot_action
+    else:
+        return move_to(player, *env.general_location)
+
+
+def rush_general(player:RTG_Player, env:RescueTheGeneralEnv):
+    """
+    Agent moves randomly until they see the general they they rush / shoot them
+    :return: the action
+    """
+    assert player.team != env.TEAM_BLUE
+
+    dx = player.x - env.general_location[0]
+    dy = player.y - env.general_location[1]
+
+    general_is_visible = abs(dx) + abs(dy) <= env.scenario.player_view_distance
+
+    if general_is_visible:
+        return rush_general_cheat(player, env)
+    else:
+        return wander(player, env)
+
+#
+# Helper functions
+#
+
+
+def seek_and_destroy(player, env):
     """
     Roam around map looking for enemy players to destroy
     :return:
@@ -40,38 +182,59 @@ def seek_and_destroy(player_vision, env):
 
     pass
 
+def fire_at(player: RTG_Player, env: RescueTheGeneralEnv, target_x, target_y):
+    """
+    Returns action to shoot at target, or no-op if target can not be hit.
+    :param player:
+    :param target_x:
+    :param target_y:
+    :return:
+    """
 
-def random(player_vision, env):
-    """
-    Agent presses random keys
-    :return: the action
-    """
-    pass
+    dx = player.x - target_x
+    dy = player.y - target_y
 
-def wander(player_vision, env):
-    """
-    Agent wanders around map
-    :return: the action
-    """
-    pass
+    if dy == 0:
+        if -env.scenario.player_shoot_range <= dx < 0:
+            return rtg.ACTION_SHOOT_LEFT
+        elif env.scenario.player_shoot_range >= dx > 0:
+            return rtg.ACTION_SHOOT_RIGHT
 
-def follow(player_vision, env):
+    if dx == 0:
+        if -env.scenario.player_shoot_range <= dy < 0:
+            return rtg.ACTION_SHOOT_UP
+        elif env.scenario.player_shoot_range >= dy > 0:
+            return rtg.ACTION_SHOOT_DOWN
+
+    return rtg.ACTION_NOOP
+
+
+def move_to(player:RTG_Player, target_x, target_y):
+
+    # move towards general
+    dx = player.x - target_x
+    dy = player.y - target_y
+
+    # move closer to general
+    if abs(dx) >= abs(dy):
+        if dx > 0:
+            return rtg.ACTION_MOVE_LEFT
+        else:
+            return rtg.ACTION_MOVE_RIGHT
+    else:
+        if dy > 0:
+            return rtg.ACTION_MOVE_UP
+        else:
+            return rtg.ACTION_MOVE_DOWN
+
+
+#
+# Not done yet
+#
+
+def follow(player, env):
     """
     Agent tries to follow other agents
-    :return: the action
-    """
-    pass
-
-def save_general(player_vision, env):
-    """
-    Agent rushes to general to save them
-    :return: the action
-    """
-    pass
-
-def rush_general(player_vision, env):
-    """
-    Agent rushes to general to hill them
     :return: the action
     """
     pass
