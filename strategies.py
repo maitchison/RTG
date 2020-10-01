@@ -120,16 +120,14 @@ def save_general(player:RTG_Player, env:RescueTheGeneralEnv):
 
     # move towards general, but offset a little
     # note right now this will typically only move the general left
-    dx = player.x - (env.general_location[0] -1)
+    dx = player.x - env.general_location[0]
     dy = player.y - env.general_location[1]
 
-    l1_distance = abs(dx) + abs(dy)
-
-    # we are standing next to general
-    if l1_distance == 1:
+    # we are standing left of general
+    if (dx, dy) == (-1, 0):
         return rtg.ACTION_ACT
     else:
-        return move_to(player, *env.general_location)
+        return move_to(player, env.general_location[0]-1, env.general_location[1])
 
 def rush_general_cheat(player:RTG_Player, env:RescueTheGeneralEnv):
     """
