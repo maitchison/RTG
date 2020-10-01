@@ -75,6 +75,7 @@ class RescueTheGeneralScenario():
         self.player_counts = (4, 4, 4)
         self.battle_royale = False   # removes general from game, and adds kill rewards
         self.enable_signals = True
+        self.starting_locations = "together"
 
         # default is red knows red, but all others are hidden
         # all is all roles are hidden
@@ -204,7 +205,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         "full": {
             "description": "This is the default scenario.",
             "map_width": 42,
-            "map_height": 42,
+            "map_height": 42
         },
 
         "blue8": {
@@ -970,20 +971,35 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_tree_harvested *= 0
         self.stats_actions *= 0
 
+        # initialize players location
+        if self.scenario.starting_locations == "random":
 
-        # initialize players to random start locations, and assign initial health
-        general_filter = lambda p: \
-            abs(p[0] - self.general_location[0]) > self.scenario.player_view_distance and \
-            abs(p[1] - self.general_location[1]) > self.scenario.player_view_distance
+            # players are placed randomly around the map
+            start_locations = [all_locations[i] for i in np.random.choice(range(len(all_locations)), size=self.n_players)]
 
-        # make sure red doesn't start in vision of general
-        red_players = self.scenario.player_counts[self.TEAM_RED]
-        other_players = (self.scenario.player_counts[self.TEAM_GREEN] + self.scenario.player_counts[self.TEAM_BLUE])
-        valid_red_start_locations = list(filter(general_filter, all_locations))
-        red_start_locations = [valid_red_start_locations[idx] for idx in np.random.choice(len(valid_red_start_locations), size=red_players, replace=False)]
-        valid_other_start_locations = list(set(all_locations) - set(red_start_locations))
-        other_start_locations = [valid_other_start_locations[idx] for idx in np.random.choice(len(valid_other_start_locations), size=other_players, replace=False)]
+        elif self.scenario.starting_locations == "together":
+            # players are place together somewhere far away from the general
 
+            general_filter = lambda p: \
+                abs(p[0] - self.general_location[0]) > self.scenario.player_view_distance+3 and \
+                abs(p[1] - self.general_location[1]) > self.scenario.player_view_distance+3
+
+            assert self.n_players <= 16, "This method of initializing starting locations only works with 16 or less players."
+
+            valid_start_locations = list(filter(general_filter, all_locations))
+            start_location_center = valid_start_locations[np.random.choice(range(len(valid_start_locations)))]
+            start_locations = []
+            for dx in range(-3, 3+1):
+                for dy in range(-3, 3+1):
+                    x, y = start_location_center[0]+dx, start_location_center[1]+dy
+                    if 0 <= x < self.scenario.map_width:
+                        if 0 <= y < self.scenario.map_height:
+                            start_locations.append((x, y))
+            start_locations = [start_locations[i] for i in np.random.choice(range(len(start_locations)), self.n_players)]
+        else:
+            raise Exception(f"Invalid starting location mode {self.scenario.starting_locations}")
+
+        # setup the rest of the game
         self.counter = 0
         self.game_counter += 1
 
@@ -992,11 +1008,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         ids = list(range(self.n_players))
         np.random.shuffle(ids)
 
-        # setup the players
+        # initialize the players
         for id, player in zip(ids, self.players):
 
             player.public_id = id
-            player.x, player.y = red_start_locations.pop() if player.team == self.TEAM_RED else other_start_locations.pop()
+            player.x, player.y = start_locations.pop()
 
             self.player_lookup[player.x, player.y] = player.index
             player.health = self.scenario.player_initial_health

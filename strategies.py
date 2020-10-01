@@ -118,8 +118,9 @@ def save_general(player:RTG_Player, env:RescueTheGeneralEnv):
     """
     assert player.team == env.TEAM_BLUE
 
-    # move towards general
-    dx = player.x - env.general_location[0]
+    # move towards general, but offset a little
+    # note right now this will typically only move the general left
+    dx = player.x - (env.general_location[0] -1)
     dy = player.y - env.general_location[1]
 
     l1_distance = abs(dx) + abs(dy)
