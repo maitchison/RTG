@@ -171,7 +171,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     DEAD_COLOR = np.asarray([0, 0, 0], dtype=np.uint8)
 
     ID_COLOR = np.asarray(
-        [np.asarray(plt.cm.tab20(i)[:3])*255 for i in range(12)]
+        [np.asarray(plt.cm.tab20(i)[:3])*255 for i in range(20)]
     , dtype=np.uint8)
 
     TEAM_COLOR = np.asarray([
@@ -1106,12 +1106,20 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         frame = np.zeros((gw+pw*grid_width, max(gh, ph*grid_height), 3), np.uint8)
         self._draw(frame, 0, 0, global_frame)
+
+        # this just puts players in id order, so we can keep track of which color learns which strategies
+        ids = []
+        for player in self.players:
+            ids.append((player.public_id, player.index))
+        ids = sorted(ids)
+        index_order = [index for id, index in ids]
+
         i = 0
         for x in range(grid_width):
             for y in range(grid_height):
                 # draw a darker version of player observations so they don't distract too much
                 if i < len(player_frames):
-                    self._draw(frame, gw + pw*x, ph*y, player_frames[i] * 0.75)
+                    self._draw(frame, gw + pw*x, ph*y, player_frames[index_order[i]] * 0.75)
                 i = i + 1
 
         # add video padding
@@ -1136,25 +1144,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             return self._render_rgb(use_location=use_location)
         else:
             raise ValueError(f"Invalid render mode {mode}")
-
-
-class RTG_ScriptedEnv(RescueTheGeneralEnv):
-    """
-    Allows some players within the RTG environment to be scripted
-    """
-
-    def __init__(self, scenario="full"):
-        super().__init__(scenario)
-
-    def step(self, actions):
-        pass
-
-    def reset(self):
-
-        return super().reset()
-
-        # work on the mapping from input actions to this environment
-
 
 
 
