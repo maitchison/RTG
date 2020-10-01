@@ -204,12 +204,24 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
     SCENARIOS = {
         "full": {
-            "description": "This is the default scenario."
+            "description": "This is the default scenario.",
+            "map_width": 42,
+            "map_height": 42,
         },
 
         "blue8": {
             "description": "Eight blue two red, no green, default map",
             "player_counts": (2, 0, 8),
+        },
+
+        "r2g2": {
+            "description": "Two red player and two green players on medium map",
+            "map_width": 32,
+            "map_height": 32,
+            "player_counts": (2, 0, 2),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+            "timeout": 1000
         },
 
         "red2": {
