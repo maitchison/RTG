@@ -897,7 +897,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 )
 
         # in the global view we paint general on-top of soldiers so we always know where he is
-        self._draw_general(obs, (self._map_padding, self._map_padding))
+        if observer_id == -1:
+            self._draw_general(obs, (self._map_padding, self._map_padding))
 
         # ego centric view
         if observer_id >= 0:
