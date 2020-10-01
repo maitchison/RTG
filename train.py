@@ -18,7 +18,7 @@ tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 from rescue import RescueTheGeneralEnv
 from MARL import MultiAgentVecEnv
-from tools import load_results, get_score, get_score_alt
+from tools import load_results, get_score, get_score_alt, export_graph
 
 import pickle
 import uuid
@@ -61,6 +61,7 @@ class Config():
         self.parallel_envs = int()
         self.algo_params = dict()
         self.algo = str()
+        self.force_cpu = bool()
 
     def __str__(self):
         return str(dict(vars(self).items()))
@@ -76,10 +77,17 @@ class Config():
         self.algo_params.update(literal_eval(args.algo_params))
         self.uuid = uuid.uuid4().hex[-8:]
         self.log_folder = f"run/{args.run} [{self.uuid}]"
+        self.force_cpu = args.force_cpu
         self.algo = args.algo
 
         if self.device.lower() != "auto":
             os.environ["CUDA_VISIBLE_DEVICES"] = self.device
+
+        # Set CPU as available physical device
+        if config.force_cpu:
+            print("Forcing CPU")
+            my_devices = tf.config.experimental.list_physical_devices(device_type='CPU')
+            tf.config.experimental.set_visible_devices(devices=my_devices, device_type='CPU')
 
 
 def export_video(filename, model):
@@ -213,6 +221,7 @@ def train_model():
             else:
                 print(".", end='', flush=True)
 
+            # this is needed to stop a memory leak
             gc.collect()
 
         print()
@@ -221,7 +230,7 @@ def train_model():
         for env in vec_env.envs:
             env.write_log_buffer()
 
-        print_scores()
+        print_scores(epoch=epoch)
 
     model.save(f"{config.log_folder}/model_final.p")
     export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", model)
@@ -341,16 +350,16 @@ def run_benchmark():
     for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
         bench_model(model_name)
 
-def print_scores():
-    """ Print current scores"""
+def print_scores(epoch=None):
+    """ Print current scores, also makes a plot"""
     try:
         results = load_results(config.log_folder)
+        scores = tuple(round(get_score(results, team), 1) for team in ["red", "green", "blue"])
+        print(f"Team scores: {scores}")
+        export_graph(config.log_folder, epoch=epoch)
     except:
         # this usually just means results have not generated yet
-        return
-
-    scores = tuple(round(get_score(results, team), 1) for team in ["red", "green", "blue"])
-    print(f"Team scores: {scores}")
+        pass
 
 def regression_test():
 
@@ -412,6 +421,7 @@ def main():
     parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=100)
     parser.add_argument('--model', type=str, help="model to use [cnn_lstm_default|cnn_lstm_fast]", default="cnn_lstm_default")
     parser.add_argument('--algo', type=str, help="algorithm to use for training [ppo|marl]", default="ppo")
+    parser.add_argument('--force_cpu', type=bool, default=False)
 
     parser.add_argument('--algo_params', type=str, default="{}")
     parser.add_argument('--parallel_envs', type=int, default=32)

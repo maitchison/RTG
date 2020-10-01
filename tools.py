@@ -3,6 +3,7 @@ import pickle
 import matplotlib.pyplot as plt
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 
 def ema(X, gamma='auto'):
     if gamma == "auto":
@@ -24,6 +25,32 @@ def parse(s):
         return x
     except:
         return s
+
+LAST_PLOT_FILENAME = None
+
+def export_graph(path, epoch=None):
+    """
+    Loads scores for experiment in given path and exports a PNG plot
+    :param path:
+    :return:
+    """
+    global LAST_PLOT_FILENAME
+    results = load_results(path)
+    y_axis = ("score_red", "score_green", "score_blue")
+    plt.figure(figsize=(12,8)) # make it big
+    plot_graph(results, path, y_axis=y_axis, hold=True)
+    scores = tuple(round(get_score(results, team), 2) for team in ["red", "green", "blue"])
+    end_tag = "" if epoch is None else f"[{epoch}]"
+    filename = os.path.join(path, f"results {scores} {end_tag}.png")
+
+    plt.savefig(filename, dpi=300)
+
+    # clean up previous plot
+    if LAST_PLOT_FILENAME is not None:
+        os.remove(LAST_PLOT_FILENAME)
+
+    LAST_PLOT_FILENAME = filename
+
 
 def plot_experiment(path, plots=(("score_red", "score_green", "score_blue"), ("game_length",)), **kwargs):
     print("=" * 60)
@@ -107,7 +134,7 @@ def load_results(path):
 
     return data
 
-def plot_graph(data, title, xlim=None, smooth='auto', y_axis=("score_red", "score_green", "score_blue")):
+def plot_graph(data, title, xlim=None, smooth='auto', y_axis=("score_red", "score_green", "score_blue"), hold=False):
     color_map = {
         "score_red": "lightcoral",
         "score_green": "lightgreen",
@@ -198,7 +225,8 @@ def plot_graph(data, title, xlim=None, smooth='auto', y_axis=("score_red", "scor
     plt.grid()
     plt.xlabel("agent step (M)")
     plt.ylabel(y_units_map.get(y_axis[0], ""))
-    plt.show()
+    if not hold:
+        plt.show()
 
 
 vs_order = []
