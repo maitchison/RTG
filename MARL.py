@@ -93,6 +93,7 @@ class MultiAgentVecEnv(VecEnv):
                 # save final terminal observation for later
                 for this_info, this_obs in zip(env_infos, env_obs):
                     this_info['terminal_observation'] = this_obs
+                    this_info['team_scores'] = env.team_scores.copy()
                 env_obs = env.reset()
 
             obs.extend(env_obs)

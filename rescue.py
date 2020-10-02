@@ -1,5 +1,3 @@
-#cython: language_level=3
-
 """
 Rescue the General Environment
 
@@ -303,6 +301,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.players[index].team = team
 
         self.team_scores = np.zeros([3], dtype=np.float)
+
+        self.previous_team_scores = np.zeros([3], dtype=np.float)
+        self.previous_outcome = str()
 
         # create map, and a lookup (just for optimization
         self.map = np.zeros((self.scenario.map_width, self.scenario.map_height), dtype=np.int)
@@ -645,7 +646,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 # general end of game tag, this shouldn't happen
                 self.outcome = "complete"
 
-            self.write_stats_to_log()
+            if self.enable_logging:
+                self.write_stats_to_log()
             dones[:] = True
 
             #print(f"{self.name}: round finished at step {self.counter}", self.team_scores, rewards)
@@ -833,11 +835,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         )
 
         # handle logging
-        if self.enable_logging is not None:
-            LOG_BUFFER.append(output_string)
-            time_since_last_log_write = time.time() - LOG_BUFFER_LAST_WRITE_TIME
-            if time_since_last_log_write > 120:
-                write_log_buffer()
+        LOG_BUFFER.append(output_string)
+        time_since_last_log_write = time.time() - LOG_BUFFER_LAST_WRITE_TIME
+        if time_since_last_log_write > 120:
+            write_log_buffer()
 
     def _get_player_observation(self, observer_id):
         """
@@ -942,6 +943,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         """
 
         #print(f"{self.name}: reset at {self.counter}")
+
+        # save previous result so we we reset we still have this info.
+        self.previous_team_scores = self.team_scores.copy()
+        self.previous_outcome = self.outcome
 
         # general location
         self.general_location = (np.random.randint(3, self.scenario.map_width - 2), np.random.randint(3, self.scenario.map_height - 2))

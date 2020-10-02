@@ -6,6 +6,9 @@ Author: Matthew Aitchison
 """
 
 import os
+
+from stable_baselines.common import ActorCriticRLModel
+
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -30,6 +33,8 @@ import time
 import shutil
 from ast import literal_eval
 import gc
+import csv
+import matplotlib.pyplot as plt
 
 import strategies
 from strategies import RTG_ScriptedEnv
@@ -66,6 +71,7 @@ class Config():
         self.run = str()
         self.force_cpu = bool()
         self.script_blue_team = str()
+        self.export_video = bool()
 
     def __str__(self):
         lines = []
@@ -87,7 +93,10 @@ class Config():
                 vars(self)[arg_k] = arg_v
 
         self.uuid = uuid.uuid4().hex[-8:]
-        self.log_folder = f"run/{args.run} [{self.uuid}]"
+        if args.mode == "evaluate":
+            self.log_folder = f"run/{args.run}/evaluate [{self.uuid}]"
+        else:
+            self.log_folder = f"run/{args.run} [{self.uuid}]"
         rescue.LOG_FILENAME = self.log_folder
         self.algo_params = self.default_algo_params.copy()
         self.algo_params.update(literal_eval(args.algo_params))
@@ -111,6 +120,79 @@ class Config():
             tf.config.experimental.set_visible_devices(devices=my_devices, device_type='CPU')
 
 
+def flexiable_step(model, env_states, agent_states, env_dones):
+    """
+    Stable-baselines has a limitation that models must always have the same batch size.
+    Sometimes we want to run the model with more or less agents. This function allows for that.
+
+    This would be much better if the model simply supported a flexiable input size.
+
+    :param env_states:
+    :param agent_states:
+    :param env_dones:
+    :return:
+    """
+
+    required_n = len(env_states)
+
+    # note, this requirement can be relaxed in the future by running the model multiple times
+    assert required_n < model.n_envs, f"Tried to process {required_n} agents but model supports a maximum of {model.n_envs}"
+
+    env_state_shape = env_states[0].shape
+    agent_state_shape = agent_states[0].shape
+
+    padded_states = np.zeros((model.n_envs, *env_state_shape), dtype=env_states.dtype)
+    padded_agent_states =  np.zeros((model.n_envs, *agent_state_shape), dtype=agent_states.dtype)
+    padded_dones = np.zeros((model.n_envs,), dtype=np.bool)
+
+    padded_states[:required_n] = env_states
+    padded_agent_states[:required_n] = agent_states
+    padded_dones[:required_n] = env_dones
+
+    actions, _, agent_states, _ = model.step(padded_states, padded_agent_states, padded_dones)
+
+    return actions[:required_n], agent_states[:required_n]
+
+
+def evaluate_model(model:ActorCriticRLModel, vec_env:MultiAgentVecEnv, trials=100):
+    """
+    Evaluate given model in given environment.
+    :param model: the model to evaluate
+    :param vec_env: the vector environment to evaluate on
+    :param trails: the total number of trails to complete
+    :return: team scores for model.
+    """
+
+    env_states = vec_env.reset()
+
+    agent_states = model.initial_state[:vec_env.num_envs]
+
+    env_dones = np.zeros([len(agent_states)], dtype=np.bool)
+
+    # play the game...
+    results = []
+    while len(results) < trials:
+        actions, agent_states = flexiable_step(model, env_states, agent_states, env_dones)
+        env_states, env_rewards, env_dones, env_infos = vec_env.step(actions)
+
+        # look for finished games
+        for env in vec_env.envs:
+            if env.counter == 0:
+                results.append(env.previous_team_scores)
+
+    # sometimes multiple environments will finish at the same time, so make sure we only use the correct number of
+    # trials
+    if len(results) > trials:
+        results = results[:trials]
+
+    # collate results
+    red_score = np.mean([r for r, g, b in results])
+    green_score = np.mean([g for r, g, b in results])
+    blue_score = np.mean([b for r, g, b in results])
+
+    return red_score, green_score, blue_score
+
+
 def export_video(filename, model):
     """
     Exports a movie with agents playing randomly.
@@ -120,7 +202,7 @@ def export_video(filename, model):
 
     # make a new environment so we don't mess the settings up on the one used for training.
     # it also makes sure that results from the video are not included in the log
-    vec_env = make_env(config.scenario, parallel_envs=1)
+    vec_env = make_env(config.scenario, parallel_envs=1, name="video")
 
     env_states = vec_env.reset()
     env = vec_env.envs[0]
@@ -134,7 +216,7 @@ def export_video(filename, model):
     # create video recorder
     video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 15, (width, height), isColor=True)
 
-    # don't like it that this is hard coded... not sure how to init the states?
+    # get initial states
     agent_states = model.initial_state
 
     # this is required to make sure the last frame is visible
@@ -179,19 +261,20 @@ def export_video(filename, model):
     except:
         print("Warning: could not rename video file.")
 
-def make_env(scenario = None, parallel_envs = None, enable_logging=False):
+def make_env(scenario=None, parallel_envs=None, script_blue_team=None, enable_logging=False, name="env"):
     scenario = scenario or config.scenario
     parallel_envs = parallel_envs or config.parallel_envs
+    script_blue_team = script_blue_team or config.script_blue_team
     # our MARL environments are handled like vectorized environments
 
-    if config.script_blue_team is not None:
-        if config.script_blue_team == "save_general":
+    if script_blue_team is not None:
+        if script_blue_team == "save_general":
             strat = strategies.save_general
         else:
-            raise Exception(f"Invalid strategy {config.script_blue_team}")
-        make_env_fn = lambda counter: RTG_ScriptedEnv(scenario=scenario, name=f"{counter:<2.0f}", blue_strategy=strat, enable_logging=enable_logging)
+            raise Exception(f"Invalid strategy {script_blue_team}")
+        make_env_fn = lambda counter: RTG_ScriptedEnv(scenario=scenario, name=f"{name}_{counter:<2.0f}", blue_strategy=strat, enable_logging=enable_logging)
     else:
-        make_env_fn = lambda counter: RescueTheGeneralEnv(scenario=scenario, name=f"{counter:<2.0f}", enable_logging=enable_logging)
+        make_env_fn = lambda counter: RescueTheGeneralEnv(scenario=scenario, name=f"{name}_{counter:<2.0f}", enable_logging=enable_logging)
 
     vec_env = MultiAgentVecEnv([make_env_fn for _ in range(parallel_envs)])
 
@@ -214,7 +297,7 @@ def train_model():
     with open(f"{config.log_folder}/config.txt", "w") as f:
         f.write(str(config))
 
-    vec_env = make_env(enable_logging=True)
+    vec_env = make_env(name="train")
 
     print("Scenario parameters:")
     print(vec_env.envs[0].scenario)
@@ -232,7 +315,8 @@ def train_model():
 
     for epoch in range(0, config.epochs):
 
-        export_video(f"{config.log_folder}/ppo_run_{epoch:03}_M.mp4", model)
+        if config.export_video:
+            export_video(f"{config.log_folder}/ppo_run_{epoch:03}_M.mp4", model)
         model.save(f"{config.log_folder}/model_{epoch:03}_M.p")
         print()
         print(f"Training epoch {epoch} on experiment {config.log_folder}")
@@ -266,11 +350,11 @@ def train_model():
 
         # flush the log buffer and print scores
         rescue.write_log_buffer()
-
         print_scores(epoch=epoch)
 
     model.save(f"{config.log_folder}/model_final.p")
-    export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", model)
+    if config.export_video:
+        export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", model)
 
     time_taken = time.time() - start_time
     print(f"Finished training after {time_taken/60/60:.1f}h.")
@@ -322,7 +406,7 @@ def run_benchmark():
 
     def bench_scenario(scenario_name):
 
-        vec_env = make_env(scenario_name)
+        vec_env = make_env(scenario_name, name="benchmark")
 
         _ = vec_env.reset()
         steps = 0
@@ -340,7 +424,7 @@ def run_benchmark():
 
     def bench_training(scenario_name, model_name):
 
-        vec_env = make_env(scenario_name)
+        vec_env = make_env(scenario_name, name="benchmark")
         model = make_model(vec_env, model_name, verbose=0)
 
         # just to warm it up
@@ -398,6 +482,69 @@ def print_scores(epoch=None):
         # this usually just means results have not generated yet
         pass
 
+def load_model(filename, env=None):
+    """
+    Loads model from given epoch checkpoint
+    :param filename:
+    :return:
+    """
+    if config.algo == "ppo":
+        model = PPO2.load(filename, env)
+    elif config.algo == "marl":
+        model = PPO_MA.load(filename, env)
+    else:
+        raise Exception(f"Invalid algorithm name {config.algo}")
+
+    return model
+
+def run_evaluation():
+    """
+    Evaluates model over time against a predefined scripted behavour
+    :return:
+    """
+
+    # make a copy of the environment testing parameters
+    with open(f"{config.log_folder}/config.txt", "w") as f:
+        f.write(str(config))
+
+    test_env = make_env(name="eval")
+
+    results = []
+
+    epoch = 0
+    while True:
+
+        # load the correct model
+        filename = f"run/{config.run}/model_{epoch:03}_M.p"
+        if not os.path.exists(filename):
+            # no more models, so finish up.
+            break
+        else:
+            model = load_model(filename)
+
+        # generate results
+        scores = evaluate_model(model, test_env, trials=100)
+        results.append((epoch, *scores))
+
+        print(f"{epoch:03}: {scores}")
+
+        # generate a video
+        if config.export_video:
+            export_video(f"{config.log_folder}/evaluation_{epoch:03}_M.mp4", model)
+
+        # flush buffer
+        rescue.write_log_buffer()
+
+        # plot a graph, why not
+        try:
+            export_graph(config.log_folder, epoch=epoch)
+        except:
+            # not worried about this not working...
+            pass
+
+        epoch += 1
+
+
 def regression_test():
 
     print("Performing regression test, this could take some time.")
@@ -410,8 +557,7 @@ def regression_test():
         os.makedirs(destination_folder, exist_ok=True)
 
         # our MARL environments are handled like vectorized environments
-
-        make_env = lambda counter: RescueTheGeneralEnv(scenario=scenario_name, name=f"{counter:<2.0f}")
+        make_env = lambda counter: RescueTheGeneralEnv(scenario=scenario_name, name=f"test_{counter:<2.0f}")
         vec_env = MultiAgentVecEnv([make_env for _ in range(config.parallel_envs)])
 
         model = make_model(vec_env, verbose=0)
@@ -423,8 +569,7 @@ def regression_test():
         export_video(f"{destination_folder}/{scenario_name}.mp4", model)
 
         # flush the log buffer
-        for env in vec_env.envs:
-            env.write_log_buffer()
+        rescue.write_log_buffer()
 
         # check scores
         results = load_results(destination_folder)
@@ -451,7 +596,7 @@ def regression_test():
 def main():
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, help="[bench|train|test]")
+    parser.add_argument('mode', type=str, help="[bench|train|test|evaluate]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
     parser.add_argument('--device', type=str, help="[0|1|2|3|AUTO]", default="auto")
     parser.add_argument('--scenario', type=str, help="[full|red2]", default="full")
@@ -460,6 +605,7 @@ def main():
     parser.add_argument('--algo', type=str, help="algorithm to use for training [ppo|marl]", default="ppo")
     parser.add_argument('--force_cpu', type=bool, default=False)
     parser.add_argument('--script_blue_team', type=str, default=None)
+    parser.add_argument('--export_video', type=bool, default=True)
 
     parser.add_argument('--algo_params', type=str, default="{}")
     parser.add_argument('--parallel_envs', type=int, default=32)
@@ -478,6 +624,8 @@ def main():
         train_model()
     elif args.mode == "test":
         regression_test()
+    elif args.mode == "evaluate":
+        run_evaluation()
     else:
         raise Exception(f"Invalid mode {args.mode}")
 

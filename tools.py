@@ -33,22 +33,27 @@ def export_graph(path, epoch=None):
     :param path:
     :return:
     """
-    global LAST_PLOT_FILENAME
-    results = load_results(path)
-    y_axis = ("score_red", "score_green", "score_blue")
-    plt.figure(figsize=(12,8)) # make it big
-    plot_graph(results, path, y_axis=y_axis, hold=True)
-    scores = tuple(round(get_score(results, team), 2) for team in ["red", "green", "blue"])
-    end_tag = "" if epoch is None else f"[{epoch}]"
-    filename = os.path.join(path, f"results {scores} {end_tag}.png")
 
-    plt.savefig(filename, dpi=300)
+    try:
+        global LAST_PLOT_FILENAME
+        results = load_results(path)
+        y_axis = ("score_red", "score_green", "score_blue")
+        plt.figure(figsize=(12,8)) # make it big
+        plot_graph(results, path, y_axis=y_axis, hold=True)
+        scores = tuple(round(get_score(results, team), 2) for team in ["red", "green", "blue"])
+        end_tag = "" if epoch is None else f"[{epoch}]"
+        filename = os.path.join(path, f"results {scores} {end_tag}.png")
 
-    # clean up previous plot
-    if LAST_PLOT_FILENAME is not None:
-        os.remove(LAST_PLOT_FILENAME)
+        plt.savefig(filename, dpi=300)
 
-    LAST_PLOT_FILENAME = filename
+        # clean up previous plot
+        if LAST_PLOT_FILENAME is not None:
+            os.remove(LAST_PLOT_FILENAME)
+
+        LAST_PLOT_FILENAME = filename
+
+    finally:
+        plt.close()
 
 
 def plot_experiment(path, plots=(("score_red", "score_green", "score_blue"), ("game_length",)), **kwargs):
@@ -59,6 +64,7 @@ def plot_experiment(path, plots=(("score_red", "score_green", "score_blue"), ("g
     results = load_results(path)
 
     for y_axis in plots:
+        plt.figure(figsize=(12, 4))  # make it big
         plot_graph(results, path, y_axis=y_axis, **kwargs)
 
     scores = tuple(round(get_score(results, team), 2) for team in ["red", "green", "blue"])
