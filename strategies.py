@@ -156,9 +156,24 @@ def rush_general(player:RTG_Player, env:RescueTheGeneralEnv):
     if general_is_visible:
         return rush_general_cheat(player, env)
     else:
-        return wander(player, env)
+        # pick a random direction to travel in
+        if "rush_general_destination" not in player.custom_data:
+            player.custom_data["rush_general_destination"] = (
+                np.random.randint(0, env.scenario.map_width),
+                np.random.randint(0, env.scenario.map_height)
+            )
+            player.custom_data["rush_general_timer"] = 100
 
-# -------------------------------------------------
+        loc_x, loc_y = player.custom_data["rush_general_destination"]
+        action = move_to(player, loc_x, loc_y)
+        player.custom_data["rush_general_timer"] -= 1
+        # when we reach the spot, or when a timeout occurs, move to next random location
+        if action == rtg.ACTION_NOOP or player.custom_data["rush_general_timer"] <= 0:
+            del player.custom_data["rush_general_destination"]
+
+        return action
+
+    # -------------------------------------------------
 # Helper functions
 # -------------------------------------------------
 
@@ -176,15 +191,15 @@ def fire_at(player: RTG_Player, env: RescueTheGeneralEnv, target_x, target_y):
 
     if dy == 0:
         if -env.scenario.player_shoot_range <= dx < 0:
-            return rtg.ACTION_SHOOT_LEFT
-        elif env.scenario.player_shoot_range >= dx > 0:
             return rtg.ACTION_SHOOT_RIGHT
+        elif env.scenario.player_shoot_range >= dx > 0:
+            return rtg.ACTION_SHOOT_LEFT
 
     if dx == 0:
         if -env.scenario.player_shoot_range <= dy < 0:
-            return rtg.ACTION_SHOOT_UP
-        elif env.scenario.player_shoot_range >= dy > 0:
             return rtg.ACTION_SHOOT_DOWN
+        elif env.scenario.player_shoot_range >= dy > 0:
+            return rtg.ACTION_SHOOT_UP
 
     return rtg.ACTION_NOOP
 
@@ -194,6 +209,9 @@ def move_to(player:RTG_Player, target_x, target_y):
     # move towards general
     dx = player.x - target_x
     dy = player.y - target_y
+
+    if dx == dy == 0:
+        return rtg.ACTION_NOOP
 
     # move closer to general
     if abs(dx) >= abs(dy):

@@ -405,7 +405,7 @@ def train_model():
 
             try:
                 log_file = os.path.join(sub_folder, f"env_0.csv")
-                export_graph(log_file, epoch=epoch, png_base_name=f"train_{index}")
+                export_graph(log_file, epoch=epoch, png_base_name=f"eval_{index}")
             except Exception as e:
                 # not worried about this not working...
                 print(e)

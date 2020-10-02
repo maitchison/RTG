@@ -112,6 +112,7 @@ class RTG_Player():
         self.action = int()
         self.shooting_timeout = int()
         self.scenario = scenario
+        self.custom_data = dict()
 
     @property
     def team_color(self):
@@ -1022,6 +1023,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.player_lookup[player.x, player.y] = player.index
             player.health = self.scenario.player_initial_health
             player.shooting_timeout = self.scenario.shooting_timeout
+            player.custom_data = dict()
 
         return np.asarray(self._get_observations())
 
