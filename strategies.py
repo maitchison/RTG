@@ -82,7 +82,6 @@ class RTG_ScriptedEnv(Wrapper, MultiAgentEnv):
     def scenario(self):
         return self.env.scenario
 
-
 def stand_still(player:RTG_Player, env:RescueTheGeneralEnv):
     """
     Agent presses random keys
@@ -142,7 +141,6 @@ def rush_general_cheat(player:RTG_Player, env:RescueTheGeneralEnv):
     else:
         return move_to(player, *env.general_location)
 
-
 def rush_general(player:RTG_Player, env:RescueTheGeneralEnv):
     """
     Agent moves randomly until they see the general they they rush / shoot them
@@ -160,26 +158,9 @@ def rush_general(player:RTG_Player, env:RescueTheGeneralEnv):
     else:
         return wander(player, env)
 
-#
+# -------------------------------------------------
 # Helper functions
-#
-
-
-def seek_and_destroy(player, env):
-    """
-    Roam around map looking for enemy players to destroy
-    :return:
-    """
-
-    # randomly pick a spot and navigate to it
-
-    # if enemy target is vision path to them
-
-    # if enemy is shootable shoot them
-
-    # note: how to deal with gray targets
-
-    pass
+# -------------------------------------------------
 
 def fire_at(player: RTG_Player, env: RescueTheGeneralEnv, target_x, target_y):
     """
@@ -227,9 +208,25 @@ def move_to(player:RTG_Player, target_x, target_y):
             return rtg.ACTION_MOVE_DOWN
 
 
-#
+# -------------------------------------------------
 # Not done yet
-#
+# -------------------------------------------------
+
+def seek_and_destroy(player, env):
+    """
+    Roam around map looking for enemy players to destroy
+    :return:
+    """
+
+    # randomly pick a spot and navigate to it
+
+    # if enemy target is vision path to them
+
+    # if enemy is shootable shoot them
+
+    # note: how to deal with gray targets
+
+    pass
 
 def follow(player, env):
     """
@@ -245,3 +242,13 @@ def avoid(player_vision, env):
     :return: the action
     """
     pass
+
+register = {
+    'wander': wander,
+    'random': random,
+    'stand_still': stand_still,
+    'stand_and_shoot': stand_and_shoot,
+    'save_general': save_general,
+    'rush_general_cheat': rush_general_cheat,
+    'rush_general': rush_general
+}

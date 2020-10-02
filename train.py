@@ -202,7 +202,7 @@ def export_video(filename, model):
 
     # make a new environment so we don't mess the settings up on the one used for training.
     # it also makes sure that results from the video are not included in the log
-    vec_env = make_env(config.scenario, parallel_envs=1, name="video")
+    vec_env = make_env(config.scenario, parallel_envs=1, name="video", enable_logging=False)
 
     env_states = vec_env.reset()
     env = vec_env.envs[0]
@@ -261,15 +261,16 @@ def export_video(filename, model):
     except:
         print("Warning: could not rename video file.")
 
-def make_env(scenario=None, parallel_envs=None, script_blue_team=None, enable_logging=False, name="env"):
+def make_env(scenario=None, parallel_envs=None, script_blue_team=None, enable_logging=True, name="env"):
     scenario = scenario or config.scenario
     parallel_envs = parallel_envs or config.parallel_envs
     script_blue_team = script_blue_team or config.script_blue_team
     # our MARL environments are handled like vectorized environments
 
     if script_blue_team is not None:
-        if script_blue_team == "save_general":
-            strat = strategies.save_general
+        script_blue_team  = script_blue_team.lower()
+        if script_blue_team in strategies.register:
+            strat = strategies.register[script_blue_team]
         else:
             raise Exception(f"Invalid strategy {script_blue_team}")
         make_env_fn = lambda counter: RTG_ScriptedEnv(scenario=scenario, name=f"{name}_{counter:<2.0f}", blue_strategy=strat, enable_logging=enable_logging)
@@ -526,7 +527,7 @@ def run_evaluation():
         scores = evaluate_model(model, test_env, trials=100)
         results.append((epoch, *scores))
 
-        print(f"{epoch:03}: {scores}")
+        print(f"{epoch:03}: {tuple(round(score, 2) for score in scores)}")
 
         # generate a video
         if config.export_video:
@@ -538,9 +539,9 @@ def run_evaluation():
         # plot a graph, why not
         try:
             export_graph(config.log_folder, epoch=epoch)
-        except:
+        except Exception as e:
             # not worried about this not working...
-            pass
+            print(e)
 
         epoch += 1
 
