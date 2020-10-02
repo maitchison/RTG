@@ -23,6 +23,7 @@ from rescue import RescueTheGeneralEnv
 from MARL import MultiAgentVecEnv
 from tools import load_results, get_score, get_score_alt, export_graph
 
+from typing import Union, List
 import pickle
 import uuid
 import numpy as np
@@ -33,8 +34,6 @@ import time
 import shutil
 from ast import literal_eval
 import gc
-import csv
-import matplotlib.pyplot as plt
 
 import strategies
 from strategies import RTG_ScriptedEnv
@@ -44,6 +43,38 @@ from ppo_ma import PPO_MA
 from policy_ma import CnnLstmPolicy_MA
 import rescue
 from new_models import cnn_default, cnn_fast
+
+class ScenarioSetting():
+    """
+    Scenario paired with optional scripted behaviour for teams
+    """
+    def __init__(self, scenario_name, strategies):
+        self.scenario_name = scenario_name
+        self.strategies = strategies
+
+    @staticmethod
+    def parse(input):
+        """
+        Converts text into an array of scenarios
+        :param input:
+        :return:
+        """
+        if '[' not in input:
+            input = f"[['{input}', None, None, None]]"
+
+        input = literal_eval(input)
+
+        result = []
+
+        for scenario_info in input:
+            scenario = ScenarioSetting(scenario_info[0], scenario_info[1:4])
+            result.append(scenario)
+
+        return result
+
+    def __repr__(self):
+        array = [self.scenario_name, *self.strategies]
+        return str(array)
 
 class Config():
     """ Class to hold config files"""
@@ -61,7 +92,6 @@ class Config():
     def __init__(self):
         self.log_folder = str()
         self.device = str()
-        self.scenario = str()
         self.epochs = int()
         self.model = str()
         self.cpus = 1 if tf.test.is_gpu_available else None  # for GPU machines its best to use only 1 CPU core
@@ -72,6 +102,8 @@ class Config():
         self.force_cpu = bool()
         self.script_blue_team = str()
         self.export_video = bool()
+        self.train_scenarios = list()
+        self.eval_scenarios = list()
 
     def __str__(self):
         lines = []
@@ -79,7 +111,6 @@ class Config():
             key_string = k+":"
             lines.append(f"{key_string:<20}{v}")
         return "{\n"+("\n".join(lines))+"\n}"
-
 
     def setup(self, args):
 
@@ -101,14 +132,10 @@ class Config():
         self.algo_params = self.default_algo_params.copy()
         self.algo_params.update(literal_eval(args.algo_params))
 
-        # self.device = args.device
-        # self.scenario = args.scenario
-        # self.epochs = args.epochs
-        # self.model_name = args.model
-        # self.parallel_envs = args.parallel_envs
-        # self.force_cpu = args.force_cpu
-        # self.algo = args.algo
-        # self.script_blue_team = args.script_blue_team
+        # setup the scenarios... these are a bit complex now due to the scripted players
+        args.eval_scenarios = args.eval_scenarios or args.train_scenarios
+        config.train_scenarios = ScenarioSetting.parse(args.train_scenarios)
+        config.eval_scenarios = ScenarioSetting.parse(args.eval_scenarios)
 
         if self.device.lower() != "auto":
             os.environ["CUDA_VISIBLE_DEVICES"] = self.device
@@ -136,7 +163,7 @@ def flexiable_step(model, env_states, agent_states, env_dones):
     required_n = len(env_states)
 
     # note, this requirement can be relaxed in the future by running the model multiple times
-    assert required_n < model.n_envs, f"Tried to process {required_n} agents but model supports a maximum of {model.n_envs}"
+    assert required_n <= model.n_envs, f"Tried to process {required_n} agents but model supports a maximum of {model.n_envs}"
 
     env_state_shape = env_states[0].shape
     agent_state_shape = agent_states[0].shape
@@ -157,16 +184,14 @@ def flexiable_step(model, env_states, agent_states, env_dones):
 def evaluate_model(model:ActorCriticRLModel, vec_env:MultiAgentVecEnv, trials=100):
     """
     Evaluate given model in given environment.
-    :param model: the model to evaluate
-    :param vec_env: the vector environment to evaluate on
-    :param trails: the total number of trails to complete
-    :return: team scores for model.
+    :param model:
+    :param vec_env:
+    :param trials:
+    :return:
     """
 
     env_states = vec_env.reset()
-
     agent_states = model.initial_state[:vec_env.num_envs]
-
     env_dones = np.zeros([len(agent_states)], dtype=np.bool)
 
     # play the game...
@@ -193,16 +218,16 @@ def evaluate_model(model:ActorCriticRLModel, vec_env:MultiAgentVecEnv, trials=10
     return red_score, green_score, blue_score
 
 
-def export_video(filename, model):
+def export_video(filename, model, scenario):
     """
-    Exports a movie with agents playing randomly.
+    Exports a movie of model playing in given scenario
     """
 
     scale = 8
 
     # make a new environment so we don't mess the settings up on the one used for training.
     # it also makes sure that results from the video are not included in the log
-    vec_env = make_env(config.scenario, parallel_envs=1, name="video", enable_logging=False)
+    vec_env = make_env(scenario, parallel_envs=1, name="video")
 
     env_states = vec_env.reset()
     env = vec_env.envs[0]
@@ -261,29 +286,60 @@ def export_video(filename, model):
     except:
         print("Warning: could not rename video file.")
 
-def make_env(scenario=None, parallel_envs=None, script_blue_team=None, enable_logging=True, name="env"):
-    scenario = scenario or config.scenario
+def make_env(scenarios: Union[List[ScenarioSetting], ScenarioSetting, str], parallel_envs=None, log_path=None,
+             name="env"):
+    """
+    Creates a vectorized environment from given scenario specifications
+    :param scenarios: Either a string: e.g. "red2", in which case a single scenario with no scripting is used, or a
+        single ScriptedScenario, or a list of ScriptedScenarios
+    :param parallel_envs: Number of times to duplicate the environment(s)
+    :param enable_logging:
+    :param name:
+    :return:
+    """
+
+    # for convenience we allow non-list input, and string format
+    if type(scenarios) is ScenarioSetting:
+        scenarios = [scenarios]
+
+    if type(scenarios) is str:
+        scenarios = ScenarioSetting.parse(scenarios)
+
     parallel_envs = parallel_envs or config.parallel_envs
-    script_blue_team = script_blue_team or config.script_blue_team
-    # our MARL environments are handled like vectorized environments
 
-    if script_blue_team is not None:
-        script_blue_team  = script_blue_team.lower()
-        if script_blue_team in strategies.register:
-            strat = strategies.register[script_blue_team]
-        else:
-            raise Exception(f"Invalid strategy {script_blue_team}")
-        make_env_fn = lambda counter: RTG_ScriptedEnv(scenario=scenario, name=f"{name}_{counter:<2.0f}", blue_strategy=strat, enable_logging=enable_logging)
-    else:
-        make_env_fn = lambda counter: RescueTheGeneralEnv(scenario=scenario, name=f"{name}_{counter:<2.0f}", enable_logging=enable_logging)
+    env_functions = []
+    for _ in range(parallel_envs):
+        for index, scenario_setting in enumerate(scenarios):
 
-    vec_env = MultiAgentVecEnv([make_env_fn for _ in range(parallel_envs)])
+            # convert strategies names to strategy functions
+            strats = []
+            for strategy in scenario_setting.strategies:
+                if strategy is not None:
+                    strats.append(strategies.register[strategy])
+                else:
+                    strats.append(None)
 
+            if log_path is None:
+                log_file = None
+            else:
+                log_file = os.path.join(log_path, f"env_{index}.csv")
+
+            make_env_fn = lambda _strats=tuple(strats), _name=name, _scenario_setting=scenario_setting, _log_file=log_file: \
+                RTG_ScriptedEnv(
+                    scenario=_scenario_setting.scenario_name, name=_name,
+                    red_strategy=_strats[0],
+                    green_strategy=_strats[1],
+                    blue_strategy=_strats[2],
+                    log_file=_log_file
+                )
+            env_functions.append(make_env_fn)
+
+    vec_env = MultiAgentVecEnv(env_functions)
     return vec_env
 
 def train_model():
     """
-    Train PPO on the environment using the "other agents are environment" method.
+    Train model on the environment using the "other agents are environment" method.
     :return:
     """
 
@@ -298,15 +354,16 @@ def train_model():
     with open(f"{config.log_folder}/config.txt", "w") as f:
         f.write(str(config))
 
-    vec_env = make_env(name="train")
+    vec_env = make_env(config.train_scenarios, name="train", log_path=config.log_folder)
 
     print("Scenario parameters:")
-    print(vec_env.envs[0].scenario)
+    scenario_descriptions = set(str(env.scenario) for env in vec_env.envs)
+    for description in scenario_descriptions:
+        print(description)
     print("Config:")
     print(config)
 
     model = make_model(vec_env)
-
 
     print("="*60)
 
@@ -316,11 +373,47 @@ def train_model():
 
     for epoch in range(0, config.epochs):
 
-        if config.export_video:
-            export_video(f"{config.log_folder}/ppo_run_{epoch:03}_M.mp4", model)
-        model.save(f"{config.log_folder}/model_{epoch:03}_M.p")
         print()
         print(f"Training epoch {epoch} on experiment {config.log_folder}")
+
+        # perform evaluations (if required)
+        for index, eval_scenario in enumerate(config.eval_scenarios):
+
+            sub_folder = f"{config.log_folder}/eval_{index}"
+            os.makedirs(sub_folder, exist_ok=True)
+            results_file = os.path.join(sub_folder, "results.csv")
+
+            eval_env = make_env(eval_scenario, name="eval", log_path=sub_folder)
+            scores = evaluate_model(model, eval_env, trials=100)
+            rounded_scores = tuple(round(float(score), 1) for score in scores)
+
+            print(f" -evaluation against {eval_scenario} = {rounded_scores}")
+
+            # generate a video
+            if config.export_video:
+                export_video(f"{sub_folder}/evaluation_{epoch:03}_M.mp4", model, eval_scenario)
+
+            # write results to text file
+            if not os.path.exists(results_file):
+                with open(results_file, "w") as f:
+                    f.write("epoch, red_score, green_score, blue_score\n")
+            with open(results_file, "a+") as f:
+                f.write(f"{epoch}, {scores[0]}, {scores[1]}, {scores[2]}\n")
+
+            # flush buffer
+            rescue.flush_logs()
+
+            try:
+                log_file = os.path.join(sub_folder, f"env_0.csv")
+                export_graph(log_file, epoch=epoch, png_base_name=f"train_{index}")
+            except Exception as e:
+                # not worried about this not working...
+                print(e)
+
+        # export training video
+        if config.export_video:
+            export_video(f"{config.log_folder}/training_{epoch:03}_M.mp4", model, config.train_scenarios[0])
+        model.save(f"{config.log_folder}/model_{epoch:03}_M.p")
 
         sub_epoch = 0
 
@@ -331,7 +424,7 @@ def train_model():
             # run each batch individually. For large batch sizes this should be fine.
             learn_steps = model.n_batch
             start_epoch_time = time.time()
-            model.learn(learn_steps, reset_num_timesteps=step_counter==0)
+            model.learn(learn_steps, reset_num_timesteps=step_counter == 0)
             step_counter += learn_steps
             epoch_time = time.time() - start_epoch_time
 
@@ -350,22 +443,22 @@ def train_model():
         print()
 
         # flush the log buffer and print scores
-        rescue.write_log_buffer()
+        rescue.flush_logs()
         print_scores(epoch=epoch)
 
     model.save(f"{config.log_folder}/model_final.p")
     if config.export_video:
-        export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", model)
+        export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", model, config.train_scenarios[0])
 
     time_taken = time.time() - start_time
     print(f"Finished training after {time_taken/60/60:.1f}h.")
 
-def make_model(env, model_name = None, verbose=0):
+def make_model(vec_env: MultiAgentVecEnv, model_name = None, verbose=0):
 
     model_name = model_name or config.model
 
     # figure out a mini_batch size
-    batch_size = config.algo_params["n_steps"] * env.num_envs
+    batch_size = config.algo_params["n_steps"] * vec_env.num_envs
     assert batch_size % config.algo_params["mini_batch_size"] == 0, \
         f"Invalid mini_batch size {config.algo_params['mini_batch_size']}, must divide batch size {batch_size}."
     n_mini_batches = batch_size // config.algo_params["mini_batch_size"]
@@ -393,15 +486,13 @@ def make_model(env, model_name = None, verbose=0):
     params["policy_kwargs"] = policy_kwargs
 
     if config.algo == "ppo":
-        model = PPO2(CnnLstmPolicy, env, **params)
+        model = PPO2(CnnLstmPolicy, vec_env, **params)
     elif config.algo == "marl":
-        model = PPO_MA(CnnLstmPolicy_MA, env, **params)
+        model = PPO_MA(CnnLstmPolicy_MA, vec_env, **params)
     else:
         raise Exception(f"Invalid algorithm {config.algo}")
 
     return model
-
-
 
 def run_benchmark():
 
@@ -475,16 +566,18 @@ def run_benchmark():
 def print_scores(epoch=None):
     """ Print current scores, also makes a plot"""
     try:
-        results = load_results(config.log_folder)
+        log_file = os.path.join(config.log_folder, "env_0.csv")
+        results = load_results(log_file)
         scores = tuple(round(get_score(results, team), 1) for team in ["red", "green", "blue"])
-        print(f"Team scores: {scores}")
-        export_graph(config.log_folder, epoch=epoch)
+        print(f" -training scores: {scores}")
+        export_graph(log_file, epoch=epoch, png_base_name="train")
     except:
         # this usually just means results have not generated yet
         pass
 
 def load_model(filename, env=None):
     """
+    Loads model from given epoch checkpoint
     Loads model from given epoch checkpoint
     :param filename:
     :return:
@@ -500,15 +593,17 @@ def load_model(filename, env=None):
 
 def run_evaluation():
     """
-    Evaluates model over time against a predefined scripted behavour
+    Evaluates model over time against a predefined scripted behaviour
     :return:
     """
+
+    # todo: this needs a rewrite
 
     # make a copy of the environment testing parameters
     with open(f"{config.log_folder}/config.txt", "w") as f:
         f.write(str(config))
 
-    test_env = make_env(name="eval")
+    test_env = make_env(config.eval_scenarios[0], name="eval", log_path=config.log_folder)
 
     results = []
 
@@ -527,18 +622,20 @@ def run_evaluation():
         scores = evaluate_model(model, test_env, trials=100)
         results.append((epoch, *scores))
 
-        print(f"{epoch:03}: {tuple(round(score, 2) for score in scores)}")
+        print(f"{epoch:03}: {tuple(round(float(score), 1) for score in scores)}")
 
         # generate a video
         if config.export_video:
-            export_video(f"{config.log_folder}/evaluation_{epoch:03}_M.mp4", model)
+            export_video(f"{config.log_folder}/evaluation_{epoch:03}_M.mp4", model, config.eval_scenarios[0])
 
         # flush buffer
-        rescue.write_log_buffer()
+        rescue.flush_logs()
 
-        # plot a graph, why not
+        # plot graphs, why not
         try:
-            export_graph(config.log_folder, epoch=epoch)
+            for index, scenario in enumerate(config.train_scenarios):
+                log_file = os.path.join(config.log_folder, f"env_{index}.csv")
+                export_graph(log_file, epoch=epoch, png_base_name="train_{index}")
         except Exception as e:
             # not worried about this not working...
             print(e)
@@ -556,26 +653,29 @@ def regression_test():
 
         destination_folder = os.path.join(config.log_folder, scenario_name)
         os.makedirs(destination_folder, exist_ok=True)
+        log_file = os.path.join(destination_folder, "env_0.csv")
 
         # our MARL environments are handled like vectorized environments
-        make_env = lambda counter: RescueTheGeneralEnv(scenario=scenario_name, name=f"test_{counter:<2.0f}")
+        make_env = lambda: RescueTheGeneralEnv(scenario=scenario_name, name="test", log_file=log_file)
         vec_env = MultiAgentVecEnv([make_env for _ in range(config.parallel_envs)])
 
         model = make_model(vec_env, verbose=0)
 
-        for sub_env in vec_env.envs:
-            sub_env.log_folder = destination_folder
-
         model.learn(n_steps, reset_num_timesteps=False)
-        export_video(f"{destination_folder}/{scenario_name}.mp4", model)
+        export_video(f"{destination_folder}/{scenario_name}.mp4", model, scenario_name)
 
         # flush the log buffer
-        rescue.write_log_buffer()
+        rescue.flush_logs()
 
-        # check scores
-        results = load_results(destination_folder)
+        try:
+            export_graph(log_file, epoch=2, png_base_name="results")
+        except Exception as e:
+            # not worried about this not working...
+            print(e)
 
-        return results
+        # return scores
+        return load_results(log_file)
+
 
     for scenario_name, team, required_score in [
         ("red2", "red", 7.5),
@@ -600,8 +700,14 @@ def main():
     parser.add_argument('mode', type=str, help="[bench|train|test|evaluate]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
     parser.add_argument('--device', type=str, help="[0|1|2|3|AUTO]", default="auto")
-    parser.add_argument('--scenario', type=str, help="[full|red2]", default="full")
-    parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=100)
+
+    parser.add_argument('--train_scenarios', type=str, default="full",
+        help="Scenario settings for training. Can be a single scenario name e.g. 'red2' or for a mixed training setting "
+             +" use [['<scenario>', '<red_strat>', '<green_strat>', '<blue_strat>'], ...]")
+    parser.add_argument('--eval_scenarios', type=str,
+        help="Scenario settings used to evaluate (defaults to same as train_scenario)", default=None)
+
+    parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=500)
     parser.add_argument('--model', type=str, help="model to use [cnn_lstm_default|cnn_lstm_fast]", default="cnn_lstm_default")
     parser.add_argument('--algo', type=str, help="algorithm to use for training [ppo|marl]", default="ppo")
     parser.add_argument('--force_cpu', type=bool, default=False)
@@ -609,7 +715,9 @@ def main():
     parser.add_argument('--export_video', type=bool, default=True)
 
     parser.add_argument('--algo_params', type=str, default="{}")
-    parser.add_argument('--parallel_envs', type=int, default=32)
+    parser.add_argument('--parallel_envs', type=int, default=32,
+                        help="The number of times to duplicate the environments. Note: when using mixed learning each"+
+                             "environment will be duplicated this number of times.")
 
     args = parser.parse_args()
     config.setup(args)
@@ -629,6 +737,7 @@ def main():
         run_evaluation()
     else:
         raise Exception(f"Invalid mode {args.mode}")
+
 
 if __name__ == "__main__":
     config = Config()

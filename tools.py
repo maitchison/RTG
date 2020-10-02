@@ -25,32 +25,33 @@ def parse(s):
     except:
         return s
 
-LAST_PLOT_FILENAME = None
+LAST_PLOT_FILENAME = dict()
 
-def export_graph(path, epoch=None):
+def export_graph(log_filename, epoch=None, png_base_name="results"):
     """
     Loads scores for experiment in given path and exports a PNG plot
     :param path:
     :return:
     """
 
+    base_folder = os.path.split(log_filename)[0]
+
     try:
-        global LAST_PLOT_FILENAME
-        results = load_results(path)
+        results = load_results(log_filename)
         y_axis = ("score_red", "score_green", "score_blue")
         plt.figure(figsize=(12,8)) # make it big
-        plot_graph(results, path, y_axis=y_axis, hold=True)
-        scores = tuple(round(get_score(results, team), 2) for team in ["red", "green", "blue"])
+        plot_graph(results, log_filename, y_axis=y_axis, hold=True)
+        scores = tuple(round(float(get_score(results, team)), 2) for team in ["red", "green", "blue"])
         end_tag = "" if epoch is None else f"[{epoch}]"
-        filename = os.path.join(path, f"results {scores} {end_tag}.png")
+        png_filename = os.path.join(base_folder, f"{png_base_name} {scores} {end_tag}.png")
 
-        plt.savefig(filename, dpi=300)
+        plt.savefig(png_filename, dpi=300)
 
         # clean up previous plot
-        if LAST_PLOT_FILENAME is not None:
-            os.remove(LAST_PLOT_FILENAME)
+        if log_filename in LAST_PLOT_FILENAME:
+            os.remove(LAST_PLOT_FILENAME[log_filename])
 
-        LAST_PLOT_FILENAME = filename
+        LAST_PLOT_FILENAME[log_filename] = png_filename
 
     finally:
         plt.close()
@@ -86,8 +87,6 @@ def load_results(path):
     :return:
     """
 
-    filename = os.path.join(path, 'env_log.csv')
-
     data = {
         'x': []
     }
@@ -106,7 +105,7 @@ def load_results(path):
     # load in data
     step_counter = 0
     player_count = None
-    with open(filename, "r") as f:
+    with open(path, "r") as f:
         header = f.readline()
         column_names = [name.strip() for name in header.split(",")]
         for name in column_names:

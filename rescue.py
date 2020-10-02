@@ -206,9 +206,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "map_height": 42
         },
 
-        "blue8": {
-            "description": "Eight blue two red, no green, default map",
-            "player_counts": (2, 0, 8),
+        "medium": {
+            "description": "A smaller version of default scenario.",
+            "player_counts": (2, 2, 2),
+            "map_width": 32,
+            "map_height": 32
+        },
+
+        "blue6": {
+            "description": "Six blue two red, no green, default map",
+            "player_counts": (2, 0, 6),
         },
 
         "r2g2": {
@@ -218,7 +225,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "player_counts": (2, 2, 0),
             "n_trees": 10,
             "reward_per_tree": 1,
-            "timeout": 1000
         },
 
         "red2": {
@@ -228,7 +234,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "player_counts": (2, 0, 0),
             "n_trees": 10,
             "reward_per_tree": 1,
-            "timeout": 1000
         },
 
         "green2": {
@@ -238,13 +243,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "player_counts": (0, 2, 0),
             "n_trees": 10,
             "reward_per_tree": 1,
-            "timeout": 1000
         },
 
         "blue2": {
             "description": "Two blue players must rescue the general on a small map.",
-            "map_width": 16,    # a very small map is required for agents to learn this easily
-            "map_height": 16,
+            "map_width": 24,
+            "map_height": 24,
             "player_counts": (0, 0, 2),
             "n_trees": 10,
             "reward_per_tree": 1,
@@ -265,14 +269,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         }
     }
 
-    def __init__(self, scenario="full", name="env", enable_logging=False):
+    def __init__(self, scenario:str="full", name:str="env", log_file:str=None):
         super().__init__()
 
         self.action_space = gym.spaces.Discrete(14)
 
         self.env_create_time = time.time()
 
-        self.enable_logging = enable_logging
+        self.log_file = log_file
         self._needs_repaint = True
 
         # setup our scenario
@@ -282,8 +286,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.name = name
         self.counter = 0
         self.game_counter = 0
-
-        self._log_buffer = []
 
         self.general_location = (0,0)
         self.general_health = int()
@@ -646,8 +648,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 # general end of game tag, this shouldn't happen
                 self.outcome = "complete"
 
-            if self.enable_logging:
-                self.write_stats_to_log()
+            self.write_stats_to_log()
             dones[:] = True
 
             #print(f"{self.name}: round finished at step {self.counter}", self.team_scores, rewards)
@@ -811,6 +812,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
     def write_stats_to_log(self):
 
+        if self.log_file is None:
+            return
+
         stats = [
             self.stats_player_hit,
             self.stats_deaths,
@@ -834,11 +838,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             ]
         )
 
-        # handle logging
-        LOG_BUFFER.append(output_string)
-        time_since_last_log_write = time.time() - LOG_BUFFER_LAST_WRITE_TIME
-        if time_since_last_log_write > 120:
-            write_log_buffer()
+        if self.log_file not in LOGS:
+            LOGS[self.log_file] = RTG_Log(self.log_file)
+        LOGS[self.log_file].log(output_string)
 
     def _get_player_observation(self, observer_id):
         """
@@ -941,8 +943,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         Reset game.
         :return: observations
         """
-
-        #print(f"{self.name}: reset at {self.counter}")
 
         # save previous result so we we reset we still have this info.
         self.previous_team_scores = self.team_scores.copy()
@@ -1143,36 +1143,51 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         else:
             raise ValueError(f"Invalid render mode {mode}")
 
-# This logging code isn't great, all environments share the one buffer. This could be a problem if different
-# environments want to log to different files. It'll do the for the moment though
-#
 
-def write_log_buffer():
+class RTG_Log():
+
+    def __init__(self, filename):
+        self.filename = filename
+        self.buffer = []
+        self.last_write_time = 0
+
+    def log(self, message):
+        """
+        Write message to log, and write out buffer if needed.
+        :param message:
+        :return:
+        """
+        self.buffer.append(message)
+        time_since_last_log_write = time.time() - self.last_write_time
+        if time_since_last_log_write > 120:
+            self.write_to_disk()
+
+    def write_to_disk(self):
+        """
+        Write log buffer to disk
+        :return:
+        """
+        if not os.path.exists(self.filename):
+            with open(self.filename, "w") as f:
+                f.write("env_name, game_counter, game_length, score_red, score_green, score_blue, " +
+                        "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, stats_actions, " +
+                        "player_count, result, wall_time, date_time" +
+                        "\n")
+
+        with open(self.filename, "a+") as f:
+            for output_string in self.buffer:
+                f.write(output_string + "\n")
+
+        self.buffer.clear()
+        self.last_write_time = time.time()
+
+def flush_logs():
     """
-    Write buffer to disk
+    Writes all logs to disk.
     :return:
     """
+    for k, v in LOGS.items():
+        v.write_to_disk()
 
-    # append outcome to a log
-    log_filename = f"{LOG_FILENAME}/env_log.csv"
-
-    if not os.path.exists(log_filename):
-        with open(log_filename, "w") as f:
-            f.write("env_name, game_counter, game_length, score_red, score_green, score_blue, " +
-                    "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, stats_actions, " +
-                    "player_count, result, wall_time, date_time" +
-                    "\n")
-
-    with open(log_filename, "a+") as f:
-        for output_string in LOG_BUFFER:
-            f.write(output_string + "\n")
-
-    LOG_BUFFER.clear()
-
-    global LOG_BUFFER_LAST_WRITE_TIME
-    LOG_BUFFER_LAST_WRITE_TIME = time.time()
-
-# all envs share this log
-LOG_FILENAME = ""
-LOG_BUFFER = []
-LOG_BUFFER_LAST_WRITE_TIME = time.time()
+# shared log files
+LOGS = dict()
