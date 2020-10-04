@@ -494,7 +494,7 @@ def make_model(vec_env: MultiAgentVecEnv, model_name = None, verbose=0):
 
     return model
 
-def run_benchmark():
+def run_benchmarks(train=True, model=True, env=True):
 
     def bench_scenario(scenario_name):
 
@@ -512,7 +512,7 @@ def run_benchmark():
 
         time_taken = (time.time() - start_time)
 
-        print(f" - scenario {scenario_name} runs at {steps / time_taken / 1000:.1f}k AAPS.")
+        print(f" - scenario {scenario_name} runs at {steps / time_taken / 1000:.1f}k FPS.")
 
     def bench_training(scenario_name, model_name):
 
@@ -544,24 +544,26 @@ def run_benchmark():
         while time.time() - start_time < 10:
 
             actions, _, model_states, _ = model.step(states, model_states, model_masks)
-
             steps += vec_env.num_envs
 
         time_taken = (time.time() - start_time)
 
-        print(f" - model {model_name} runs at {steps / time_taken / 1000:.1f}k AAPS.")
+        print(f" - model {model_name} runs at {steps / time_taken / 1000:.1f}k FPS.")
 
-    print("Benchmarking training...")
-    for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
-        bench_training("red2", model_name)
+    if train:
+        print("Benchmarking training...")
+        for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
+            bench_training("red2", model_name)
 
-    print("Benchmarking environments...")
-    for scenario_name in ["full", "medium", "red2"]:
-        bench_scenario(scenario_name)
+    if env:
+        print("Benchmarking environments...")
+        for scenario_name in ["full", "medium", "red2"]:
+            bench_scenario(scenario_name)
 
-    print("Benchmarking models...")
-    for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
-        bench_model(model_name)
+    if model:
+        print("Benchmarking models (inference)...")
+        for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
+            bench_model(model_name)
 
 def print_scores(epoch=None):
     """ Print current scores, also makes a plot"""
@@ -728,7 +730,13 @@ def main():
     os.makedirs(config.log_folder, exist_ok=True)
 
     if args.mode == "bench":
-        run_benchmark()
+        run_benchmarks()
+    elif args.mode == "bench_env":
+        run_benchmarks(env=True, model=False, train=False)
+    elif args.mode == "bench_model":
+        run_benchmarks(env=False, model=True, train=False)
+    elif args.mode == "bench_train":
+        run_benchmarks(env=False, model=False, train=True)
     elif args.mode == "train":
         train_model()
     elif args.mode == "test":

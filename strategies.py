@@ -30,7 +30,7 @@ class RTG_ScriptedEnv(Wrapper, MultiAgentEnv):
 
         self.controllers = [red_strategy, green_strategy, blue_strategy]
         self._n_players = sum(
-            count for team, count in enumerate(self.env.scenario.player_counts) if self.controllers[team] is None)
+            count for team, count in enumerate(self.env.scenario.team_counts) if self.controllers[team] is None)
 
         # selects which players observations to pass through
         self.player_filter = []

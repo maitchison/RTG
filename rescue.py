@@ -51,9 +51,9 @@ ACTION_SIGNAL_DOWN = 11
 ACTION_SIGNAL_LEFT = 12
 ACTION_SIGNAL_RIGHT = 13
 
-SHOOT_ACTIONS = [ACTION_SHOOT_UP, ACTION_SHOOT_DOWN, ACTION_SHOOT_LEFT, ACTION_SHOOT_RIGHT]
-SIGNAL_ACTIONS = [ACTION_SIGNAL_UP, ACTION_SIGNAL_DOWN, ACTION_SIGNAL_LEFT, ACTION_SIGNAL_RIGHT]
-MOVE_ACTIONS = [ACTION_MOVE_UP, ACTION_MOVE_DOWN, ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT]
+SHOOT_ACTIONS = {ACTION_SHOOT_UP, ACTION_SHOOT_DOWN, ACTION_SHOOT_LEFT, ACTION_SHOOT_RIGHT}
+SIGNAL_ACTIONS = {ACTION_SIGNAL_UP, ACTION_SIGNAL_DOWN, ACTION_SIGNAL_LEFT, ACTION_SIGNAL_RIGHT}
+MOVE_ACTIONS = {ACTION_MOVE_UP, ACTION_MOVE_DOWN, ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT}
 
 class RescueTheGeneralScenario():
     def __init__(self, **kwargs):
@@ -63,16 +63,21 @@ class RescueTheGeneralScenario():
         self.reward_per_tree = 0.5
         self.map_width = 48
         self.map_height = 48
-        self.player_view_distance = 5
-        self.player_shoot_range = 4
+
+        self.max_view_distance = 7      # distance used for size of observational space, unused tiles are blanked out
+
+        self.team_view_distance = (7, 5, 5)
+        self.team_shoot_range = (4, 0, 0)
+        self.team_counts = (4, 4, 4)
+        self.team_shoot_timeout = (3, 3, 3)  # number of turns between shooting
+
         self.timeout = 500
         self.general_always_visible = False
         self.general_initial_health = 10
         self.player_initial_health = 10
         self.location_encoding = "abs"  # none | sin | abs
-        self.player_counts = (4, 4, 4)
         self.battle_royale = False   # removes general from game, and adds kill rewards
-        self.enable_signals = True
+        self.enable_signals = False
         self.starting_locations = "together"
 
         # default is red knows red, but all others are hidden
@@ -81,7 +86,6 @@ class RescueTheGeneralScenario():
 
         self.hidden_roles = "default"
 
-        self.shooting_timeout = 3    # number of turns between shooting
         self.reveal_team_on_death = False
 
         self.description = "The full game"
@@ -99,7 +103,7 @@ class RescueTheGeneralScenario():
 
 class RTG_Player():
 
-    def __init__(self, index, scenario):
+    def __init__(self, index, scenario: RescueTheGeneralScenario):
         # the player's index, this is fixed and used to index into the players array, i.e. self.players[id]
         self.index = index
         # this is the id number used to identify which player this is. These id values are randomized each round
@@ -110,7 +114,7 @@ class RTG_Player():
         self.health = int()
         self.team = int()
         self.action = int()
-        self.shooting_timeout = int()
+        self.turns_until_we_can_shoot = int()
         self.scenario = scenario
         self.custom_data = dict()
 
@@ -126,11 +130,36 @@ class RTG_Player():
     def is_dead(self):
         return self.health <= 0
 
+    @property
+    def is_alive(self):
+        return not self.is_dead
+
+    @property
+    def view_distance(self):
+        return self.scenario.team_view_distance[self.team]
+
+    @property
+    def shoot_range(self):
+        return self.scenario.team_shoot_range[self.team]
+
+    @property
+    def shooting_timeout(self):
+        return self.scenario.team_shoot_timeout[self.team]
+
+    @property
+    def can_shoot(self):
+        return self.shoot_range > 0 and self.turns_until_we_can_shoot <= 0
+
+    def update(self):
+        # update shooting cooldown
+        if self.shoot_range > 0:
+            self.turns_until_we_can_shoot = max(0, self.turns_until_we_can_shoot - 1)
+
     def in_vision(self, x, y):
         """
         Returns if given co-ordinates are within vision of the given player or not.
         """
-        return max(abs(self.x - x), abs(self.y - y)) <= self.scenario.player_view_distance
+        return max(abs(self.x - x), abs(self.y - y)) <= self.view_distance
 
     def damage(self, damage):
         """
@@ -188,7 +217,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     DEAD_COLOR = np.asarray([0, 0, 0], dtype=np.uint8)
 
     ID_COLOR = np.asarray(
-        [np.asarray(plt.cm.tab20(i)[:3])*255 for i in range(20)]
+        [np.asarray(plt.cm.get_cmap("tab20")(i)[:3])*255 for i in range(20)]
     , dtype=np.uint8)
 
     TEAM_COLOR = np.asarray([
@@ -214,9 +243,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "map_height": 32
         },
 
-        "blue6": {
-            "description": "Six blue two red, no green, default map",
-            "player_counts": (2, 0, 6),
+        "blue4": {
+            "description": "four blue two red, no green, smaller map",
+            "map_width": 32,
+            "map_height": 32,
+            "player_counts": (2, 0, 4),
         },
 
         "r2g2": {
@@ -253,8 +284,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "player_counts": (0, 0, 2),
             "n_trees": 10,
             "reward_per_tree": 1,
-            "timeout": 1000,
-            "shooting_timeout": 1000 # No shooting...
+            "timeout": 1000
         },
 
         # the idea here is to try and learn the other players identity
@@ -273,8 +303,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     def __init__(self, scenario:str="full", name:str="env", log_file:str=None):
         super().__init__()
 
-        self.action_space = gym.spaces.Discrete(14)
-
         self.env_create_time = time.time()
 
         self.log_file = log_file
@@ -283,6 +311,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # setup our scenario
         scenario_kwargs = self.SCENARIOS[scenario]
         self.scenario = RescueTheGeneralScenario(**scenario_kwargs)
+
+        self.action_space = gym.spaces.Discrete(14 if self.scenario.enable_signals else 10)
 
         self.name = name
         self.counter = 0
@@ -296,9 +326,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # create players and assign teams
         self.players = [RTG_Player(index, self.scenario) for index in range(self.n_players)]
-        teams = [self.TEAM_RED] * self.scenario.player_counts[0] + \
-                [self.TEAM_GREEN] * self.scenario.player_counts[1] + \
-                [self.TEAM_BLUE] * self.scenario.player_counts[2]
+        teams = [self.TEAM_RED] * self.scenario.team_counts[0] + \
+                [self.TEAM_GREEN] * self.scenario.team_counts[1] + \
+                [self.TEAM_BLUE] * self.scenario.team_counts[2]
 
         for index, team in enumerate(teams):
             self.players[index].team = team
@@ -333,7 +363,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.observation_space = gym.spaces.Box(
             low=0, high=255,
-            shape=((self.scenario.player_view_distance * 2 + 3) * CELL_SIZE, (self.scenario.player_view_distance * 2 + 3) * CELL_SIZE, obs_channels),
+            shape=((self.scenario.max_view_distance * 2 + 3) * CELL_SIZE, (self.scenario.max_view_distance * 2 + 3) * CELL_SIZE, obs_channels),
             dtype=np.uint8
         )
 
@@ -394,7 +424,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # assign actions to players / remove invalid actions
         for action, player in zip(actions, self.players):
             player.action = ACTION_NOOP if player.is_dead else action
-            if player.shooting_timeout != 0 and player.action in SHOOT_ACTIONS:
+            if player.action in SHOOT_ACTIONS and not player.can_shoot:
                 player.action = ACTION_NOOP
 
         # count actions
@@ -432,9 +462,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             x = player.x
             y = player.y
 
-            player.shooting_timeout = self.scenario.shooting_timeout
+            player.turns_until_we_can_shoot = player.shooting_timeout
 
-            for j in range(self.scenario.player_shoot_range):
+            for j in range(player.shoot_range):
                 # check location
 
                 x += self.DX[index]
@@ -475,9 +505,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     self._needs_repaint = True
                     break
 
-        # reduce shooting time_out
+        # perform update
         for player in self.players:
-            player.shooting_timeout = max(0, player.shooting_timeout - 1)
+            player.update()
 
         # -------------------------
         # action button
@@ -520,7 +550,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # ------------------------
         # moving
         for player in self.living_players:
-
             if player.action in MOVE_ACTIONS:
                 index = player.action - ACTION_MOVE_UP
                 self.move_player(player, self.DX[index], self.DY[index])
@@ -803,7 +832,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             obs = np.concatenate([obs, position_obs], axis=2)
 
         # padding (makes cropping easier...)
-        self._map_padding = (self.scenario.player_view_distance + 1) # +1 for border
+        self._map_padding = (self.scenario.max_view_distance + 1) # +1 for border
         padding = (self._map_padding*CELL_SIZE, self._map_padding*CELL_SIZE)
         obs = np.pad(obs, (padding, padding, (0, 0)), mode="constant")
 
@@ -823,7 +852,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.stats_general_shot,
             self.stats_tree_harvested,
             self.stats_actions,
-            np.asarray(self.scenario.player_counts, dtype=np.int)
+            np.asarray(self.scenario.team_counts, dtype=np.int)
         ]
 
         def nice_print(x):
@@ -849,6 +878,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :param observer_id: player's perspective, -1 is global view
         :return:
         """
+
+        # note: this is by far the slowest part of the environment, it might be worth moving this script over
+        # cython and optimizing it a bit.
+        # as it stands we get around 10k FPS on this environment (where 1 FPS means one step PER AGENT per second)
+        # if we ignore the get_player_observations the environment runs at a healthy 70k.
+        # either way it seems to be the model that slows us down in the end anyway, as training only runs at ~3k FPS
 
         obs = self._get_map()
 
@@ -885,10 +920,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # ego centric view
         if observer_id >= 0:
             # get our local view
-            left = (self._map_padding + observer.x - (self.scenario.player_view_distance + 1)) * CELL_SIZE
-            right = (self._map_padding + observer.x + (self.scenario.player_view_distance + 2)) * CELL_SIZE
-            top = (self._map_padding + observer.y - (self.scenario.player_view_distance + 1)) * CELL_SIZE
-            bottom = (self._map_padding + observer.y + (self.scenario.player_view_distance + 2)) * CELL_SIZE
+            left = (self._map_padding + observer.x - (self.scenario.max_view_distance + 1)) * CELL_SIZE
+            right = (self._map_padding + observer.x + (self.scenario.max_view_distance + 2)) * CELL_SIZE
+            top = (self._map_padding + observer.y - (self.scenario.max_view_distance + 1)) * CELL_SIZE
+            bottom = (self._map_padding + observer.y + (self.scenario.max_view_distance + 2)) * CELL_SIZE
             obs = obs[left:right, top:bottom, :]
         else:
             # just remove padding
@@ -896,22 +931,26 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             obs = obs[padding:-padding, padding:-padding, :]
 
         if observer_id >= 0:
-            # blank out frame
-            obs[:3, :, :3] = 32
-            obs[-3:, :, :3] = 32
-            obs[:, :3, :3] = 32
-            obs[:, -3:, :3] = 32
+            # blank out edges of frame, always have 1 tile due to status and indicators
+            cells_to_blank_out = 1 + self.scenario.max_view_distance - observer.view_distance
+            pixels_to_blank_out = cells_to_blank_out * CELL_SIZE
+            obs[:pixels_to_blank_out, :, :pixels_to_blank_out] = 32
+            obs[-pixels_to_blank_out:, :, :pixels_to_blank_out] = 32
+            obs[:, :pixels_to_blank_out, :pixels_to_blank_out] = 32
+            obs[:, -pixels_to_blank_out:, :pixels_to_blank_out] = 32
 
             # bars for time, health, and shooting timeout
             frame_width, frame_height, _ = obs[3:-3, 3:-3, :].shape
+
             time_bar = int((self.scenario.timeout - self.counter) / self.scenario.timeout * frame_width)
-            health_bar = int(observer.health / self.scenario.player_initial_health * frame_width)
-            shooting_bar = int(observer.shooting_timeout / self.scenario.shooting_timeout * frame_width)
-
             obs[3:3 + time_bar, -3, :3] = (255, 255, 128)
-            obs[3:3 + health_bar, -2, :3] = (128, 255, 128)
-            obs[3:3 + shooting_bar, -1, :3] = (128, 128, 255)
 
+            health_bar = int(observer.health / self.scenario.player_initial_health * frame_width)
+            obs[3:3 + health_bar, -2, :3] = (128, 255, 128)
+
+            if observer.shoot_range > 0:
+                shooting_bar = int(observer.turns_until_we_can_shoot / observer.shooting_timeout * frame_width)
+                obs[3:3 + shooting_bar, -1, :3] = (128, 128, 255)
 
         # show general off-screen location
         if (observer is not None) and (observer.team == self.TEAM_BLUE or self.scenario.general_always_visible):
@@ -919,11 +958,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             dx = self.general_location[0] - observer.x
             dy = self.general_location[1] - observer.y
 
-            if abs(dx) > self.scenario.player_view_distance or abs(dy) > self.scenario.player_view_distance:
-                dx += self.scenario.player_view_distance
-                dy += self.scenario.player_view_distance
-                dx = min(max(dx, 0), self.scenario.player_view_distance * 2)
-                dy = min(max(dy, 0), self.scenario.player_view_distance * 2)
+            if abs(dx) > observer.view_distance or abs(dy) > observer.view_distance:
+                dx += observer.view_distance
+                dy += observer.view_distance
+                dx = min(max(dx, 0), observer.view_distance * 2)
+                dy = min(max(dy, 0), observer.view_distance * 2)
                 self.draw_tile(obs, dx + 1, dy + 1, self.GENERAL_COLOR)
 
         if observer_id >= 0:
@@ -984,11 +1023,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             start_locations = [all_locations[i] for i in np.random.choice(range(len(all_locations)), size=self.n_players)]
 
         elif self.scenario.starting_locations == "together":
-            # players are place together somewhere far away from the general
+
+            # players are placed together but not right ontop of the general
 
             general_filter = lambda p: \
-                abs(p[0] - self.general_location[0]) > self.scenario.player_view_distance+3 and \
-                abs(p[1] - self.general_location[1]) > self.scenario.player_view_distance+3
+                abs(p[0] - self.general_location[0]) > 4 and \
+                abs(p[1] - self.general_location[1]) > 4
 
             assert self.n_players <= 16, "This method of initializing starting locations only works with 16 or less players."
 
@@ -1022,14 +1062,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
             self.player_lookup[player.x, player.y] = player.index
             player.health = self.scenario.player_initial_health
-            player.shooting_timeout = self.scenario.shooting_timeout
+            player.turns_until_we_can_shoot = player.shooting_timeout
             player.custom_data = dict()
 
         return np.asarray(self._get_observations())
 
     @property
     def n_players(self):
-        return sum(self.scenario.player_counts)
+        return sum(self.scenario.team_counts)
 
     @property
     def living_players(self):
