@@ -151,7 +151,7 @@ def rush_general(player:RTG_Player, env:RescueTheGeneralEnv):
     dx = player.x - env.general_location[0]
     dy = player.y - env.general_location[1]
 
-    general_is_visible = abs(dx) + abs(dy) <= env.scenario.player_view_distance
+    general_is_visible = abs(dx) + abs(dy) <= player.view_distance
 
     if general_is_visible:
         return rush_general_cheat(player, env)
@@ -190,15 +190,15 @@ def fire_at(player: RTG_Player, env: RescueTheGeneralEnv, target_x, target_y):
     dy = player.y - target_y
 
     if dy == 0:
-        if -env.scenario.player_shoot_range <= dx < 0:
+        if -player.shoot_range <= dx < 0:
             return rtg.ACTION_SHOOT_RIGHT
-        elif env.scenario.player_shoot_range >= dx > 0:
+        elif player.shoot_range >= dx > 0:
             return rtg.ACTION_SHOOT_LEFT
 
     if dx == 0:
-        if -env.scenario.player_shoot_range <= dy < 0:
+        if -player.shoot_range <= dy < 0:
             return rtg.ACTION_SHOOT_DOWN
-        elif env.scenario.player_shoot_range >= dy > 0:
+        elif player.shoot_range >= dy > 0:
             return rtg.ACTION_SHOOT_UP
 
     return rtg.ACTION_NOOP

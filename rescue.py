@@ -116,6 +116,7 @@ class RTG_Player():
         self.action = int()
         self.turns_until_we_can_shoot = int()
         self.scenario = scenario
+        self.was_hit_this_round = False
         self.custom_data = dict()
 
     @property
@@ -168,6 +169,7 @@ class RTG_Player():
         :return:
         """
         self.health = max(0, self.health - damage)
+        self.was_hit_this_round = True
 
 class RescueTheGeneralEnv(MultiAgentEnv):
     """
@@ -250,13 +252,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             "player_counts": (2, 0, 4),
         },
 
-        "r2g2": {
+        "r2g3": {
             "description": "Two red player and two green players on medium map",
             "map_width": 32,
             "map_height": 32,
-            "player_counts": (2, 2, 0),
-            "n_trees": 10,
-            "reward_per_tree": 1,
+            "player_counts": (2, 3, 0),
+            "n_trees": 20,
+            "reward_per_tree": 0.5,
+            "hidden_roles": "none"
         },
 
         "red2": {
@@ -448,6 +451,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         blue_team_good_kills = 0
         team_self_kills = [0, 0, 0]
         team_deaths = [0, 0, 0]
+
+        for player in self.players:
+            player.was_hit_this_round = False
 
         # -----------------------------------------
         # shooting
@@ -744,10 +750,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 ring_color = (self.TEAM_COLOR[player.team] // 3 + self.DEAD_COLOR // 2)
             else:
                 ring_color = self.DEAD_COLOR
-        elif highlight:
-            ring_color = self.HIGHLIGHT_COLOR
         else:
             ring_color = self.TEAM_COLOR[player.team] if team_colors else self.NEUTRAL_COLOR
+
+        if highlight:
+            ring_color = ring_color//2 + self.HIGHLIGHT_COLOR //2
 
         inner_color = player.id_color
 
@@ -898,6 +905,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self._draw_soldier(
                     obs,
                     player,
+                    highlight=player.was_hit_this_round,
                     team_colors=team_colors,
                     padding=(self._map_padding, self._map_padding)
                 )
@@ -909,6 +917,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self._draw_soldier(
                     obs,
                     player,
+                    highlight=player.was_hit_this_round,
                     team_colors=team_colors,
                     padding=(self._map_padding, self._map_padding)
                 )
@@ -933,11 +942,24 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if observer_id >= 0:
             # blank out edges of frame, always have 1 tile due to status and indicators
             cells_to_blank_out = 1 + self.scenario.max_view_distance - observer.view_distance
-            pixels_to_blank_out = cells_to_blank_out * CELL_SIZE
-            obs[:pixels_to_blank_out, :, :pixels_to_blank_out] = 32
-            obs[-pixels_to_blank_out:, :, :pixels_to_blank_out] = 32
-            obs[:, :pixels_to_blank_out, :pixels_to_blank_out] = 32
-            obs[:, -pixels_to_blank_out:, :pixels_to_blank_out] = 32
+
+            def blank_edges(obs, pixels_to_blank_out, color):
+                obs[:pixels_to_blank_out, :, :3] = color
+                obs[-pixels_to_blank_out:, :, :3] = color
+                obs[:, :pixels_to_blank_out, :3] = color
+                obs[:, -pixels_to_blank_out:, :3] = color
+
+            blank_edges(obs, cells_to_blank_out * CELL_SIZE, [32, 32, 32])
+            blank_edges(obs, 3, observer.team_color//2)
+            obs[3:-3, :3, :3] = observer.id_color
+
+            # embosed frame just make this easier to see
+            # obs[:1, :] = 128
+            # obs[-1:, :] = 0
+            # obs[:, :1] = 128
+            # obs[:, -1] = 0
+            # obs[0, -1] = 64
+            # obs[-1, 0] = 64
 
             # bars for time, health, and shooting timeout
             frame_width, frame_height, _ = obs[3:-3, 3:-3, :].shape
@@ -1025,7 +1047,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         elif self.scenario.starting_locations == "together":
 
             # players are placed together but not right ontop of the general
-
             general_filter = lambda p: \
                 abs(p[0] - self.general_location[0]) > 4 and \
                 abs(p[1] - self.general_location[1]) > 4
@@ -1138,6 +1159,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         elif 7 <= self.n_players <= 8:
             grid_width = 4
             grid_height = 2
+        elif 12 <= self.n_players <= 12:
+            grid_width = 4
+            grid_height = 3
         elif self.n_players <= 16:
             grid_width = 4
             grid_height = 4
