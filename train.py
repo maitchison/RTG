@@ -343,9 +343,9 @@ def make_env(scenarios: Union[List[ScenarioSetting], ScenarioSetting, str], para
             # if we have 'random' team players enabled we need to add a selection of environments with different
             # player counts
             if vary_players:
-                for r in range(base_scenario.team_counts[0]+1):
-                    for g in range(base_scenario.team_counts[1]+1):
-                        for b in range(base_scenario.team_counts[2]+1):
+                for r in reversed(range(base_scenario.team_counts[0]+1)):
+                    for g in reversed(range(base_scenario.team_counts[1]+1)):
+                        for b in reversed(range(base_scenario.team_counts[2]+1)):
                             if r == g == b == 0:
                                 continue
                             env_functions.append(lambda _r=r, _g=g, _b=b: make_env_fn((_r, _g, _b)))

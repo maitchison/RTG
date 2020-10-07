@@ -61,7 +61,7 @@ class PPO_MA(ActorCriticRLModel):
     def __init__(self, policy, env, gamma=0.99, n_steps=128, ent_coef=0.01, learning_rate=2.5e-4, vf_coef=0.5,
                  max_grad_norm=0.5, lam=0.95, nminibatches=4, noptepochs=4, cliprange=0.2, cliprange_vf=None,
                  verbose=0, tensorboard_log=None, _init_setup_model=True, policy_kwargs=None,
-                 full_tensorboard_log=False, seed=None, n_cpu_tf_sess=None):
+                 full_tensorboard_log=False, seed=None, n_cpu_tf_sess=None, role_prediction=False):
 
         self.learning_rate = learning_rate
         self.cliprange = cliprange
@@ -76,6 +76,7 @@ class PPO_MA(ActorCriticRLModel):
         self.noptepochs = noptepochs
         self.tensorboard_log = tensorboard_log
         self.full_tensorboard_log = full_tensorboard_log
+        self.role_prediction = role_prediction
 
         self.action_ph = None
         self.advs_ph = None
@@ -174,20 +175,25 @@ class PPO_MA(ActorCriticRLModel):
 
                     vpred = train_model.value_flat
 
-                    # Role estimation loss
-                    # We role the first two dims into one to make this work.
-                    pred_role_logits = tf.reshape(train_model._role_fn, [n_batch_train * n_players, n_roles])
-                    self.true_roles_ph = tf.placeholder(tf.int32, [n_batch_train, n_players], name="true_roles_ph")
 
-                    self.role_prediction_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
-                        labels=tf.reshape(self.true_roles_ph, [n_batch_train * n_players]),
-                        logits=pred_role_logits
-                    )
+                    if self.role_prediction:
+                        # Role estimation loss
+                        # We role the first two dims into one to make this work.
 
-                    # convert from [batch*player] back to [batch, players] then average over the players dim
-                    self.role_prediction_loss = tf.reshape(self.role_prediction_loss, [n_batch_train, n_players])
-                    self.role_prediction_loss = tf.reduce_mean(self.role_prediction_loss, axis=1)
-                    self.role_prediction_loss = mask_reduce(self.role_prediction_loss)
+                        pred_role_logits = tf.reshape(train_model._role_fn, [n_batch_train * n_players, n_roles])
+                        self.true_roles_ph = tf.placeholder(tf.int32, [n_batch_train, n_players], name="true_roles_ph")
+
+                        self.role_prediction_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+                            labels=tf.reshape(self.true_roles_ph, [n_batch_train * n_players]),
+                            logits=pred_role_logits
+                        )
+
+                        # convert from [batch*player] back to [batch, players] then average over the players dim
+                        self.role_prediction_loss = tf.reshape(self.role_prediction_loss, [n_batch_train, n_players])
+                        self.role_prediction_loss = tf.reduce_mean(self.role_prediction_loss, axis=1)
+                        self.role_prediction_loss = mask_reduce(self.role_prediction_loss)
+                    else:
+                        self.role_prediction_loss = 0
 
                     # Value function clipping: not present in the original PPO
                     if self.cliprange_vf is None:
@@ -487,7 +493,7 @@ class PPO_MA(ActorCriticRLModel):
 
 class Runner(AbstractEnvRunner):
 
-    def __init__(self, *, env, model, n_steps, gamma, lam):
+    def __init__(self, *, env, model: PPO_MA, n_steps, gamma, lam):
         """
         A runner to learn the policy of an environment for a model
 
@@ -516,20 +522,23 @@ class Runner(AbstractEnvRunner):
             - infos: (dict) the extra information of the model
         """
         # mb stands for minibatch
-        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs, mb_roles = [], [], [], [], [], [], []
+        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs, mb_true_roles = [], [], [], [], [], [], []
         mb_train_mask = []
         mb_states = self.states
         ep_infos = []
         for _ in range(self.n_steps):
 
             actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
-            roles = self.env.get_roles()
+            if self.model.role_prediction:
+                true_roles = self.env.get_roles()
+            else:
+                true_roles = [0 for _ in range(self.env.num_envs)]
 
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
             mb_neglogpacs.append(neglogpacs)
-            mb_roles.append(roles)
+            mb_true_roles.append(true_roles)
             mb_dones.append(self.dones)
             clipped_actions = actions
             # Clip the actions to avoid out of bound error
@@ -565,7 +574,7 @@ class Runner(AbstractEnvRunner):
         mb_actions = np.asarray(mb_actions)
         mb_values = np.asarray(mb_values, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
-        mb_roles = np.asarray(mb_roles, dtype=np.int32)
+        mb_true_roles = np.asarray(mb_true_roles, dtype=np.int32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
         mb_train_mask = np.asarray(mb_train_mask, dtype=np.float32)
 
@@ -585,10 +594,10 @@ class Runner(AbstractEnvRunner):
             mb_advs[step] = last_gae_lam = delta + self.gamma * self.lam * nextnonterminal * last_gae_lam
         mb_returns = mb_advs + mb_values
 
-        mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_roles, true_reward, mb_train_mask = \
-            map(swap_and_flatten, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_roles, true_reward, mb_train_mask))
+        mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_true_roles, true_reward, mb_train_mask = \
+            map(swap_and_flatten, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_true_roles, true_reward, mb_train_mask))
 
-        return mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_roles, mb_states, ep_infos, true_reward, mb_train_mask
+        return mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_true_roles, mb_states, ep_infos, true_reward, mb_train_mask
 
 
 # obs, returns, masks, actions, values, neglogpacs, states = runner.run()
