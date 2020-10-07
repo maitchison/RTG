@@ -99,6 +99,8 @@ class PPO_MA(ActorCriticRLModel):
 
         # new inputs
         self.true_roles_ph = None
+        self.train_mask_ph = None
+
 
         super().__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True,
                          _init_setup_model=_init_setup_model, policy_kwargs=policy_kwargs,
@@ -125,6 +127,14 @@ class PPO_MA(ActorCriticRLModel):
             self.n_batch = self.n_envs * self.n_steps
             n_players = self.env.n_players
             n_roles = 3
+
+            def mask_reduce(x):
+                """
+                Preforms mean reduction but with a mask
+                :param x:
+                :return:
+                """
+                return tf.reduce_mean(x * self.train_mask_ph) / tf.reduce_mean(self.train_mask_ph)
 
             self.graph = tf.Graph()
             with self.graph.as_default():
@@ -157,6 +167,7 @@ class PPO_MA(ActorCriticRLModel):
                     self.old_vpred_ph = tf.placeholder(tf.float32, [None], name="old_vpred_ph")
                     self.learning_rate_ph = tf.placeholder(tf.float32, [], name="learning_rate_ph")
                     self.clip_range_ph = tf.placeholder(tf.float32, [], name="clip_range_ph")
+                    self.train_mask_ph = tf.placeholder(tf.float32, [None], name="train_mask_ph")
 
                     neglogpac = train_model.proba_distribution.neglogp(self.action_ph)
                     self.entropy = tf.reduce_mean(train_model.proba_distribution.entropy())
@@ -168,11 +179,15 @@ class PPO_MA(ActorCriticRLModel):
                     pred_role_logits = tf.reshape(train_model._role_fn, [n_batch_train * n_players, n_roles])
                     self.true_roles_ph = tf.placeholder(tf.int32, [n_batch_train, n_players], name="true_roles_ph")
 
-                    self.role_prediction_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
+                    self.role_prediction_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
                         labels=tf.reshape(self.true_roles_ph, [n_batch_train * n_players]),
                         logits=pred_role_logits
-                    ))
+                    )
 
+                    # convert from [batch*player] back to [batch, players] then average over the players dim
+                    self.role_prediction_loss = tf.reshape(self.role_prediction_loss, [n_batch_train, n_players])
+                    self.role_prediction_loss = tf.reduce_mean(self.role_prediction_loss, axis=1)
+                    self.role_prediction_loss = mask_reduce(self.role_prediction_loss)
 
                     # Value function clipping: not present in the original PPO
                     if self.cliprange_vf is None:
@@ -200,15 +215,15 @@ class PPO_MA(ActorCriticRLModel):
 
                     vf_losses1 = tf.square(vpred - self.rewards_ph)
                     vf_losses2 = tf.square(vpred_clipped - self.rewards_ph)
-                    self.vf_loss = .5 * tf.reduce_mean(tf.maximum(vf_losses1, vf_losses2))
+                    self.vf_loss = .5 * mask_reduce(tf.maximum(vf_losses1, vf_losses2))
 
                     ratio = tf.exp(self.old_neglog_pac_ph - neglogpac)
                     pg_losses = -self.advs_ph * ratio
                     pg_losses2 = -self.advs_ph * tf.clip_by_value(ratio, 1.0 - self.clip_range_ph, 1.0 +
                                                                   self.clip_range_ph)
-                    self.pg_loss = tf.reduce_mean(tf.maximum(pg_losses, pg_losses2))
-                    self.approxkl = .5 * tf.reduce_mean(tf.square(neglogpac - self.old_neglog_pac_ph))
-                    self.clipfrac = tf.reduce_mean(tf.cast(tf.greater(tf.abs(ratio - 1.0),
+                    self.pg_loss = mask_reduce(tf.maximum(pg_losses, pg_losses2))
+                    self.approxkl = .5 * mask_reduce(tf.square(neglogpac - self.old_neglog_pac_ph))
+                    self.clipfrac = mask_reduce(tf.cast(tf.greater(tf.abs(ratio - 1.0),
                                                                       self.clip_range_ph), tf.float32))
                     loss = self.pg_loss - self.entropy * self.ent_coef + self.vf_loss * self.vf_coef + self.role_prediction_loss
 
@@ -235,15 +250,15 @@ class PPO_MA(ActorCriticRLModel):
                 self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl', 'clipfrac']
 
                 with tf.variable_scope("input_info", reuse=False):
-                    tf.summary.scalar('discounted_rewards', tf.reduce_mean(self.rewards_ph))
-                    tf.summary.scalar('learning_rate', tf.reduce_mean(self.learning_rate_ph))
-                    tf.summary.scalar('advantage', tf.reduce_mean(self.advs_ph))
-                    tf.summary.scalar('clip_range', tf.reduce_mean(self.clip_range_ph))
+                    tf.summary.scalar('discounted_rewards', mask_reduce(self.rewards_ph))
+                    tf.summary.scalar('learning_rate', mask_reduce(self.learning_rate_ph))
+                    tf.summary.scalar('advantage', mask_reduce(self.advs_ph))
+                    tf.summary.scalar('clip_range', mask_reduce(self.clip_range_ph))
                     if self.clip_range_vf_ph is not None:
-                        tf.summary.scalar('clip_range_vf', tf.reduce_mean(self.clip_range_vf_ph))
+                        tf.summary.scalar('clip_range_vf', mask_reduce(self.clip_range_vf_ph))
 
-                    tf.summary.scalar('old_neglog_action_probability', tf.reduce_mean(self.old_neglog_pac_ph))
-                    tf.summary.scalar('old_value_pred', tf.reduce_mean(self.old_vpred_ph))
+                    tf.summary.scalar('old_neglog_action_probability', mask_reduce(self.old_neglog_pac_ph))
+                    tf.summary.scalar('old_value_pred', mask_reduce(self.old_vpred_ph))
 
                     if self.full_tensorboard_log:
                         tf.summary.histogram('discounted_rewards', self.rewards_ph)
@@ -267,8 +282,8 @@ class PPO_MA(ActorCriticRLModel):
 
                 self.summary = tf.summary.merge_all()
 
-    def _train_step(self, learning_rate, cliprange, obs, returns, masks, actions, values, neglogpacs, true_roles, update,
-                    writer, states=None, cliprange_vf=None):
+    def _train_step(self, learning_rate, cliprange, obs, returns, masks, actions, values, neglogpacs, true_roles, train_mask,
+                    writer, update, states=None, cliprange_vf=None):
         """
         Training of PPO2 Algorithm
 
@@ -294,8 +309,10 @@ class PPO_MA(ActorCriticRLModel):
                   self.advs_ph: advs, self.rewards_ph: returns,
                   self.learning_rate_ph: learning_rate, self.clip_range_ph: cliprange,
                   self.old_neglog_pac_ph: neglogpacs, self.old_vpred_ph: values,
-                  self.true_roles_ph: true_roles
+                  self.true_roles_ph: true_roles,
+                  self.train_mask_ph: train_mask
                   }
+
         if states is not None:
             td_map[self.train_model.states_ph] = states
             td_map[self.train_model.dones_ph] = masks
@@ -364,7 +381,7 @@ class PPO_MA(ActorCriticRLModel):
                 # true_reward is the reward without discount
                 rollout = self.runner.run(callback)
                 # Unpack
-                obs, returns, masks, actions, values, neglogpacs, roles, states, ep_infos, true_reward = rollout
+                obs, returns, masks, actions, values, neglogpacs, roles, states, ep_infos, true_reward, train_mask = rollout
 
                 callback.on_rollout_end()
 
@@ -384,9 +401,9 @@ class PPO_MA(ActorCriticRLModel):
                                                                             self.n_batch + start) // batch_size)
                             end = start + batch_size
                             mbinds = inds[start:end]
-                            slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs, roles))
-                            mb_loss_vals.append(self._train_step(lr_now, cliprange_now, *slices, writer=writer,
-                                                                 update=timestep, cliprange_vf=cliprange_vf_now))
+                            slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs, roles, train_mask))
+                            mb_loss_vals.append(self._train_step(lr_now, cliprange_now, *slices,
+                                                                 writer=writer, update=timestep, cliprange_vf=cliprange_vf_now))
                             ep_value = np.mean(values) # this is more noisy that it needs to be, but i'm fine with that.
                 else:  # recurrent version
                     update_fac = max(self.n_batch // self.nminibatches // self.noptepochs // self.n_steps, 1)
@@ -402,10 +419,10 @@ class PPO_MA(ActorCriticRLModel):
                             end = start + envs_per_batch
                             mb_env_inds = env_indices[start:end]
                             mb_flat_inds = flat_indices[mb_env_inds].ravel()
-                            slices = (arr[mb_flat_inds] for arr in (obs, returns, masks, actions, values, neglogpacs, roles))
+                            slices = (arr[mb_flat_inds] for arr in (obs, returns, masks, actions, values, neglogpacs, roles, train_mask))
                             mb_states = states[mb_env_inds]
-                            mb_loss_vals.append(self._train_step(lr_now, cliprange_now, *slices, update=timestep,
-                                                                 writer=writer, states=mb_states,
+                            mb_loss_vals.append(self._train_step(lr_now, cliprange_now, *slices,
+                                                                 update=timestep, writer=writer, states=mb_states,
                                                                  cliprange_vf=cliprange_vf_now))
                             ep_value = np.mean(values)
 
@@ -500,6 +517,7 @@ class Runner(AbstractEnvRunner):
         """
         # mb stands for minibatch
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs, mb_roles = [], [], [], [], [], [], []
+        mb_train_mask = []
         mb_states = self.states
         ep_infos = []
         for _ in range(self.n_steps):
@@ -519,6 +537,12 @@ class Runner(AbstractEnvRunner):
                 clipped_actions = np.clip(actions, self.env.action_space.low, self.env.action_space.high)
             self.obs[:], rewards, self.dones, infos = self.env.step(clipped_actions)
 
+            train_mask = np.ones_like(actions, dtype=np.int)
+            for i, info in enumerate(infos):
+                if "ignore_mask" in infos:
+                    train_mask[i] = infos["train_mask"]
+            mb_train_mask.append(train_mask)
+
             self.model.num_timesteps += self.n_envs
 
             if self.callback is not None:
@@ -534,6 +558,7 @@ class Runner(AbstractEnvRunner):
                 if maybe_ep_info is not None:
                     ep_infos.append(maybe_ep_info)
             mb_rewards.append(rewards)
+
         # batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
@@ -542,6 +567,7 @@ class Runner(AbstractEnvRunner):
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_roles = np.asarray(mb_roles, dtype=np.int32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
+        mb_train_mask = np.asarray(mb_train_mask, dtype=np.float32)
 
         last_values = self.model.value(self.obs, self.states, self.dones)
         # discount/bootstrap off value fn
@@ -559,10 +585,10 @@ class Runner(AbstractEnvRunner):
             mb_advs[step] = last_gae_lam = delta + self.gamma * self.lam * nextnonterminal * last_gae_lam
         mb_returns = mb_advs + mb_values
 
-        mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_roles, true_reward = \
-            map(swap_and_flatten, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_roles, true_reward))
+        mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_roles, true_reward, mb_train_mask = \
+            map(swap_and_flatten, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_roles, true_reward, mb_train_mask))
 
-        return mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_roles, mb_states, ep_infos, true_reward
+        return mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_roles, mb_states, ep_infos, true_reward, mb_train_mask
 
 
 # obs, returns, masks, actions, values, neglogpacs, states = runner.run()

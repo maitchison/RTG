@@ -27,6 +27,29 @@ class MultiAgentEnv(gym.Env):
     def reset(self):
         return []
 
+class DummyMARLEnv(MultiAgentEnv):
+    """
+    Dummy environment with given number of actors.
+    """
+
+    def __init__(self, action_space, observation_space, n_agents):
+        super().__init__()
+        self.observation_space = observation_space
+        self.action_space = action_space
+        self.n_agents = n_agents
+
+    def step(self, actions):
+        obs = np.zeros((self.n_agents, *self.observation_space.shape), dtype=self.observation_space.dtype)
+        rewards = np.zeros([self.n_agents], dtype=np.float)
+        dones = np.zeros([self.n_agents], dtype=np.bool)
+        infos = [{"train_mask":0} for _ in range(self.n_agents)]
+        return obs, rewards, dones, infos
+
+    def reset(self):
+        obs = np.zeros((self.n_agents, *self.observation_space.shape), dtype=self.observation_space.dtype)
+        return obs
+
+
 class MultiAgentVecEnv(VecEnv):
     """
     Vectorized Adapter for multi-agent environments.
@@ -36,7 +59,7 @@ class MultiAgentVecEnv(VecEnv):
 
     """
 
-    def __init__(self, make_marl_envs):
+    def __init__(self, make_marl_envs, max_agents=None):
         """
         :param make_env: List of functions to make given environment
         """

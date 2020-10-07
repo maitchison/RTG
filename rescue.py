@@ -56,7 +56,85 @@ SIGNAL_ACTIONS = {ACTION_SIGNAL_UP, ACTION_SIGNAL_DOWN, ACTION_SIGNAL_LEFT, ACTI
 MOVE_ACTIONS = {ACTION_MOVE_UP, ACTION_MOVE_DOWN, ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT}
 
 class RescueTheGeneralScenario():
-    def __init__(self, **kwargs):
+
+    SCENARIOS = {
+        "full": {
+            "description": "This is the default scenario.",
+            "map_width": 48,
+            "map_height": 48
+        },
+
+        "medium": {
+            "description": "A smaller version of default scenario.",
+            "team_counts": (2, 2, 2),
+            "map_width": 32,
+            "map_height": 32
+        },
+
+        "blue4": {
+            "description": "four blue two red, no green, smaller map",
+            "map_width": 32,
+            "map_height": 32,
+            "team_counts": (2, 0, 4),
+        },
+
+        "r2g4": {
+            "description": "Two red player and four green players on largish map",
+            "map_width": 48,
+            "map_height": 48,
+            "team_counts": (2, 4, 0),
+            "n_trees": 20,
+            "reward_per_tree": 0.5,
+            "hidden_roles": "none",
+            "max_view_distance": 5,             # makes thins a bit faster
+            "team_view_distance": (5, 5, 5),    # no bonus vision for red
+            "team_shoot_range": (4, 1, 0),      # green can shoot, but not far
+            "starting_locations": "random",     # random start locations
+            "team_shoot_timeout": (3, 5, 3)      # green is much slower at shooting
+        },
+
+        "red2": {
+            "description": "Two red players must find and kill general on small map.",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (2, 0, 0),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+        },
+
+        "green2": {
+            "description": "Two green players must harvest trees uncontested on a small map.",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (0, 2, 0),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+        },
+
+        "blue2": {
+            "description": "Two blue players must rescue the general on a small map.",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (0, 0, 2),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+            "timeout": 1000
+        },
+
+        # the idea here is to try and learn the other players identity
+        "royale": {
+            "description": "Red vs Blue, two soldiers each, in hidden roles battle royale.",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (2, 0, 2),
+            "n_trees": 0,
+            "hidden_roles": "all",
+            "battle_royale": True,
+            "reveal_team_on_death": True
+        }
+    }
+
+    def __init__(self, scenario_name=None, **kwargs):
 
         # defaults
         self.n_trees = 20
@@ -65,7 +143,6 @@ class RescueTheGeneralScenario():
         self.map_height = 48
 
         self.max_view_distance = 7      # distance used for size of observational space, unused tiles are blanked out
-
         self.team_view_distance = (7, 5, 5)
         self.team_shoot_range = (4, 0, 0)
         self.team_counts = (4, 4, 4)
@@ -90,8 +167,16 @@ class RescueTheGeneralScenario():
 
         self.description = "The full game"
 
-        # overrides
-        for k,v in kwargs.items():
+        # scenario settings
+        settings_to_apply = {}
+        if scenario_name is not None:
+            settings_to_apply = self.SCENARIOS[scenario_name].copy()
+
+        settings_to_apply.update(**kwargs)
+
+        # apply settings
+        for k,v in settings_to_apply.items():
+            assert hasattr(self, k), f"Invalid scenario attribute {k}"
             setattr(self, k, v)
 
     def __str__(self):
@@ -231,79 +316,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     DX = [0, 0, -1, +1]
     DY = [-1, 1, 0, 0]
 
-    SCENARIOS = {
-        "full": {
-            "description": "This is the default scenario.",
-            "map_width": 42,
-            "map_height": 42
-        },
-
-        "medium": {
-            "description": "A smaller version of default scenario.",
-            "player_counts": (2, 2, 2),
-            "map_width": 32,
-            "map_height": 32
-        },
-
-        "blue4": {
-            "description": "four blue two red, no green, smaller map",
-            "map_width": 32,
-            "map_height": 32,
-            "player_counts": (2, 0, 4),
-        },
-
-        "r2g3": {
-            "description": "Two red player and two green players on medium map",
-            "map_width": 32,
-            "map_height": 32,
-            "player_counts": (2, 3, 0),
-            "n_trees": 20,
-            "reward_per_tree": 0.5,
-            "hidden_roles": "none"
-        },
-
-        "red2": {
-            "description": "Two red players must find and kill general on small map.",
-            "map_width": 24,
-            "map_height": 24,
-            "player_counts": (2, 0, 0),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-        },
-
-        "green2": {
-            "description": "Two green players must harvest trees uncontested on a small map.",
-            "map_width": 24,
-            "map_height": 24,
-            "player_counts": (0, 2, 0),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-        },
-
-        "blue2": {
-            "description": "Two blue players must rescue the general on a small map.",
-            "map_width": 24,
-            "map_height": 24,
-            "player_counts": (0, 0, 2),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "timeout": 1000
-        },
-
-        # the idea here is to try and learn the other players identity
-        "royale": {
-            "description": "Red vs Blue, two soldiers each, in hidden roles battle royale.",
-            "map_width": 24,
-            "map_height": 24,
-            "player_counts": (2, 0, 2),
-            "n_trees": 0,
-            "hidden_roles": "all",
-            "battle_royale": True,
-            "reveal_team_on_death": True
-        }
-    }
-
-    def __init__(self, scenario:str="full", name:str="env", log_file:str=None):
+    def __init__(self, scenario_name:str= "full", name:str= "env", log_file:str=None, **scenario_kwargs):
         super().__init__()
 
         self.env_create_time = time.time()
@@ -312,8 +325,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self._needs_repaint = True
 
         # setup our scenario
-        scenario_kwargs = self.SCENARIOS[scenario]
-        self.scenario = RescueTheGeneralScenario(**scenario_kwargs)
+        self.scenario = RescueTheGeneralScenario(scenario_name, **scenario_kwargs)
 
         self.action_space = gym.spaces.Discrete(14 if self.scenario.enable_signals else 10)
 
@@ -425,8 +437,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         infos = [{} for _ in range(self.n_players)]
 
         # assign actions to players / remove invalid actions
-        for action, player in zip(actions, self.players):
+        for action, player, info in zip(actions, self.players, infos):
+
+            # if player was dead at start of round ignore this transition when training
+            info["train_mask"] = 0
+
             player.action = ACTION_NOOP if player.is_dead else action
+
             if player.action in SHOOT_ACTIONS and not player.can_shoot:
                 player.action = ACTION_NOOP
 
@@ -952,6 +969,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             blank_edges(obs, cells_to_blank_out * CELL_SIZE, [32, 32, 32])
             blank_edges(obs, 3, observer.team_color//2)
             obs[3:-3, :3, :3] = observer.id_color
+
+            blank_edges(obs, 1, 0)
 
             # embosed frame just make this easier to see
             # obs[:1, :] = 128

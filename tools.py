@@ -68,7 +68,7 @@ def plot_experiment(path, plots=(("score_red", "score_green", "score_blue"), ("g
         plt.figure(figsize=(12, 4))  # make it big
         plot_graph(results, path, y_axis=y_axis, **kwargs)
 
-    scores = tuple(round(get_score(results, team), 2) for team in ["red", "green", "blue"])
+    scores = tuple(round(float(get_score(results, team)), 2) for team in ["red", "green", "blue"])
     print(f"Scores {scores}")
 
 def get_score(results, team, n_episodes=100):
