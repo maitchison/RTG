@@ -37,12 +37,14 @@ import gc
 
 import strategies
 from strategies import RTG_ScriptedEnv
-from stable_baselines.common.policies import CnnLstmPolicy
 
-#from stable_baselines import PPO2
-from ppo_ma import PPO_MA
+from stable_baselines.common.policies import CnnLstmPolicy as POLICY
+from stable_baselines import PPO2 as PPO
 
-from policy_ma import CnnLstmPolicy_MA
+#from ppo_ma import PPO_MA as PPO
+#from policy_ma import CnnLstmPolicy_MA as POLICY
+
+
 import rescue
 from new_models import cnn_default, cnn_fast
 
@@ -184,7 +186,7 @@ def flexiable_step(model, env_states, agent_states, env_dones):
     return actions[:required_n], agent_states[:required_n]
 
 
-def evaluate_model(model:ActorCriticRLModel, vec_env:MultiAgentVecEnv, trials=100):
+def evaluate_model(model:ActorCriticRLModel, eval_scenario, sub_folder, trials=100):
     """
     Evaluate given model in given environment.
     :param model:
@@ -193,25 +195,23 @@ def evaluate_model(model:ActorCriticRLModel, vec_env:MultiAgentVecEnv, trials=10
     :return:
     """
 
+    # run them all in parallel at once to make sure we get exactly 'trials' number of environments
+    vec_env = make_env(eval_scenario, name="eval", log_path=sub_folder, vary_players=False, parallel_envs=trials)
     env_states = vec_env.reset()
     agent_states = model.initial_state[:vec_env.num_envs]
     env_dones = np.zeros([len(agent_states)], dtype=np.bool)
+    vec_env.run_once = True
 
     # play the game...
-    results = []
-    while len(results) < trials:
+    results = [[0,0,0] for _ in range(trials)]
+    while not all(env_dones):
         actions, agent_states = flexiable_step(model, env_states, agent_states, env_dones)
         env_states, env_rewards, env_dones, env_infos = vec_env.step(actions)
 
         # look for finished games
-        for env in vec_env.envs:
-            if env.counter == 0:
-                results.append(env.previous_team_scores)
-
-    # sometimes multiple environments will finish at the same time, so make sure we only use the correct number of
-    # trials
-    if len(results) > trials:
-        results = results[:trials]
+        for i, env in enumerate(vec_env.envs):
+            if env.outcome != "":
+                results[i] = env.team_scores
 
     # collate results
     red_score = np.mean([r for r, g, b in results])
@@ -340,8 +340,11 @@ def make_env(scenarios: Union[List[ScenarioSetting], ScenarioSetting, str], para
             env_functions.append(make_env_fn)
 
     vec_env = MultiAgentVecEnv(env_functions)
-    #print(f"Created vector environment with {parallel_envs} parallel copies and {vec_env.num_envs} total agents.")
+
     return vec_env
+
+def get_current_epoch():
+    return CURRENT_EPOCH
 
 def train_model():
     """
@@ -382,6 +385,9 @@ def train_model():
 
     for epoch in range(0, config.epochs):
 
+        global CURRENT_EPOCH
+        CURRENT_EPOCH = epoch
+
         print()
         print(f"Training epoch {epoch} on experiment {config.log_folder}")
 
@@ -392,8 +398,7 @@ def train_model():
             os.makedirs(sub_folder, exist_ok=True)
             results_file = os.path.join(sub_folder, "results.csv")
 
-            eval_env = make_env(eval_scenario, name="eval", log_path=sub_folder, vary_players=False)
-            scores = evaluate_model(model, eval_env, trials=100)
+            scores = evaluate_model(model, eval_scenario, sub_folder, trials=100)
             rounded_scores = tuple(round(float(score), 1) for score in scores)
 
             print(f" -evaluation against {eval_scenario} = {rounded_scores}")
@@ -427,6 +432,8 @@ def train_model():
         sub_epoch = 0
 
         while step_counter < (epoch+1)*1e6:
+
+            CURRENT_EPOCH = step_counter / 1e6
 
             # silly baselines, will round down to nearest batch. Our batches are often around 49k, so running
             # .learn(100000) will only actually generate 88k steps. To keep all the numbers correct I therefore
@@ -496,7 +503,7 @@ def make_model(vec_env: MultiAgentVecEnv, model_name = None, verbose=0):
     params["verbose"] = verbose
     params["policy_kwargs"] = policy_kwargs
 
-    model = PPO_MA(CnnLstmPolicy_MA, vec_env, **params)
+    model = PPO(POLICY, vec_env, **params)
 
     return model
 
@@ -590,7 +597,7 @@ def load_model(filename, env=None):
     :param filename:
     :return:
     """
-    model = PPO_MA.load(filename, env)
+    model = PPO.load(filename, env)
     return model
 
 def regression_test():
@@ -693,5 +700,7 @@ def main():
 
 
 if __name__ == "__main__":
+    CURRENT_EPOCH = 0
+    RescueTheGeneralEnv.get_current_epoch = get_current_epoch
     config = Config()
     main()

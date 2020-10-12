@@ -59,7 +59,7 @@ class MultiAgentVecEnv(VecEnv):
 
     """
 
-    def __init__(self, make_marl_envs, max_agents=None):
+    def __init__(self, make_marl_envs):
         """
         :param make_env: List of functions to make given environment
         """
@@ -72,6 +72,9 @@ class MultiAgentVecEnv(VecEnv):
 
         self.actions = None
         self.auto_reset = True
+        self.run_once = False # if true environment will pause after first reset
+
+        self.env_completed = [False] * self.num_envs
 
     @property
     def n_players(self):
@@ -104,7 +107,19 @@ class MultiAgentVecEnv(VecEnv):
 
         # step each marl environment
         reversed_actions = list(reversed(self.actions))
-        for env in self.envs:
+        for i, env in enumerate(self.envs):
+
+            if self.run_once and self.env_completed[i]:
+                # ignore completed environments
+                for _ in range(env.n_players):
+                    reversed_actions.pop()
+                blank_obs = np.zeros(env.observation_space.shape, dtype=env.observation_space.dtype)
+                obs.extend([blank_obs]*env.n_players)
+                rewards.extend([0]*env.n_players)
+                dones.extend([True]*env.n_players)
+                infos.extend([{}]*env.n_players)
+                continue
+
             env_actions = []
             for _ in range(env.n_players):
                 env_actions.append(reversed_actions.pop())
@@ -117,7 +132,9 @@ class MultiAgentVecEnv(VecEnv):
                 for this_info, this_obs in zip(env_infos, env_obs):
                     this_info['terminal_observation'] = this_obs
                     this_info['team_scores'] = env.team_scores.copy()
-                env_obs = env.reset()
+                if not self.run_once:
+                    env_obs = env.reset()
+                self.env_completed[i] = True
 
             obs.extend(env_obs)
             rewards.extend(env_rewards)

@@ -316,6 +316,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     DX = [0, 0, -1, +1]
     DY = [-1, 1, 0, 0]
 
+    get_current_epoch = None  # assign a function to this that returns current epoch
+
     def __init__(self, scenario_name:str= "full", name:str= "env", log_file:str=None, dummy_prob=0, **scenario_kwargs):
         """
         :param scenario_name:
@@ -894,9 +896,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         time_since_env_started = time.time() - self.env_create_time
 
+        epoch = "-1" if RescueTheGeneralEnv.get_current_epoch is None else RescueTheGeneralEnv.get_current_epoch()
+
         output_string = ",".join(
             str(x) for x in [
-                self.name, self.game_counter, self.counter, *self.team_scores,
+                self.name, epoch, self.game_counter, self.counter, *self.team_scores,
                 *(nice_print(x) for x in stats),
                 self.outcome, time_since_env_started, time.time()
             ]
@@ -1273,7 +1277,7 @@ class RTG_Log():
         """
         if not os.path.exists(self.filename):
             with open(self.filename, "w") as f:
-                f.write("env_name, game_counter, game_length, score_red, score_green, score_blue, " +
+                f.write("env_name, epoch, game_counter, game_length, score_red, score_green, score_blue, " +
                         "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, stats_actions, " +
                         "player_count, result, wall_time, date_time" +
                         "\n")

@@ -4,7 +4,7 @@ import os
 def run():
     os.system(
         """python train.py train """ +
-        """--device=1 --run="V2.6 r2g2" """ +
+        """--device=2 --run="V2.6 r2g2" """ +
         """--train_scenarios=r2g2 """ +
         """--eval_scenarios=r2g2 """ +
         """--parallel_envs=128 """     # needs to be a multiple of minibatches, which is 4

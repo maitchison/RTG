@@ -82,6 +82,14 @@ class RTG_ScriptedEnv(Wrapper, MultiAgentEnv):
     def scenario(self):
         return self.env.scenario
 
+    @property
+    def team_scores(self):
+        return self.env.team_scores
+
+    @property
+    def outcome(self):
+        return self.env.outcome
+
 def stand_still(player:RTG_Player, env:RescueTheGeneralEnv):
     """
     Agent presses random keys
