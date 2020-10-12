@@ -78,19 +78,19 @@ class RescueTheGeneralScenario():
             "team_counts": (2, 0, 4),
         },
 
-        "r2g4": {
-            "description": "Two red player and four green players on largish map",
-            "map_width": 48,
-            "map_height": 48,
-            "team_counts": (2, 4, 0),
-            "n_trees": 20,
-            "reward_per_tree": 0.5,
+        "r2g2": {
+            "description": "Two red players and two green players on a medium map",
+            "map_width": 32,
+            "map_height": 32,
+            "team_counts": (2, 2, 0),
+            "n_trees": 10,
+            "reward_per_tree": 1,
             "hidden_roles": "none",
             "max_view_distance": 5,             # makes thins a bit faster
             "team_view_distance": (5, 5, 5),    # no bonus vision for red
-            "team_shoot_range": (4, 1, 0),      # green can shoot, but not far
+            "team_shoot_range": (4, 4, 0),      # green can shoot, but not far
             "starting_locations": "random",     # random start locations
-            "team_shoot_timeout": (3, 5, 3)      # green is much slower at shooting
+            "team_shoot_timeout": (5, 5, 5)      # green is much slower at shooting
         },
 
         "red2": {
@@ -316,7 +316,15 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     DX = [0, 0, -1, +1]
     DY = [-1, 1, 0, 0]
 
-    def __init__(self, scenario_name:str= "full", name:str= "env", log_file:str=None, **scenario_kwargs):
+    def __init__(self, scenario_name:str= "full", name:str= "env", log_file:str=None, dummy_prob=0, **scenario_kwargs):
+        """
+        :param scenario_name:
+        :param name:
+        :param log_file:
+        :param dummy_prob: Probability (0..1) that a player will be removed from game. This allows for a random number of
+            players in the game.
+        :param scenario_kwargs:
+        """
         super().__init__()
 
         self.env_create_time = time.time()
@@ -332,6 +340,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.name = name
         self.counter = 0
         self.game_counter = 0
+        self.dummy_prob = dummy_prob
 
         self.general_location = (0,0)
         self.general_health = int()
@@ -440,7 +449,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for action, player, info in zip(actions, self.players, infos):
 
             # if player was dead at start of round ignore this transition when training
-            info["train_mask"] = 0
+            if player.is_dead:
+                info["train_mask"] = 0
 
             player.action = ACTION_NOOP if player.is_dead else action
 
@@ -1104,6 +1114,15 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             player.health = self.scenario.player_initial_health
             player.turns_until_we_can_shoot = player.shooting_timeout
             player.custom_data = dict()
+
+        # apply dummy players, we can do this by simply killing them
+        players_left_alive = len(self.players)
+        for player in self.players:
+            # make sure not to kill the last player
+            if np.random.rand() < self.dummy_prob and players_left_alive > 1:
+                player.health = 0
+                self.player_lookup[player.x, player.y] = -1
+                players_left_alive -= 1
 
         return np.asarray(self._get_observations())
 

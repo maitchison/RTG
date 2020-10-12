@@ -100,7 +100,6 @@ class Config():
         self.cpus = 1 if tf.test.is_gpu_available else None  # for GPU machines its best to use only 1 CPU core
         self.parallel_envs = int()
         self.algo_params = dict()
-        self.algo = str()
         self.run = str()
         self.force_cpu = bool()
         self.script_blue_team = str()
@@ -328,32 +327,20 @@ def make_env(scenarios: Union[List[ScenarioSetting], ScenarioSetting, str], para
             else:
                 log_file = os.path.join(log_path, f"env_{index}.csv")
 
-            base_scenario = rescue.RescueTheGeneralScenario(scenario_setting.scenario_name)
-
-            make_env_fn = lambda team_counts, _strats=tuple(strats), _name=name, _scenario_setting=scenario_setting, _log_file=log_file: \
+            make_env_fn = lambda _strats=tuple(strats), _name=name, _scenario_setting=scenario_setting, _log_file=log_file: \
                 RTG_ScriptedEnv(
                     scenario_name=_scenario_setting.scenario_name, name=_name,
                     red_strategy=_strats[0],
                     green_strategy=_strats[1],
                     blue_strategy=_strats[2],
                     log_file=_log_file,
-                    **({'team_counts':team_counts} if team_counts is not None else {})
+                    dummy_prob=0.25 if vary_players else 0
                 )
 
-            # if we have 'random' team players enabled we need to add a selection of environments with different
-            # player counts
-            if vary_players:
-                for r in reversed(range(base_scenario.team_counts[0]+1)):
-                    for g in reversed(range(base_scenario.team_counts[1]+1)):
-                        for b in reversed(range(base_scenario.team_counts[2]+1)):
-                            if r == g == b == 0:
-                                continue
-                            env_functions.append(lambda _r=r, _g=g, _b=b: make_env_fn((_r, _g, _b)))
-            else:
-                env_functions.append(lambda: make_env_fn(None))
+            env_functions.append(make_env_fn)
 
     vec_env = MultiAgentVecEnv(env_functions)
-    print(f"Created vector environment with {parallel_envs} parallel copies and {vec_env.num_envs} total agents.")
+    #print(f"Created vector environment with {parallel_envs} parallel copies and {vec_env.num_envs} total agents.")
     return vec_env
 
 def train_model():
@@ -380,8 +367,10 @@ def train_model():
     scenario_descriptions = set(str(env.scenario) for env in vec_env.envs)
     for description in scenario_descriptions:
         print(description)
+    print()
     print("Config:")
     print(config)
+    print()
 
     model = make_model(vec_env)
 
@@ -483,6 +472,10 @@ def make_model(vec_env: MultiAgentVecEnv, model_name = None, verbose=0):
     #     f"Invalid mini_batch size {config.algo_params['mini_batch_size']}, must divide batch size {batch_size}."
     # n_mini_batches = batch_size // config.algo_params["mini_batch_size"]
     # print(f" -using {n_mini_batches} mini-batch(s) of size {config.algo_params['mini_batch_size']}.")
+
+    batch_size = config.algo_params["n_steps"] * vec_env.num_envs
+    mini_batch_size = batch_size // config.algo_params["nminibatches"]
+    print(f"Model created, using batch size of {batch_size} and mini-batch size of {mini_batch_size}")
 
     params = config.algo_params.copy()
 

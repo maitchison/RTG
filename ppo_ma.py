@@ -171,18 +171,17 @@ class PPO_MA(ActorCriticRLModel):
                     self.train_mask_ph = tf.placeholder(tf.float32, [None], name="train_mask_ph")
 
                     neglogpac = train_model.proba_distribution.neglogp(self.action_ph)
-                    self.entropy = tf.reduce_mean(train_model.proba_distribution.entropy())
+                    self.entropy = mask_reduce(train_model.proba_distribution.entropy())
 
                     vpred = train_model.value_flat
 
+                    self.true_roles_ph = tf.placeholder(tf.int32, [n_batch_train, n_players], name="true_roles_ph")
 
                     if self.role_prediction:
                         # Role estimation loss
                         # We role the first two dims into one to make this work.
 
                         pred_role_logits = tf.reshape(train_model._role_fn, [n_batch_train * n_players, n_roles])
-                        self.true_roles_ph = tf.placeholder(tf.int32, [n_batch_train, n_players], name="true_roles_ph")
-
                         self.role_prediction_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
                             labels=tf.reshape(self.true_roles_ph, [n_batch_train * n_players]),
                             logits=pred_role_logits
@@ -193,7 +192,7 @@ class PPO_MA(ActorCriticRLModel):
                         self.role_prediction_loss = tf.reduce_mean(self.role_prediction_loss, axis=1)
                         self.role_prediction_loss = mask_reduce(self.role_prediction_loss)
                     else:
-                        self.role_prediction_loss = 0
+                        self.role_prediction_loss = tf.constant(0, dtype=tf.float32)
 
                     # Value function clipping: not present in the original PPO
                     if self.cliprange_vf is None:
@@ -310,7 +309,13 @@ class PPO_MA(ActorCriticRLModel):
         """
 
         advs = returns - values
-        advs = (advs - advs.mean()) / (advs.std() + 1e-8)
+
+        masked_advs = advs[train_mask == 1]
+        if len(masked_advs) == 0:
+            masked_advs = np.zeros([1]) # just in case we have all data masked out...
+
+        advs = (advs - masked_advs.mean()) / (masked_advs.std() + 1e-8)
+
         td_map = {self.train_model.obs_ph: obs, self.action_ph: actions,
                   self.advs_ph: advs, self.rewards_ph: returns,
                   self.learning_rate_ph: learning_rate, self.clip_range_ph: cliprange,
@@ -426,6 +431,7 @@ class PPO_MA(ActorCriticRLModel):
                             mb_env_inds = env_indices[start:end]
                             mb_flat_inds = flat_indices[mb_env_inds].ravel()
                             slices = (arr[mb_flat_inds] for arr in (obs, returns, masks, actions, values, neglogpacs, roles, train_mask))
+
                             mb_states = states[mb_env_inds]
                             mb_loss_vals.append(self._train_step(lr_now, cliprange_now, *slices,
                                                                  update=timestep, writer=writer, states=mb_states,
@@ -532,7 +538,7 @@ class Runner(AbstractEnvRunner):
             if self.model.role_prediction:
                 true_roles = self.env.get_roles()
             else:
-                true_roles = [0 for _ in range(self.env.num_envs)]
+                true_roles = np.zeros((self.env.num_envs, self.env.envs[0].n_players), dtype=np.int)
 
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
@@ -548,8 +554,8 @@ class Runner(AbstractEnvRunner):
 
             train_mask = np.ones_like(actions, dtype=np.int)
             for i, info in enumerate(infos):
-                if "ignore_mask" in infos:
-                    train_mask[i] = infos["train_mask"]
+                if "train_mask" in info:
+                    train_mask[i] = info["train_mask"]
             mb_train_mask.append(train_mask)
 
             self.model.num_timesteps += self.n_envs
