@@ -84,11 +84,12 @@ class RescueTheGeneralScenario():
             "map_height": 32,
             "team_counts": (2, 2, 0),
             "n_trees": 10,
+            "randomize_ids": False,             # makes life simpler, see if sepecialization develops
             "reward_per_tree": 1,
             "hidden_roles": "none",
             "max_view_distance": 5,             # makes thins a bit faster
             "team_view_distance": (5, 5, 5),    # no bonus vision for red
-            "team_shoot_range": (4, 4, 0),      # green can shoot, but not far
+            "team_shoot_range": (4, 4, 4),
             "starting_locations": "random",     # random start locations
             "team_shoot_timeout": (5, 5, 5)      # green is much slower at shooting
         },
@@ -156,6 +157,7 @@ class RescueTheGeneralScenario():
         self.battle_royale = False   # removes general from game, and adds kill rewards
         self.enable_signals = False
         self.starting_locations = "together"
+        self.randomize_ids = True # randomize the starting ID colors each reset
 
         # default is red knows red, but all others are hidden
         # all is all roles are hidden
@@ -1118,7 +1120,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.team_scores *= 0
 
         ids = list(range(self.n_players))
-        np.random.shuffle(ids)
+        if self.scenario.randomize_ids:
+            np.random.shuffle(ids)
 
         # initialize the players
         for id, player in zip(ids, self.players):

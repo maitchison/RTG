@@ -85,10 +85,10 @@ class Config():
 
     default_algo_params = {
         'learning_rate': 2.5e-4,
-        'n_steps': 32,
+        'n_steps': 128,     # this does seem to help, 40 is fine sometimes...
         'ent_coef': 0.01,
         'n_cpu_tf_sess': 1,
-        'nminibatches': 4,
+        'nminibatches': 8,  # used to be 4 but needs to be 8 so we can fit into memory with larger n_steps
         'max_grad_norm': 5.0,
         'gamma': 0.995, # 0.998 was used in openAI hide and seek paper
         'cliprange_vf': -1  # this has been shown to not be effective so I disable it

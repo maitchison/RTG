@@ -130,7 +130,7 @@ def load_results(path):
             step_counter += data["game_length"][-1] * player_count
 
             # convert the team stats to single columns
-            for i, hit in enumerate(int(x) for x in str(data["stats_player_hit"]).split(" ")):
+            for i, hit in enumerate(int(x) for x in str(data["stats_player_hit"][-1]).split(" ")):
                 if vs_order[i] not in data:
                     data[vs_order[i]] = []
                 data[vs_order[i]].append(hit)
@@ -144,21 +144,28 @@ def load_results(path):
     return data
 
 def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "score_blue"), hold=False):
+
+    marking_map = {
+        "GvG": "--",
+        "RvR": "--",
+        "BvB": "--"
+    }
+
     color_map = {
         "score_red": "lightcoral",
         "score_green": "lightgreen",
         "score_blue": "lightsteelblue",
 
         "RvR": "lightcoral",
-        "RvG": "lightgreen",
-        "RvB": "lightsteelblue",
+        "RvG": "lightcoral",
+        "RvB": "lightcoral",
 
-        "GvR": "lightcoral",
+        "GvR": "lightgreen",
         "GvG": "lightgreen",
-        "GvB": "lightsteelblue",
+        "GvB": "lightgreen",
 
-        "BvR": "lightcoral",
-        "BvG": "lightgreen",
+        "BvR": "lightsteelblue",
+        "BvG": "lightsteelblue",
         "BvB": "lightsteelblue",
 
         "game_length": "gray",
@@ -214,25 +221,33 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
     for y_name in y_axis:
         _X, _Y, _Y_err = group_it(X, data[y_name])
         col = matplotlib.colors.to_rgb(color_map.get(y_name, "red"))
-        dark_col = tuple((c//2) for c in col)
+        dark_col = tuple((c*0.25) for c in col)
         error = _Y_err*1.96
 
         # smoothing
         if len(_Y) > 1000:
             _Y = ema(_Y, 0.99)
+            error = ema(error, 0.99)
         elif len(_Y) > 100:
             _Y = ema(_Y, 0.95)
+            error = ema(error, 0.95)
         elif len(_Y) > 10:
             _Y = ema(_Y, 0.8)
+            ema(error, 0.8)
+
+        error = np.asarray(error)
 
         plt.fill_between(
             _X, _Y-error, _Y+error, alpha=0.10, facecolor=col, edgecolor=dark_col
         )
 
+        line_style = marking_map.get(y_name,"-")
+
         plt.plot(
             _X,
             _Y,
             label=label_map.get(y_name, y_name),
+            linestyle=line_style,
             c=col
         )
 
