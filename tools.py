@@ -130,7 +130,7 @@ def load_results(path):
             step_counter += data["game_length"][-1] * player_count
 
             # convert the team stats to single columns
-            for i, hit in enumerate(int(x) for x in split(data["stats_player_hit"])):
+            for i, hit in enumerate(int(x) for x in str(data["stats_player_hit"]).split(" ")):
                 if vs_order[i] not in data:
                     data[vs_order[i]] = []
                 data[vs_order[i]].append(hit)
