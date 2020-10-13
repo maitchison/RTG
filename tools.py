@@ -1,11 +1,12 @@
 import csv
 import pickle
+import matplotlib.colors
 import matplotlib.pyplot as plt
 import os
 import numpy as np
 
-def ema(X, gamma:[str, float]='auto'):
-    if gamma == "auto":
+def ema(X, gamma:float = -1):
+    if gamma < 0:
         window_length = (len(X) ** 0.5)
         gamma = 1 - (1 / window_length)
 
@@ -88,10 +89,10 @@ def load_results(path):
     """
 
     data = {
-        'x': []
     }
 
     column_casts = {
+        "epoch": float,
         "env_name": str,
         "game_counter": int,
         "game_length": int,
@@ -111,6 +112,8 @@ def load_results(path):
         for name in column_names:
             data[name] = []
 
+        infer_epoch = "epoch" not in column_names
+
         for line in f:
             row = line.split(",")
 
@@ -125,13 +128,22 @@ def load_results(path):
                 player_count = sum([int(x) for x in data["player_count"][0].split(" ")])
 
             step_counter += data["game_length"][-1] * player_count
-            #step_counter += sum([int(x) for x in data["stats_actions"][0].split(" ")])
 
-            data["x"].append(int(step_counter))
+            # convert the team stats to single columns
+            for i, hit in enumerate(int(x) for x in split(data["stats_player_hit"])):
+                if vs_order[i] not in data:
+                    data[vs_order[i]] = []
+                data[vs_order[i]].append(hit)
+
+            if infer_epoch:
+                data["epoch"].append(float(step_counter)/1e6)
+
+            # make  epoch an into to group better
+            data["epoch"][-1] = round(data["epoch"][-1], 1)
 
     return data
 
-def plot_graph(data, title, xlim=None, smooth='auto', y_axis=("score_red", "score_green", "score_blue"), hold=False):
+def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "score_blue"), hold=False):
     color_map = {
         "score_red": "lightcoral",
         "score_green": "lightgreen",
@@ -172,11 +184,10 @@ def plot_graph(data, title, xlim=None, smooth='auto', y_axis=("score_red", "scor
 
     y_units_map.update({vs: "Hits" for vs in vs_order})
 
-    x = data["x"]
+    X = data["epoch"]
 
     plt.title(title)
 
-    show_raw = True
     remove_blank_data = True
 
     # check and remove zeros
@@ -190,29 +201,39 @@ def plot_graph(data, title, xlim=None, smooth='auto', y_axis=("score_red", "scor
             # no data don't plot
             return
 
-    if show_raw:
-        for y_name in y_axis:
-            plt.plot(
-                x,
-                ema(data[y_name], 0),
-                c=color_map.get(y_name, "red"),
-                alpha=0.03
-            )
-        for y_name in y_axis:
-            plt.plot(
-                x,
-                ema(data[y_name], 0.8),
-                c=color_map.get(y_name, "red"),
-                alpha=0.1
-            )
+    def group_it(X, Y):
+        unique_x = sorted(set(X))
+        x_map = {x: [] for x in unique_x}
+        for x, y in zip(X, Y):
+            x_map[x].append(y)
+        X = unique_x
+        Y = [np.mean(x_map[x]) for x in x_map]
+        Y_err = [np.std(x_map[x])/np.sqrt(len(x_map[x])) for x in x_map]
+        return (np.asarray(z) for z in (X, Y, Y_err))
 
     for y_name in y_axis:
+        _X, _Y, _Y_err = group_it(X, data[y_name])
+        col = matplotlib.colors.to_rgb(color_map.get(y_name, "red"))
+        dark_col = tuple((c//2) for c in col)
+        error = _Y_err*1.96
+
+        # smoothing
+        if len(_Y) > 1000:
+            _Y = ema(_Y, 0.99)
+        elif len(_Y) > 100:
+            _Y = ema(_Y, 0.95)
+        elif len(_Y) > 10:
+            _Y = ema(_Y, 0.8)
+
+        plt.fill_between(
+            _X, _Y-error, _Y+error, alpha=0.10, facecolor=col, edgecolor=dark_col
+        )
+
         plt.plot(
-            x,
-            ema(
-                data[y_name], smooth),
+            _X,
+            _Y,
             label=label_map.get(y_name, y_name),
-            c=color_map.get(y_name, "red")
+            c=col
         )
 
     if xlim is not None:
@@ -220,7 +241,7 @@ def plot_graph(data, title, xlim=None, smooth='auto', y_axis=("score_red", "scor
 
     plt.legend(loc="upper center", bbox_to_anchor=(0.5, 0.99))
     plt.grid()
-    plt.xlabel("agent step (M)")
+    plt.xlabel("agent epoch (Million steps)")
     plt.ylabel(y_units_map.get(y_axis[0], ""))
     if not hold:
         plt.show()

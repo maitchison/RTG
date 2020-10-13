@@ -618,7 +618,37 @@ def regression_test():
 
         model = make_model(vec_env, verbose=0)
 
-        model.learn(n_steps, reset_num_timesteps=False)
+        step_counter = 0
+        sub_epoch = 0
+
+        while step_counter < n_steps:
+
+            global CURRENT_EPOCH
+            CURRENT_EPOCH = step_counter / 1e6
+
+            # silly baselines, will round down to nearest batch. Our batches are often around 49k, so running
+            # .learn(100000) will only actually generate 88k steps. To keep all the numbers correct I therefore
+            # run each batch individually. For large batch sizes this should be fine.
+            learn_steps = model.n_batch
+            start_epoch_time = time.time()
+            model.learn(learn_steps, reset_num_timesteps=step_counter == 0)
+            step_counter += learn_steps
+            epoch_time = time.time() - start_epoch_time
+
+            fps = learn_steps / epoch_time
+
+            if sub_epoch == 0:
+                print(f" -FPS: {fps:.0f} .", end='', flush=True)
+            else:
+                print(".", end='', flush=True)
+
+            # this is needed to stop a memory leak
+            gc.collect()
+
+            sub_epoch += 1
+
+        print()
+
         export_video(f"{destination_folder}/{scenario_name}.mp4", model, scenario_name)
 
         # flush the log buffer

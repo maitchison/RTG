@@ -372,7 +372,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_deaths = np.zeros((3,), dtype=np.int)  # how many players died
         self.stats_kills = np.zeros((3,), dtype=np.int)  # how many players died
         self.stats_general_shot = np.zeros((3,), dtype=np.int)  # which teams shot general
+        self.stats_general_moved = np.zeros((3,), dtype=np.int)  # which teams moved general
+        self.stats_general_hidden = np.zeros((3,), dtype=np.int)  # which teams stood ontop of general
         self.stats_tree_harvested = np.zeros((3,), dtype=np.int)  # which teams harvested trees
+
 
         self.stats_actions = np.zeros((3, self.action_space.n), dtype=np.int)
         self.outcome = str() # outcome of game
@@ -574,8 +577,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 # moving the general is a once per turn thing
                 general_has_been_moved = True
                 self._needs_repaint = True
-                # stub show numbers
-                #print(f"\n{previous_general_location}->{self.general_location} dst:{self.general_tiles_from_edge} (best {self.general_closest_tiles_from_edge})")
+
+                self.stats_general_moved[player.team] += 1
 
                 # award some score if general is closer to the edge than they used to be
                 if self.general_tiles_from_edge < self.general_closest_tiles_from_edge:
@@ -588,6 +591,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             if player.action in MOVE_ACTIONS:
                 index = player.action - ACTION_MOVE_UP
                 self.move_player(player, self.DX[index], self.DY[index])
+
+        # look for players standing on general
+        for player in self.players:
+            if player.x == self.general_location[0] and player.y == self.general_location[1]:
+                self.stats_general_hidden[player.team] += 1
 
         # ------------------------
         # generate team rewards and look for outcomes
@@ -886,6 +894,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.stats_deaths,
             self.stats_kills,
             self.stats_general_shot,
+            self.stats_general_moved,
+            self.stats_general_hidden,
             self.stats_tree_harvested,
             self.stats_actions,
             np.asarray(self.scenario.team_counts, dtype=np.int)
@@ -1068,6 +1078,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_deaths *= 0
         self.stats_kills *= 0
         self.stats_general_shot *= 0
+        self.stats_general_moved *= 0
+        self.stats_general_hidden *= 0
         self.stats_tree_harvested *= 0
         self.stats_actions *= 0
 
@@ -1278,7 +1290,9 @@ class RTG_Log():
         if not os.path.exists(self.filename):
             with open(self.filename, "w") as f:
                 f.write("env_name, epoch, game_counter, game_length, score_red, score_green, score_blue, " +
-                        "stats_player_hit, stats_deaths, stats_kills, stats_general_shot, stats_tree_harvested, stats_actions, " +
+                        "stats_player_hit, stats_deaths, stats_kills, " +
+                        "stats_general_shot, stats_general_moved, stats_general_hidden, "
+                        "stats_tree_harvested, stats_actions, " +
                         "player_count, result, wall_time, date_time" +
                         "\n")
 
