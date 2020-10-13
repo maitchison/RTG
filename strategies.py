@@ -109,7 +109,7 @@ def wander(player:RTG_Player, env:RescueTheGeneralEnv):
     Agent wanders around map
     :return: the action
     """
-    return np.random.choice(rtg.MOVE_ACTIONS)
+    return np.random.choice(list(rtg.MOVE_ACTIONS))
 
 def stand_and_shoot(player:RTG_Player, env:RescueTheGeneralEnv):
     """

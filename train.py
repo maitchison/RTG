@@ -401,7 +401,7 @@ def train_model():
             scores = evaluate_model(model, eval_scenario, sub_folder, trials=100)
             rounded_scores = tuple(round(float(score), 1) for score in scores)
 
-            print(f" -evaluation against {eval_scenario} = {rounded_scores}")
+            print(f" -evaluation against {eval_scenario:<40} {rounded_scores}")
 
             # generate a video
             if config.export_video:

@@ -4,6 +4,7 @@ import matplotlib.colors
 import matplotlib.pyplot as plt
 import os
 import numpy as np
+from collections import defaultdict
 
 def ema(X, gamma:float = -1):
     if gamma < 0:
@@ -88,8 +89,7 @@ def load_results(path):
     :return:
     """
 
-    data = {
-    }
+    data = defaultdict(list)
 
     column_casts = {
         "epoch": float,
@@ -109,8 +109,6 @@ def load_results(path):
     with open(path, "r") as f:
         header = f.readline()
         column_names = [name.strip() for name in header.split(",")]
-        for name in column_names:
-            data[name] = []
 
         infer_epoch = "epoch" not in column_names
 
@@ -122,7 +120,7 @@ def load_results(path):
                     value = column_casts[name](value)
                 else:
                     value = str(value)
-                data[name].append(value)
+                data[name] += [value]
 
             if player_count is None:
                 player_count = sum([int(x) for x in data["player_count"][0].split(" ")])
@@ -133,7 +131,19 @@ def load_results(path):
             for i, hit in enumerate(int(x) for x in str(data["stats_player_hit"][-1]).split(" ")):
                 if vs_order[i] not in data:
                     data[vs_order[i]] = []
-                data[vs_order[i]].append(hit)
+                data[vs_order[i]] += [hit]
+
+            # convert the team stats to single columns
+            for stat in ["deaths", "kills", "general_shot", "general_moved", "general_hidden", "tree_harvested"]:
+
+                stats_name = f"stats_{stat}"
+
+                if stats_name not in data:
+                    continue
+
+                for team, value in zip("RGB", (int(x) for x in str(data[stats_name][-1]).split(" "))):
+                    field_name = f"{team}_{stat}"
+                    data[field_name] += [value]
 
             if infer_epoch:
                 data["epoch"].append(float(step_counter)/1e6)
@@ -156,23 +166,11 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
         "score_green": "lightgreen",
         "score_blue": "lightsteelblue",
 
-        "RvR": "lightcoral",
-        "RvG": "lightcoral",
-        "RvB": "lightcoral",
+        "Rv": "lightcoral",
+        "Gv": "lightgreen",
+        "Bv": "lightsteelblue",
 
-        "GvR": "lightgreen",
-        "GvG": "lightgreen",
-        "GvB": "lightgreen",
-
-        "BvR": "lightsteelblue",
-        "BvG": "lightsteelblue",
-        "BvB": "lightsteelblue",
-
-        "game_length": "gray",
-
-        "result_timeout": "gray",
-        "result_red": "lightcoral",
-        "result_blue": "lightsteelblue",
+        "game_length": "gray"
     }
 
     label_map = {
@@ -197,6 +195,15 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
 
     remove_blank_data = True
 
+    # check names
+    missing_column = False
+    for y_name in y_axis:
+        if y_name not in data:
+            print(f"Warning, missing column {y_name}")
+            missing_column = True
+    if missing_column:
+        return
+
     # check and remove zeros
     if remove_blank_data:
         good_data = []
@@ -218,10 +225,23 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
         Y_err = [np.std(x_map[x])/np.sqrt(len(x_map[x])) for x in x_map]
         return (np.asarray(z) for z in (X, Y, Y_err))
 
+    color_index = 0
     for y_name in y_axis:
+
         _X, _Y, _Y_err = group_it(X, data[y_name])
-        col = matplotlib.colors.to_rgb(color_map.get(y_name, "red"))
-        dark_col = tuple((c*0.25) for c in col)
+
+        for k, v in color_map.items():
+            if y_name.startswith(k):
+                col = v
+                break
+        else:
+            col = plt.get_cmap("tab20")(color_index)[:3]
+            color_index += 1
+
+        if type(col) is str:
+            col = matplotlib.colors.to_rgb(col)
+
+        dark_col = tuple((c/4) for c in col)
         error = _Y_err*1.96
 
         # smoothing
