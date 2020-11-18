@@ -159,9 +159,10 @@ def rush_general(player:RTG_Player, env:RescueTheGeneralEnv):
     dx = player.x - env.general_location[0]
     dy = player.y - env.general_location[1]
 
-    general_is_visible = abs(dx) + abs(dy) <= player.view_distance
+    general_in_vision_range = abs(dx) + abs(dy) <= player.view_distance
+    general_covered = env.player_at_pos(*env.general_location, include_dead=True) is not None
 
-    if general_is_visible:
+    if general_in_vision_range and not general_covered:
         return rush_general_cheat(player, env)
     else:
         # pick a random direction to travel in
