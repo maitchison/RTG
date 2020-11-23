@@ -80,8 +80,8 @@ class RescueTheGeneralScenario():
 
         "r2g2": {
             "description": "Two red players and two green players on a medium map",
-            "map_width": 32,
-            "map_height": 32,
+            "map_width": 48,
+            "map_height": 48,
             "team_counts": (2, 2, 0),
             "n_trees": 10,
             "randomize_ids": False,             # makes life simpler, see if sepecialization develops
@@ -92,6 +92,38 @@ class RescueTheGeneralScenario():
             "team_shoot_range": (4, 4, 4),
             "starting_locations": "random",     # random start locations
             "team_shoot_timeout": (5, 5, 5)      # green is much slower at shooting
+        },
+
+        "r2g3": {
+            "description": "Two red players and three green players on a medium map",
+            "map_width": 48,
+            "map_height": 48,
+            "team_counts": (2, 3, 0),
+            "n_trees": 10,
+            "randomize_ids": False,  # makes life simpler, see if sepecialization develops
+            "reward_per_tree": 1,
+            "hidden_roles": "none",
+            "max_view_distance": 5,  # makes thins a bit faster
+            "team_view_distance": (5, 5, 5),  # no bonus vision for red
+            "team_shoot_range": (4, 4, 4),
+            "starting_locations": "random",  # random start locations
+            "team_shoot_timeout": (5, 5, 5)  # green is much slower at shooting
+        },
+
+        "r2g4": {
+            "description": "Two red players and two green players on a medium map",
+            "map_width": 48,
+            "map_height": 48,
+            "team_counts": (2, 4, 0),
+            "n_trees": 10,
+            "randomize_ids": False,  # makes life simpler, see if sepecialization develops
+            "reward_per_tree": 1,
+            "hidden_roles": "none",
+            "max_view_distance": 5,  # makes thins a bit faster
+            "team_view_distance": (5, 5, 5),  # no bonus vision for red
+            "team_shoot_range": (4, 4, 4),
+            "starting_locations": "random",  # random start locations
+            "team_shoot_timeout": (5, 5, 5)  # green is much slower at shooting
         },
 
         "red2": {

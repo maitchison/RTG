@@ -80,6 +80,12 @@ class MultiAgentVecEnv(VecEnv):
     def n_players(self):
         return self.envs[0].n_players
 
+    @property
+    def max_roles(self):
+        """ Returns number of roles in game"""
+        # note, we take max here, so if a game has team 0 and team 2, 3 will be returned, with 0 players being on team 1
+        return 1+max(player.team for player in self.env.players)
+
     def get_roles(self):
         """
         Returns numpy array containing roles for each player

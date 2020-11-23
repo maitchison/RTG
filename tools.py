@@ -42,7 +42,8 @@ def export_graph(log_filename, epoch=None, png_base_name="results"):
         results = load_results(log_filename)
         y_axis = ("score_red", "score_green", "score_blue")
         plt.figure(figsize=(12,8)) # make it big
-        plot_graph(results, log_filename, y_axis=y_axis, hold=True)
+        title = log_filename
+        plot_graph(results, title=title, y_axis=y_axis, hold=True)
         scores = tuple(round(float(get_score(results, team)), 2) for team in ["red", "green", "blue"])
         end_tag = "" if epoch is None else f"[{epoch}]"
         png_filename = os.path.join(base_folder, f"{png_base_name} {scores} {end_tag}.png")
@@ -68,7 +69,8 @@ def plot_experiment(path, plots=(("score_red", "score_green", "score_blue"), ("g
 
     for y_axis in plots:
         plt.figure(figsize=(12, 4))  # make it big
-        plot_graph(results, path, y_axis=y_axis, **kwargs)
+        title = path
+        plot_graph(results, title=title, y_axis=y_axis, **kwargs)
 
     scores = tuple(round(float(get_score(results, team)), 2) for team in ["red", "green", "blue"])
     print(f"Scores {scores}")

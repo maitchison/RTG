@@ -3,6 +3,8 @@ Edited version of PPO2 to support features used in multi-agent reinforcement lea
 These include
     centralized value network
     role prediction head
+
+This isn't used anymore and will be removed shortly
 """
 
 import time

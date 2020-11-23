@@ -24,6 +24,7 @@ from MARL import MultiAgentVecEnv
 from tools import load_results, get_score, get_score_alt, export_graph
 
 from typing import Union, List
+import json
 import pickle
 import uuid
 import numpy as np
@@ -38,11 +39,12 @@ import gc
 import strategies
 from strategies import RTG_ScriptedEnv
 
+# this is the baselines implementation of PPO with LSTM
 from stable_baselines.common.policies import CnnLstmPolicy as POLICY
 from stable_baselines import PPO2 as PPO
 
-#from ppo_ma import PPO_MA as PPO
-#from policy_ma import CnnLstmPolicy_MA as POLICY
+# this is my implementation that is structured with MARL in mind.
+
 
 
 import rescue
@@ -111,11 +113,23 @@ class Config():
         self.vary_team_player_counts = bool()
 
     def __str__(self):
+
+        # custom one looks better and will evaluate ok using literal_eval
+
         lines = []
         for k,v in vars(self).items():
-            key_string = k+":"
-            lines.append(f"{key_string:<20}{v}")
+            key_string = f"'{k}':"
+            if type(v) is str: # wrap strings in quotes
+                v = f"'{v}'"
+            lines.append(f"{key_string:<20}{v},")
         return "{\n"+("\n".join(lines))+"\n}"
+
+        # d = {}
+        # for k,v in vars(self).items():
+        #     if type(v) is list and len(v) > 0 and type(v[0]) is ScenarioSetting:
+        #         v = [[scenario.scenario_name] + scenario.strategies for scenario in v]
+        #     d[k] = v
+        # return json.dumps(d, indent=4)
 
     def setup(self, args):
 
@@ -242,7 +256,7 @@ def export_video(filename, model, scenario):
     height = (height * scale) // 4 * 4
 
     # create video recorder
-    video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 15, (width, height), isColor=True)
+    video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 8, (width, height), isColor=True)
 
     # get initial states
     agent_states = model.initial_state
@@ -394,6 +408,7 @@ def train_model():
         # perform evaluations (if required)
         for index, eval_scenario in enumerate(config.eval_scenarios):
 
+
             sub_folder = f"{config.log_folder}/eval_{index}"
             os.makedirs(sub_folder, exist_ok=True)
             results_file = os.path.join(sub_folder, "results.csv")
@@ -401,7 +416,7 @@ def train_model():
             scores = evaluate_model(model, eval_scenario, sub_folder, trials=100)
             rounded_scores = tuple(round(float(score), 1) for score in scores)
 
-            print(f" -evaluation against {eval_scenario:<40} {rounded_scores}")
+            print(f" -evaluation against {str(eval_scenario):<40} {rounded_scores}")
 
             # generate a video
             if config.export_video:
