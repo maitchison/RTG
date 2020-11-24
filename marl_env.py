@@ -1,8 +1,7 @@
 import gym
 import numpy as np
 
-from stable_baselines.common.vec_env.base_vec_env import VecEnv
-
+from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
 class MultiAgentEnv(gym.Env):
     """
@@ -17,9 +16,9 @@ class MultiAgentEnv(gym.Env):
         'render.modes': ['human', 'rgb_array']
     }
 
-    def __init__(self):
+    def __init__(self, n_players):
         super().__init__()
-        pass
+        self._n_players = n_players
 
     def step(self, actions):
         return [], [], [], []
@@ -27,26 +26,33 @@ class MultiAgentEnv(gym.Env):
     def reset(self):
         return []
 
+    @property
+    def n_agents(self):
+        return self.n_players
+
+    @property
+    def n_players(self):
+        return self._n_players
+
 class DummyMARLEnv(MultiAgentEnv):
     """
     Dummy environment with given number of actors.
     """
 
-    def __init__(self, action_space, observation_space, n_agents):
-        super().__init__()
+    def __init__(self, action_space, observation_space, n_players):
+        super().__init__(n_players)
         self.observation_space = observation_space
         self.action_space = action_space
-        self.n_agents = n_agents
 
     def step(self, actions):
-        obs = np.zeros((self.n_agents, *self.observation_space.shape), dtype=self.observation_space.dtype)
-        rewards = np.zeros([self.n_agents], dtype=np.float)
-        dones = np.zeros([self.n_agents], dtype=np.bool)
-        infos = [{"train_mask":0} for _ in range(self.n_agents)]
+        obs = np.zeros((self.n_players, *self.observation_space.shape), dtype=self.observation_space.dtype)
+        rewards = np.zeros([self.n_players], dtype=np.float)
+        dones = np.zeros([self.n_players], dtype=np.bool)
+        infos = [{"train_mask":0} for _ in range(self.n_players)]
         return obs, rewards, dones, infos
 
     def reset(self):
-        obs = np.zeros((self.n_agents, *self.observation_space.shape), dtype=self.observation_space.dtype)
+        obs = np.zeros((self.n_players, *self.observation_space.shape), dtype=self.observation_space.dtype)
         return obs
 
 
@@ -57,6 +63,23 @@ class MultiAgentVecEnv(VecEnv):
     This allows multi-agent environments to be played by single-agent algorithms.
     All players are played by the same model, but using different instances (if LSTM is used).
 
+    Definitions
+
+    n_players: The total number of players in the environment
+    n_agents: The total number of (non scripted) players in the environment
+
+    The Vector Environment surfaces observations only for the agents, for example the environment
+
+    | Game 1     | Game 2            | Game 3 |
+    | p1,     p2 | p1,    p2,     p3 | p1, p2 |
+    | AI,     AI | AI,    script, AI | AI, AI |
+
+    Would surface as a vector environment of length 6 (the scripted player masked out)
+
+    This environment has 3 games, total_agents=7 and total_agents=6
+
+    For compatibility num_envs is set to total_agents
+
     """
 
     def __init__(self, make_marl_envs):
@@ -64,11 +87,9 @@ class MultiAgentVecEnv(VecEnv):
         :param make_env: List of functions to make given environment
         """
 
-        self.envs = [make_env() for make_env in make_marl_envs]
-        self.num_envs = sum(env.n_players for env in self.envs)
+        self.games = [make_env() for make_env in make_marl_envs]
 
-        env = self.envs[0]
-        VecEnv.__init__(self, self.num_envs, env.observation_space, env.action_space)
+        VecEnv.__init__(self, self.total_agents, self.games[0].observation_space, self.games[0].action_space)
 
         self.actions = None
         self.auto_reset = True
@@ -77,14 +98,26 @@ class MultiAgentVecEnv(VecEnv):
         self.env_completed = [False] * self.num_envs
 
     @property
-    def n_players(self):
-        return self.envs[0].n_players
+    def total_players(self):
+        return sum(game.n_players for game in self.games)
+
+    @property
+    def total_agents(self):
+        return sum(game.n_agents for game in self.games)
+
+    @property
+    def max_players(self):
+        return max(env.n_players for env in self.games)
 
     @property
     def max_roles(self):
         """ Returns number of roles in game"""
         # note, we take max here, so if a game has team 0 and team 2, 3 will be returned, with 0 players being on team 1
-        return 1+max(player.team for player in self.env.players)
+        result = 0
+        for env in self.games:
+            for player in env.players:
+                result = max(result, 1 + player.team)
+        return result
 
     def get_roles(self):
         """
@@ -92,7 +125,7 @@ class MultiAgentVecEnv(VecEnv):
         :return: tensor of dims [n_envs, n_players]
         """
         roles = []
-        for env in self.envs:
+        for env in self.games:
             env_roles = []
             for player in env.players:
                 env_roles.append(player.team)
@@ -100,8 +133,10 @@ class MultiAgentVecEnv(VecEnv):
                 roles.append(env_roles)
         return np.asarray(roles, dtype=np.int)
 
-
     def step_async(self, actions):
+        actions = list(actions)
+        assert len(actions) == self.num_envs,\
+            f"Wrong number of actions, expected {self.num_envs} but found {len(actions)}."
         self.actions = actions
 
     def step_wait(self):
@@ -113,33 +148,33 @@ class MultiAgentVecEnv(VecEnv):
 
         # step each marl environment
         reversed_actions = list(reversed(self.actions))
-        for i, env in enumerate(self.envs):
+        for i, game in enumerate(self.games):
 
             if self.run_once and self.env_completed[i]:
                 # ignore completed environments
-                for _ in range(env.n_players):
+                for _ in range(game.n_players):
                     reversed_actions.pop()
-                blank_obs = np.zeros(env.observation_space.shape, dtype=env.observation_space.dtype)
-                obs.extend([blank_obs]*env.n_players)
-                rewards.extend([0]*env.n_players)
-                dones.extend([True]*env.n_players)
-                infos.extend([{}]*env.n_players)
+                blank_obs = np.zeros(game.observation_space.shape, dtype=game.observation_space.dtype)
+                obs.extend([blank_obs]*game.n_players)
+                rewards.extend([0]*game.n_players)
+                dones.extend([True]*game.n_players)
+                infos.extend([{}]*game.n_players)
                 continue
 
             env_actions = []
-            for _ in range(env.n_players):
+            for _ in range(game.n_players):
                 env_actions.append(reversed_actions.pop())
 
-            env_obs, env_rewards, env_dones, env_infos = env.step(env_actions)
+            env_obs, env_rewards, env_dones, env_infos = game.step(env_actions)
 
             # auto reset.
             if self.auto_reset and all(env_dones):
                 # save final terminal observation for later
                 for this_info, this_obs in zip(env_infos, env_obs):
                     this_info['terminal_observation'] = this_obs
-                    this_info['team_scores'] = env.team_scores.copy()
+                    this_info['team_scores'] = game.team_scores.copy()
                 if not self.run_once:
-                    env_obs = env.reset()
+                    env_obs = game.reset()
                 self.env_completed[i] = True
 
             obs.extend(env_obs)
@@ -157,19 +192,19 @@ class MultiAgentVecEnv(VecEnv):
 
     def seed(self, seed=None):
         seeds = list()
-        for idx, env in enumerate(self.envs):
-            seeds.append(env.seed(seed + idx))
+        for idx, game in enumerate(self.games):
+            seeds.append(game.seed(seed + idx))
         return seeds
 
     def reset(self):
         obs = []
-        for env in self.envs:
-            obs.extend(env.reset())
+        for game in self.games:
+            obs.extend(game.reset())
         return np.asarray(obs)
 
     def close(self):
-        for env in self.envs:
-            env.close()
+        for game in self.games:
+            game.close()
 
     def get_attr(self, attr_name, indices=None):
         """Return attribute from vectorized environment (see base class)."""
@@ -189,4 +224,4 @@ class MultiAgentVecEnv(VecEnv):
 
     def _get_target_envs(self, indices):
         indices = self._get_indices(indices)
-        return [self.envs[i] for i in indices]
+        return [self.games[i] for i in indices]

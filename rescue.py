@@ -30,7 +30,7 @@ import math
 import gym.spaces
 import time
 
-from MARL import MultiAgentEnv
+from marl_env import MultiAgentEnv
 
 CELL_SIZE = 3
 SIN_CHANNELS = 10 # 10 channels gets a frequencies of 2^5, which suits maps around 32 tiles in width/height
@@ -361,15 +361,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             players in the game.
         :param scenario_kwargs:
         """
-        super().__init__()
+
+        # setup our scenario
+        self.scenario = RescueTheGeneralScenario(scenario_name, **scenario_kwargs)
+
+        super().__init__(sum(self.scenario.team_counts))
 
         self.env_create_time = time.time()
 
         self.log_file = log_file
         self._needs_repaint = True
-
-        # setup our scenario
-        self.scenario = RescueTheGeneralScenario(scenario_name, **scenario_kwargs)
 
         self.action_space = gym.spaces.Discrete(14 if self.scenario.enable_signals else 10)
 
@@ -475,6 +476,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :param actions: np array of actions of dims [n_players]
         :return: observations, rewards, dones, infos
         """
+        assert self.game_counter > 0, "Must call reset before step."
         assert len(actions) == self.n_players, f"{self.name}: Invalid number of players"
         assert self.outcome == "", f"{self.name}: Game has concluded with result {self.outcome}, reset must be called."
 

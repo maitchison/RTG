@@ -5,27 +5,7 @@ Author: Matthew Aitchison
 
 """
 
-import os
-
-from stable_baselines.common import ActorCriticRLModel
-
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
-os.environ["OMP_NUM_THREADS"] = "1"
-
-# disable tensorflow warnings
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # errors only
-import tensorflow as tf
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-
-from rescue import RescueTheGeneralEnv
-from MARL import MultiAgentVecEnv
-from tools import load_results, get_score, get_score_alt, export_graph
-
-from typing import Union, List
-import json
-import pickle
+import torch
 import uuid
 import numpy as np
 import cv2
@@ -33,22 +13,19 @@ import os
 import argparse
 import time
 import shutil
-from ast import literal_eval
 import gc
 
 import strategies
-from strategies import RTG_ScriptedEnv
-
-# this is the baselines implementation of PPO with LSTM
-from stable_baselines.common.policies import CnnLstmPolicy as POLICY
-from stable_baselines import PPO2 as PPO
-
-# this is my implementation that is structured with MARL in mind.
-
-
-
 import rescue
-from new_models import cnn_default, cnn_fast
+
+from typing import Union, List
+from ast import literal_eval
+
+from rescue import RescueTheGeneralEnv
+from marl_env import MultiAgentVecEnv
+from tools import load_results, get_score, get_score_alt, export_graph
+from strategies import RTG_ScriptedEnv
+from ppo_marl import PMAlgorithm, MarlAlgorithm
 
 class ScenarioSetting():
     """
@@ -87,9 +64,8 @@ class Config():
 
     default_algo_params = {
         'learning_rate': 2.5e-4,
-        'n_steps': 128,     # this does seem to help, 40 is fine sometimes...
+        'n_steps': 64,     # this does seem to help, 40 is fine sometimes... (should be 128...)
         'ent_coef': 0.01,
-        'n_cpu_tf_sess': 1,
         'nminibatches': 8,  # used to be 4 but needs to be 8 so we can fit into memory with larger n_steps
         'max_grad_norm': 5.0,
         'gamma': 0.995, # 0.998 was used in openAI hide and seek paper
@@ -99,9 +75,9 @@ class Config():
     def __init__(self):
         self.log_folder = str()
         self.device = str()
+        self.dtype = str()
         self.epochs = int()
         self.model = str()
-        self.cpus = 1 if tf.test.is_gpu_available else None  # for GPU machines its best to use only 1 CPU core
         self.parallel_envs = int()
         self.algo_params = dict()
         self.run = str()
@@ -151,22 +127,17 @@ class Config():
         self.algo_params = self.default_algo_params.copy()
         self.algo_params.update(literal_eval(args.algo_params))
 
+        # work out the device
+        if config.device.lower() == "auto":
+            config.device = "cuda" if torch.has_cuda else "cpu"
+
         # setup the scenarios... these are a bit complex now due to the scripted players
         args.eval_scenarios = args.eval_scenarios or args.train_scenarios
         config.train_scenarios = ScenarioSetting.parse(args.train_scenarios)
         config.eval_scenarios = ScenarioSetting.parse(args.eval_scenarios)
 
-        if self.device.lower() != "auto":
-            os.environ["CUDA_VISIBLE_DEVICES"] = self.device
 
-        # Set CPU as available physical device
-        if config.force_cpu:
-            print("Forcing CPU")
-            my_devices = tf.config.experimental.list_physical_devices(device_type='CPU')
-            tf.config.experimental.set_visible_devices(devices=my_devices, device_type='CPU')
-
-
-def flexiable_step(model, env_states, agent_states, env_dones):
+def flexiable_step(algorithm: MarlAlgorithm, env_states, agent_states, env_dones):
     """
     Stable-baselines has a limitation that models must always have the same batch size.
     Sometimes we want to run the model with more or less agents. This function allows for that.
@@ -182,28 +153,28 @@ def flexiable_step(model, env_states, agent_states, env_dones):
     required_n = len(env_states)
 
     # note, this requirement can be relaxed in the future by running the model multiple times
-    assert required_n <= model.n_envs, f"Tried to process {required_n} agents but model supports a maximum of {model.n_envs}"
+    assert required_n <= algorithm.n_envs, f"Tried to process {required_n} agents but model supports a maximum of {algorithm.n_envs}"
 
     env_state_shape = env_states[0].shape
     agent_state_shape = agent_states[0].shape
 
-    padded_states = np.zeros((model.n_envs, *env_state_shape), dtype=env_states.dtype)
-    padded_agent_states =  np.zeros((model.n_envs, *agent_state_shape), dtype=agent_states.dtype)
-    padded_dones = np.zeros((model.n_envs,), dtype=np.bool)
+    padded_states = np.zeros((algorithm.n_envs, *env_state_shape), dtype=env_states.dtype)
+    padded_agent_states =  np.zeros((algorithm.n_envs, *agent_state_shape), dtype=agent_states.dtype)
+    padded_dones = np.zeros((algorithm.n_envs,), dtype=np.bool)
 
     padded_states[:required_n] = env_states
     padded_agent_states[:required_n] = agent_states
     padded_dones[:required_n] = env_dones
 
-    actions, _, agent_states, _ = model.step(padded_states, padded_agent_states, padded_dones)
+    actions, _, agent_states, _ = algorithm.step(padded_states, padded_agent_states, padded_dones)
 
     return actions[:required_n], agent_states[:required_n]
 
 
-def evaluate_model(model:ActorCriticRLModel, eval_scenario, sub_folder, trials=100):
+def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=100):
     """
     Evaluate given model in given environment.
-    :param model:
+    :param algorithm:
     :param vec_env:
     :param trials:
     :return:
@@ -212,14 +183,14 @@ def evaluate_model(model:ActorCriticRLModel, eval_scenario, sub_folder, trials=1
     # run them all in parallel at once to make sure we get exactly 'trials' number of environments
     vec_env = make_env(eval_scenario, name="eval", log_path=sub_folder, vary_players=False, parallel_envs=trials)
     env_states = vec_env.reset()
-    agent_states = model.initial_state[:vec_env.num_envs]
+    agent_states = algorithm.get_initial_state(vec_env.num_envs)
     env_dones = np.zeros([len(agent_states)], dtype=np.bool)
     vec_env.run_once = True
 
     # play the game...
     results = [[0,0,0] for _ in range(trials)]
     while not all(env_dones):
-        actions, agent_states = flexiable_step(model, env_states, agent_states, env_dones)
+        actions, agent_states = flexiable_step(algorithm, env_states, agent_states, env_dones)
         env_states, env_rewards, env_dones, env_infos = vec_env.step(actions)
 
         # look for finished games
@@ -235,7 +206,7 @@ def evaluate_model(model:ActorCriticRLModel, eval_scenario, sub_folder, trials=1
     return red_score, green_score, blue_score
 
 
-def export_video(filename, model, scenario):
+def export_video(filename, algorithm: MarlAlgorithm, scenario):
     """
     Exports a movie of model playing in given scenario
     """
@@ -246,7 +217,7 @@ def export_video(filename, model, scenario):
     # it also makes sure that results from the video are not included in the log
     vec_env = make_env(scenario, parallel_envs=1, name="video")
 
-    env_states = vec_env.reset()
+    env_obs = vec_env.reset()
     env = vec_env.envs[0]
     frame = env.render("rgb_array")
 
@@ -259,25 +230,22 @@ def export_video(filename, model, scenario):
     video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 8, (width, height), isColor=True)
 
     # get initial states
-    agent_states = model.initial_state
+    agent_states = algorithm.get_initial_state(1)
 
     # this is required to make sure the last frame is visible
     vec_env.auto_reset = False
 
-    env_state_shape = env_states.shape[1:]
-    states = np.zeros((model.n_envs, *env_state_shape), dtype=np.uint8)
+    env_state_shape = env_obs.shape[1:]
+    obs = np.zeros((1, *env_state_shape), dtype=np.uint8)
 
     # play the game...
     while env.outcome == "":
 
-        # model expects parallel_agents environments but we're running only 1, so duplicate...
-        # (this is a real shame, would be better if this just worked with a flexable input size)
-
         # state will be [n, h, w, c], this process will duplicate it.
-        states[:env.n_players] = env_states
-        actions, _, agent_states, _ = model.step(states, agent_states, [False] * model.n_envs)
+        obs[:env.n_players] = env_obs
+        actions, _, agent_states, _ = algorithm.step(obs, agent_states, [False])
 
-        env_states, env_rewards, env_dones, env_infos = vec_env.step(actions[:env.n_players])
+        env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions[:env.n_players])
 
         # generate frames from global perspective
         frame = env.render("rgb_array")
@@ -389,7 +357,7 @@ def train_model():
     print(config)
     print()
 
-    model = make_model(vec_env)
+    model = make_algo(vec_env)
 
     print("="*60)
 
@@ -460,7 +428,7 @@ def train_model():
     time_taken = time.time() - start_time
     print(f"Finished training after {time_taken/60/60:.1f}h.")
 
-def make_model(vec_env: MultiAgentVecEnv, model_name = None, verbose=0):
+def make_algo(vec_env: MultiAgentVecEnv, model_name = None, verbose=0):
 
     model_name = model_name or config.model
 
@@ -471,32 +439,30 @@ def make_model(vec_env: MultiAgentVecEnv, model_name = None, verbose=0):
     # n_mini_batches = batch_size // config.algo_params["mini_batch_size"]
     # print(f" -using {n_mini_batches} mini-batch(s) of size {config.algo_params['mini_batch_size']}.")
 
-    batch_size = config.algo_params["n_steps"] * vec_env.num_envs
-    mini_batch_size = batch_size // config.algo_params["nminibatches"]
-    print(f"Model created, using batch size of {batch_size} and mini-batch size of {mini_batch_size}")
-
     params = config.algo_params.copy()
+    params["verbose"] = verbose
 
-    if model_name == "cnn_lstm_default":
-        policy_kwargs = {
-            "cnn_extractor": cnn_default,
-            "n_lstm": 128
+    if model_name.lower() == "default":
+        model_params = {
+            "model": "default",
+            "memory_units": 128
         }
-
-    elif model_name == "cnn_lstm_fast":
-        policy_kwargs = {
-            "cnn_extractor": cnn_fast,
-            "n_lstm": 64
+    elif model_name == "fast":
+        model_params = {
+            "model": "fast",
+            "memory_units": 64
         }
     else:
         raise ValueError(f"Invalid model name {model_name}")
 
-    params["verbose"] = verbose
-    params["policy_kwargs"] = policy_kwargs
+    model_params["device"] = config.device
+    model_params["dtype"] = config.dtype
 
-    model = PPO(POLICY, vec_env, **params)
+    algorithm = PMAlgorithm(vec_env, model_params=model_params)
 
-    return model
+    print(f"Model created, using batch size of {algorithm.batch_size} and mini-batch size of {algorithm.mini_batch_size}")
+
+    return algorithm
 
 def run_benchmarks(train=True, model=True, env=True):
 
@@ -521,33 +487,32 @@ def run_benchmarks(train=True, model=True, env=True):
     def bench_training(scenario_name, model_name):
 
         vec_env = make_env(scenario_name, name="benchmark")
-        model = make_model(vec_env, model_name, verbose=0)
+        algo = make_algo(vec_env, model_name, verbose=0)
 
         # just to warm it up
-        model.learn(model.n_batch)
+        algo.learn(algo.batch_size)
 
         start_time = time.time()
-        model.learn(2 * model.n_batch)
+        algo.learn(2 * algo.batch_size)
         time_taken = (time.time() - start_time)
 
-        print(f" - model {model_name} trains at {2 * model.n_batch / time_taken / 1000:.1f}k FPS.")
+        print(f" - model {model_name} trains at {2 * algo.batch_size / time_taken / 1000:.1f}k FPS.")
 
     def bench_model(model_name):
 
         vec_env = make_env("full")
-        model = make_model(vec_env, model_name)
-
+        agent = make_algo(vec_env, model_name)
         states = np.asarray(vec_env.reset())
 
-        model_states = model.initial_state
-        model_masks = np.zeros((vec_env.num_envs,), dtype=np.uint8)
+        rnn_states = agent.get_initial_state()
+        masks = np.zeros((vec_env.num_envs,), dtype=np.uint8)
         steps = 0
 
         start_time = time.time()
 
         while time.time() - start_time < 10:
 
-            actions, _, model_states, _ = model.step(states, model_states, model_masks)
+            actions, _, rnn_states, _ = agent.step(states, rnn_states, masks)
             steps += vec_env.num_envs
 
         time_taken = (time.time() - start_time)
@@ -556,7 +521,7 @@ def run_benchmarks(train=True, model=True, env=True):
 
     if train:
         print("Benchmarking training...")
-        for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
+        for model_name in ["default", "fast"]:
             bench_training("red2", model_name)
 
     if env:
@@ -566,7 +531,7 @@ def run_benchmarks(train=True, model=True, env=True):
 
     if model:
         print("Benchmarking models (inference)...")
-        for model_name in ["cnn_lstm_default", "cnn_lstm_fast"]:
+        for model_name in ["default", "fast"]:
             bench_model(model_name)
 
 def print_scores(epoch=None):
@@ -588,10 +553,10 @@ def load_model(filename, env=None):
     :param filename:
     :return:
     """
-    model = PPO.load(filename, env)
+    model = PMAlgorithm.load(filename, env)
     return model
 
-def learn(model, step_counter, max_steps, verbose=True):
+def learn(agent: MarlAlgorithm, step_counter, max_steps, verbose=True):
 
     sub_epoch = 0
 
@@ -600,12 +565,12 @@ def learn(model, step_counter, max_steps, verbose=True):
         global CURRENT_EPOCH
         CURRENT_EPOCH = step_counter / 1e6
 
-        # silly baselines, will round down to nearest batch. Our batches are often around 49k, so running
+        # learn will round down to nearest batch. Our batches are often around 49k, so running
         # .learn(100000) will only actually generate 88k steps. To keep all the numbers correct I therefore
         # run each batch individually. For large batch sizes this should be fine.
-        learn_steps = model.n_batch
+        learn_steps = agent.batch_size
         start_epoch_time = time.time()
-        model.learn(learn_steps, reset_num_timesteps=step_counter == 0)
+        agent.learn(learn_steps, reset_num_timesteps=step_counter == 0)
         step_counter += learn_steps
         epoch_time = time.time() - start_epoch_time
 
@@ -642,7 +607,7 @@ def regression_test():
         make_env = lambda: RescueTheGeneralEnv(scenario_name=scenario_name, name="test", log_file=log_file)
         vec_env = MultiAgentVecEnv([make_env for _ in range(config.parallel_envs)])
 
-        model = make_model(vec_env, verbose=0)
+        model = make_algo(vec_env, verbose=0)
 
         learn(model, 0, n_steps)
         print()
@@ -682,9 +647,10 @@ def regression_test():
 def main():
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, help="[bench|train|test|evaluate]")
+    parser.add_argument('mode', type=str, help="[benchmark|train|test|evaluate]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
-    parser.add_argument('--device', type=str, help="[0|1|2|3|AUTO]", default="auto")
+    parser.add_argument('--device', type=str, help="[CPU|AUTO|CUDA|CUDA:n]", default="auto")
+    parser.add_argument('--dtype', type=str, help="[torch.float32]", default=torch.float32)
 
     parser.add_argument('--train_scenarios', type=str, default="full",
         help="Scenario settings for training. Can be a single scenario name e.g. 'red2' or for a mixed training setting "
@@ -693,8 +659,7 @@ def main():
         help="Scenario settings used to evaluate (defaults to same as train_scenario)", default=None)
 
     parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=500)
-    parser.add_argument('--model', type=str, help="model to use [cnn_lstm_default|cnn_lstm_fast]", default="cnn_lstm_default")
-    parser.add_argument('--force_cpu', type=bool, default=False)
+    parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")
     parser.add_argument('--script_blue_team', type=str, default=None)
     parser.add_argument('--export_video', type=bool, default=True)
     parser.add_argument('--algo_params', type=str, default="{}")
@@ -711,7 +676,7 @@ def main():
 
     os.makedirs(config.log_folder, exist_ok=True)
 
-    if args.mode == "bench":
+    if args.mode == "benchmark":
         run_benchmarks()
     elif args.mode == "bench_env":
         run_benchmarks(env=True, model=False, train=False)

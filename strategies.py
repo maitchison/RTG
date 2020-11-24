@@ -10,30 +10,35 @@ Note: these stratagies control hte player directly and do not necessarly follow 
 
 from gym import Wrapper
 from rescue import RescueTheGeneralEnv, RTG_Player
-from MARL import MultiAgentEnv
+from marl_env import MultiAgentEnv
 import rescue as rtg
 import numpy as np
 
 
-class RTG_ScriptedEnv(Wrapper, MultiAgentEnv):
+class RTG_ScriptedEnv(MultiAgentEnv, Wrapper):
     """
     Wrapper that allows some players within the RTG environment to be scripted.
     Each team gets a separate controller, teams without controllers use actions provided to environment
-
     """
 
     def __init__(self, scenario_name="full", name="scripted", red_strategy=None, green_strategy=None, blue_strategy=None,
                  log_file=None, dummy_prob=0, **scenario_kwargs):
 
-        env = RescueTheGeneralEnv(scenario_name=scenario_name, name=name, log_file=log_file, dummy_prob=dummy_prob, **scenario_kwargs)
-        super().__init__(env)
+        vec_env = RescueTheGeneralEnv(scenario_name=scenario_name, name=name, log_file=log_file, dummy_prob=dummy_prob, **scenario_kwargs)
+        super(MultiAgentEnv, self).__init__(vec_env)
 
         self.controllers = [red_strategy, green_strategy, blue_strategy]
-        self._n_players = sum(
-            count for team, count in enumerate(self.env.scenario.team_counts) if self.controllers[team] is None)
 
         # selects which players observations to pass through
         self.player_filter = []
+
+    @property
+    def n_agents(self):
+        return sum(count for team, count in enumerate(self.env.scenario.team_counts) if self.controllers[team] is None)
+
+    @property
+    def n_players(self):
+        return self.env.n_players
 
     def step(self, actions):
 
@@ -62,6 +67,7 @@ class RTG_ScriptedEnv(Wrapper, MultiAgentEnv):
         obs = self.env.reset()
 
         # figure out which players to pass through
+        # players controlled by a script are excluded
         self.player_filter = []
         for player in self.env.players:
             if self.controllers[player.team] is None:
@@ -71,10 +77,6 @@ class RTG_ScriptedEnv(Wrapper, MultiAgentEnv):
 
     def render(self, mode='human', **kwargs):
         return self.env.render(mode, **kwargs)
-
-    @property
-    def n_players(self):
-        return self._n_players
 
     # pass these through
 
