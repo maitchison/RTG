@@ -87,6 +87,7 @@ class Config():
         self.train_scenarios = list()
         self.eval_scenarios = list()
         self.vary_team_player_counts = bool()
+        self.amp = bool()
 
     def __str__(self):
 
@@ -458,9 +459,9 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None, verbose=0):
     model_params["device"] = config.device
     model_params["dtype"] = config.dtype
 
-    algorithm = PMAlgorithm(vec_env, model_params=model_params)
+    algorithm = PMAlgorithm(vec_env, model_params=model_params, amp=config.amp)
 
-    print(f"Model created, using batch size of {algorithm.batch_size} and mini-batch size of {algorithm.mini_batch_size}")
+    print(f"Model created using batch size of {algorithm.batch_size} and mini-batch size of {algorithm.mini_batch_size}")
 
     return algorithm
 
@@ -662,6 +663,7 @@ def main():
     parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")
     parser.add_argument('--script_blue_team', type=str, default=None)
     parser.add_argument('--export_video', type=bool, default=True)
+    parser.add_argument('--amp', type=bool, default=False, help="Enable Automatic Mixed Precision")
     parser.add_argument('--algo_params', type=str, default="{}")
     parser.add_argument('--parallel_envs', type=int, default=128,
                         help="The number of times to duplicate the environments. Note: when using mixed learning each"+
