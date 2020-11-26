@@ -725,8 +725,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.team_scores += team_rewards
 
         # send done notifications to players who are dead
-        for player in self.players:
-            dones[player.index] = player.is_dead
+        # note: it's better not to do this, just return done all at once, but zero out the updates
+        # on players that are dead
+        #for player in self.players:
+        #   dones[player.index] = player.is_dead
 
         game_finished = result_general_killed or \
                         result_general_rescued or \

@@ -124,14 +124,28 @@ class MultiAgentVecEnv(VecEnv):
         Returns numpy array containing roles for each player
         :return: tensor of dims [n_envs, n_players]
         """
+
+        # todo: is this code correct?
+
         roles = []
-        for env in self.games:
+        for game in self.games:
             env_roles = []
-            for player in env.players:
+            for player in game.players:
                 env_roles.append(player.team)
-            for _ in env.players:
+            for _ in game.players:
                 roles.append(env_roles)
         return np.asarray(roles, dtype=np.int)
+
+    def get_alive(self):
+        """
+        Returns numpy array containing alive status for each player
+        :return: bool np array of dims [n_envs]
+        """
+        alive = []
+        for game in self.games:
+            for player in game.players:
+                alive.append(player.is_alive)
+        return np.asarray(alive, dtype=np.bool)
 
     def step_async(self, actions):
         actions = list(actions)

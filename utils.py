@@ -1,14 +1,19 @@
 import numpy as np
 import torch
-import os
-import math
-import cv2
-import pickle
-import json
-import time
-import platform
 
-import torchvision
+class Color:
+    """
+        Colors class for use with terminal.
+    """
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
 
 class RunningMeanStd(object):
     """
@@ -106,6 +111,11 @@ def dump_data(X, name):
         f.write("mean," + str(np.mean(X))+"\n")
         f.write("std," + str(np.std(X))+"\n")
     np.savetxt(name+".csv", X, delimiter=",")
+
+
+def default(x, default):
+    """ Returns x if x is not none, otherwise default. """
+    return x if x is not None else default
 
 def validate_dims(x, dims, dtype=None):
     """ Makes sure x has the correct dims and dtype.
