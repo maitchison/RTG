@@ -32,6 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
 from logger import Logger
+from typing import Union
 
 import utils
 
@@ -55,7 +56,7 @@ class BaseEncoder(nn.Module):
 class DefaultEncoder(BaseEncoder):
     """ Encodes from observation to hidden representation. """
 
-    def __init__(self, input_dims, out_features=128, amp=False):
+    def __init__(self, input_dims, out_features=128):
         """
         :param input_dims: intended dims of input, excluding batch size (height, width, channels)
         """
@@ -63,9 +64,9 @@ class DefaultEncoder(BaseEncoder):
 
         self.final_dims = (64, self.input_dims[0]//2//2, self.input_dims[1]//2//2)
 
-        self.conv1 = nn.Conv2d(self.input_dims[2], 32, 3)
-        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
-        self.conv3 = nn.Conv2d(64, 64, 3, padding=1)
+        self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.fc = nn.Linear(prod(self.final_dims), self.out_features)
 
         print(f" -created default encoder, final dims {self.final_dims}")
@@ -108,9 +109,9 @@ class FastEncoder(BaseEncoder):
 
         self.final_dims = (64, self.input_dims[0]//3//2, self.input_dims[1]//3//2)
 
-        self.conv1 = nn.Conv2d(self.input_dims[2], 32, 3, stride=3)
-        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
-        self.conv3 = nn.Conv2d(64, 64, 3, padding=1)
+        self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3, stride=3)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.fc = nn.Linear(prod(self.final_dims), self.out_features)
 
         print(f"Created fast encoder, final dims {self.final_dims}")
@@ -136,6 +137,7 @@ class FastEncoder(BaseEncoder):
         x = torch.max_pool2d(x, 2, 2)
         assert x.shape[1:] == self.final_dims, f"Expected final shape to be {self.final_dims} but found {x.shape[1:]}"
         x = x.reshape((b, -1))
+
         x = torch.relu(self.fc(x))
 
         return x
@@ -206,8 +208,10 @@ class PMModel(nn.Module):
             self,
             env: MultiAgentVecEnv,
             device="cpu",
-            dtype="torch.float32",
-            memory_units=128, model="default",
+            dtype=torch.float32,
+            memory_units=128,
+            out_features=128,
+            model="default",
             data_parallel=False
     ):
 
@@ -222,9 +226,9 @@ class PMModel(nn.Module):
         self.dtype = dtype
 
         if model.lower() == "default":
-            self.encoder = DefaultEncoder(env.observation_space.shape)
+            self.encoder = DefaultEncoder(env.observation_space.shape, out_features=out_features)
         elif model.lower() == "fast":
-            self.encoder = FastEncoder(env.observation_space.shape)
+            self.encoder = FastEncoder(env.observation_space.shape, out_features=out_features)
         else:
             raise Exception(f"Invalid model {model}, expected [default|fast]")
 
@@ -243,11 +247,11 @@ class PMModel(nn.Module):
         self.obs_shape = env.observation_space.shape
 
         # memory units
-        self.lstm = torch.nn.LSTM(self.encoder_features, self.memory_units)
+        self.lstm = torch.nn.LSTM(input_size=self.encoder_features, hidden_size=self.memory_units, num_layers=1,
+                                  batch_first=False, dropout=0)
 
         # output heads
         self.policy_head = nn.Linear(self.memory_units, env.action_space.n)
-        # stub disable smaller gradient init..
         #torch.nn.init.xavier_uniform_(self.policy_head.weight, gain=0.01)  # this helps with model's initial exploration
 
         self.local_int_value_head = nn.Linear(self.memory_units, 1)
@@ -265,19 +269,27 @@ class PMModel(nn.Module):
     def forward_sequence(self, obs, rnn_states, terminals=None):
         """
         Forward a sequence of observations through model, returns dictionary of outputs.
-        :param obs: input observations, tensor of dims [N, A, observation_shape], which should be channels last. (BHWC)
-        :param rnn_states: float32 tensor of dims [A, 2, memory_dims] containing the initial rnn h,c states
-        :param terminals: (optional) tensor of dims [N,A] indicating transitions with a terminal state with a 1
+        :param obs: input observations, tensor of dims [N, B, observation_shape], which should be channels last. (BHWC)
+        :param rnn_states: float32 tensor of dims [B, 2, memory_dims] containing the initial rnn h,c states
+        :param terminals: (optional) tensor of dims [N, B] indicating transitions with a terminal state with a 1
         :return: tuple(
             dictionary containing log_policy, value_ext, and value_int
             new rnn_state
-            ) all having structure [N, A, ...]
+            ) all having structure [N, B, ...]
 
         """
 
         N, B, *obs_shape = obs.shape
 
         # merge first two dims into a batch, run it through encoder, then reshape it back into the correct form.
+        assert tuple(obs_shape) == self.obs_shape
+        assert tuple(rnn_states.shape) == (B, 2, self.memory_units)
+        if terminals is not None:
+            assert tuple(terminals.shape) == (N, B)
+
+        if terminals is not None and terminals.sum() == 0:
+            # just ignore terminals if none occurred (faster)
+            terminals = None
 
         obs = obs.reshape([N*B, *obs_shape])
         obs = self.prep_for_model(obs)
@@ -285,45 +297,48 @@ class PMModel(nn.Module):
         encoding = self.encoder(obs)
         encoding = encoding.reshape([N, B, -1])
 
-        # stub: disable lstm...
-        lstm_output = encoding
+        # torch requires these to be contiguous, it's a shame we have to do this but it keeps things simpler to use
+        # one tensor rather than a separate one for h and c.
+        # also, h,c should be dims [1, B, memory_units] as we have 1 LSTM layer and it is unidirectional
+        h = rnn_states[np.newaxis, :, 0, :].clone().detach().contiguous()
+        c = rnn_states[np.newaxis, :, 1, :].clone().detach().contiguous()
 
-        # # torch requires these to be contiguous, it's a shame we have to do this but it keeps things simpler to use
-        # # one tensor rather than a separate one for h and c.
-        # # also, h,c should be dims [1, B, memory_unitys] as we have 1 LSTM layer and it is unidirectional
-        # h = rnn_states[np.newaxis, :, 0, :].contiguous()
-        # c = rnn_states[np.newaxis, :, 1, :].contiguous()
-        #
-        # if terminals is None or terminals.sum() == 0:
-        #     # this is the faster path if there are no terminals
-        #     lstm_output, (h, c) = self.lstm(encoding, (h, c))
-        # else:
-        #     # this is about 2x slower, and takes around 100ms on a batch size of 4096
-        #     outputs = list()
-        #     for t in range(N):
-        #         output, (h, c) = self.lstm(encoding[t:t+1], (h, c))
-        #         terminals_t = terminals[t][np.newaxis, :, np.newaxis]
-        #         if terminals_t.sum() > 0:
-        #             # just save on a grad operation if we can
-        #             h = h * (1.0 - terminals_t)
-        #             c = c * (1.0 - terminals_t)
-        #         outputs.append(output)
-        #     lstm_output = torch.cat(outputs, dim=0)
-        #
-        # lstm_output = F.relu(lstm_output)
-        #
-        # rnn_states[:, 0, :] = h
-        # rnn_states[:, 1, :] = c
+        if terminals is None:
+            # this is the faster path if there are no terminals
+            lstm_output, (h, c) = self.lstm(encoding, (h, c))
+        else:
+            # this is about 2x slower, and takes around 100ms on a batch size of 4096
+            outputs = []
+            for t in range(N):
+                output, (h, c) = self.lstm(encoding[t:t+1], (h, c))
 
-        log_policy = torch.log_softmax(self.policy_head(lstm_output), dim=2)
-        ext_value = self.local_ext_value_head(lstm_output).squeeze(dim=2)
-        int_value = self.local_int_value_head(lstm_output).squeeze(dim=2)
+                if terminals is not None:
+                    terminals_t = terminals[t][np.newaxis, :, np.newaxis]
+                    h = h * (1.0 - terminals_t)
+                    c = c * (1.0 - terminals_t)
+
+                outputs.append(output)
+            lstm_output = torch.cat(outputs, dim=0) # do we loose gradients this way?
+
+        new_rnn_states = torch.zeros_like(rnn_states)
+
+        new_rnn_states[:, 0, :] = h
+        new_rnn_states[:, 1, :] = c
+
+        # todo: do we need to role the first two dims together?
+        # stub, I don't think this is necessary, put it back
+        lstm_output = lstm_output.reshape(N*B, *lstm_output.shape[2:])
+
+        log_policy = self.policy_head(lstm_output)
+        log_policy = torch.log_softmax(log_policy, dim=1).reshape(N, B, self.actions)
+        ext_value = self.local_ext_value_head(lstm_output).squeeze(dim=1).reshape(N, B)
+        int_value = self.local_int_value_head(lstm_output).squeeze(dim=1).reshape(N, B)
 
         return {
             'log_policy': log_policy,
             'ext_value': ext_value,
             'int_value': int_value
-        }, rnn_states
+        }, new_rnn_states
 
 
     # def __get_role_prediction(self):
@@ -372,7 +387,7 @@ class PMModel(nn.Module):
             x = torch.from_numpy(x)
 
         # move it to the correct device
-        x = x.to(self.device, non_blocking=True)
+        x = x.to(device=self.device, non_blocking=True)
 
         # then covert the type (faster to upload uint8 then convert on GPU)
         if x.dtype == torch.uint8:
@@ -387,12 +402,13 @@ class PMModel(nn.Module):
         return x
 
     def set_device_and_dtype(self, device, dtype):
+
         self.to(device)
-        if dtype == torch.half:
+        if str(dtype) in ["torch.half", "torch.float16"]:
             self.half()
-        elif dtype == torch.float:
+        elif str(dtype) in  ["torch.float", "torch.float32"]:
             self.float()
-        elif dtype == torch.double:
+        elif str(dtype) in ["torch.double", "torch.float64"]:
             self.double()
         else:
             raise Exception("Invalid dtype {} for model.".format(dtype))
@@ -432,72 +448,78 @@ class PMAlgorithm(MarlAlgorithm):
     Handles rollout generation and training on rollout data.
     """
 
-    def __init__(self,
-                 vec_env:MultiAgentVecEnv,
-                 n_steps=128,
-                 learning_rate=2.5e-4,
-                 adam_epsilon=1e-5,
-                 model_params=None,
-                 amp=False, # automatic mixed precision
-                 name="agent",
-                 verbose=False
-                 ):
+    def __init__(
+            self,
+            vec_env:MultiAgentVecEnv,  # the environment this agent acts in
+
+            amp=False,                 # automatic mixed precision
+            name="agent",              # name of agent
+            verbose=False,             # set to true to enable debug printing
+
+            # ------ model parameters ------------
+
+            data_parallel=False,
+            device="cpu",
+            memory_units=128,
+            out_features=128,
+            model_name="default",
+            micro_batches:Union[str, int]="auto",
+
+            # ------ long list of parameters to algorithm ------------
+            n_steps=128,
+            learning_rate=2.5e-4,
+            adam_epsilon=1e-5,
+            normalize_advantages=True,
+            gamma=0.995,
+            gamma_int=0.995,
+            gae_lambda=0.95,
+            batch_epochs=4,
+            entropy_bonus=0.01,
+            mini_batches=8,  # stub was 4
+            use_clipped_value_loss=False,  # shown to be not effective
+            vf_coef=0.5,
+            ppo_epsilon=0.2,
+            max_grad_norm=0.5,
+        ):
 
         A = vec_env.total_agents
         N = n_steps
 
-        model = PMModel(vec_env, **(model_params or {}))
+        model = PMModel(vec_env, device=device, memory_units=memory_units, model=model_name,
+                        data_parallel=data_parallel, out_features=out_features)
         super().__init__(n_steps, A, model)
 
         self.name = name
         self.amp = amp
-
-        self.deception_bonus = False # this is not implemented yet
-
-        # config, make these changable parameters, maybe store them in a dict, or named tupple?
-        self.normalize_advantages = True
-        self.gamma = 0.995
-        self.gamma_int = 0.995
-        self.gae_lambda = 0.95
-        self.extrinsic_reward_scale = 1.0
-        self.intrinsic_reward_scale = 1.0
-        self.log_folder = "."
-        self.batch_epochs = 4
-        self.entropy_bonus = 0.01
-        self.mini_batches = 4
-        self.use_clipped_value_loss = False # shown to be not effective
-        self.vf_coef = 0.5
-        self.ppo_epsilon = 0.2
-        self.intrinsic_reward_propagation = False
-        self.normalize_intrinsic_rewards = False
-        self.max_grad_norm = 5.0
-
         self.verbose = verbose
         self.log = Logger()
         self.vec_env = vec_env
+
+        self.normalize_advantages = normalize_advantages
+        self.gamma = gamma
+        self.gamma_int = gamma_int
+        self.gae_lambda = gae_lambda
+        self.batch_epochs = batch_epochs
+        self.entropy_bonus = entropy_bonus
+        self.mini_batches = mini_batches
+        self.use_clipped_value_loss = use_clipped_value_loss
+        self.vf_coef = vf_coef
+        self.ppo_epsilon = ppo_epsilon
+        self.max_grad_norm = max_grad_norm
+
+        # these are not used yet
+        self.intrinsic_reward_propagation = False,
+        self.normalize_intrinsic_rewards = False
+        self.extrinsic_reward_scale = 1.0
+        self.intrinsic_reward_scale = 1.0
+        self.log_folder = "."
+        self.deception_bonus = False  # this is not implemented yet
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, eps=adam_epsilon)
 
         self.t = 0
         self.learn_steps = 0
         self.batch_size = N * A
-
-        # working this out will be complex
-        # maybe can assume that 12GB gives us 4096 with AMP and 2048 without
-        if type(model.encoder) is DefaultEncoder:
-            max_micro_batch_size = 2048
-        elif type(model.encoder) is FastEncoder:
-            max_micro_batch_size = 8192
-        else:
-            max_micro_batch_size = 1024 # just a guess
-
-        if amp:
-            max_micro_batch_size *= 2
-        if model_params.get('data_parallel', False):
-            max_micro_batch_size *= 4 # should be number of GPUs
-        self.micro_batches = max(1, self.mini_batch_size // max_micro_batch_size)
-        if self.micro_batches != 1:
-            print(f" -using micro_batches={self.micro_batches}")
 
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
@@ -513,8 +535,8 @@ class PMAlgorithm(MarlAlgorithm):
         # ------------------------------------
         # the rollout transitions (batch)
 
-        # rnn_state of the agent before taking action
-        self.prev_rnn_state = np.zeros([N, A, *self.rnn_state_shape], dtype=np.float32)
+        # rnn_state of the agent before rollout begins
+        self.prev_rnn_state = np.zeros([A, *self.rnn_state_shape], dtype=np.float32)
         # observation of the agent before taking action
         self.prev_obs = np.zeros([N, A, *self.obs_shape], dtype=np.uint8)
         # observation of the agent after taking action
@@ -538,13 +560,28 @@ class PMAlgorithm(MarlAlgorithm):
         self.int_returns = np.zeros([N, A], dtype=np.float32)
         self.int_returns_raw = np.zeros([N, A], dtype=np.float32)
 
-        # advantage used during policy gradient (combination of intrinsic and extrensic reward)
+        # advantage used during policy gradient (combination of intrinsic and extrinsic reward)
         self.advantage = np.zeros([N, A], dtype=np.float32)
 
         self.ext_final_value_estimate = np.zeros([A], dtype=np.float32)
         self.int_final_value_estimate = np.zeros([A], dtype=np.float32)
 
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
+
+        # get micro batch size
+        self.micro_batches = 0
+
+        if type(micro_batches) is int:
+            self.micro_batches = micro_batches
+        elif micro_batches.lower() == "auto":
+            self.micro_batches = self._get_auto_micro_batch_size()
+        elif micro_batches.lower() == "off":
+            self.micro_batches = 0
+        else:
+            raise ValueError(f"Invalid micro batches parameter {micro_batches}")
+
+        if self.micro_batches != 1:
+            print(f" -using micro_batches={self.micro_batches}")
 
         self.scaler = GradScaler() if self.amp else None
 
@@ -561,8 +598,11 @@ class PMAlgorithm(MarlAlgorithm):
 
         batches = total_timesteps // self.batch_size
         for batch in range(batches):
+            self.model.eval()
             self.generate_rollout()
+            self.model.train()
             self.train()
+            self.model.eval()
             if self.verbose:
                 if self.learn_steps % 10 == 0:
                     print(f"{self.learn_steps}, {self.t / 1000 / 1000:.1f}M")
@@ -570,6 +610,25 @@ class PMAlgorithm(MarlAlgorithm):
             self.t += self.batch_size
             self.learn_steps += 1
             self.log.record_step()
+
+    def _get_auto_micro_batch_size(self):
+        """ Returns an appropriate microbatch size. """
+
+        # working this out will be complex
+        # maybe can assume that 12GB gives us 4096 with AMP and 2048 without
+        if type(self.model.encoder) is DefaultEncoder:
+            max_micro_batch_size = 2048
+        elif type(self.model.encoder) is FastEncoder:
+            max_micro_batch_size = 8192
+        else:
+            max_micro_batch_size = 1024 # just a guess
+
+        if self.amp:
+            max_micro_batch_size *= 2
+        if self.data_parallel:
+            max_micro_batch_size *= 4 # should be number of GPUs
+
+        return max(1, self.mini_batch_size // max_micro_batch_size)
 
     def reset(self):
         # initialize agent
@@ -599,10 +658,12 @@ class PMAlgorithm(MarlAlgorithm):
         :return: Nothing
         """
         with torch.no_grad():
+
+            self.prev_rnn_state = self.agent_rnn_state.clone().detach()
+
             for t in range(self.n_steps):
 
                 prev_obs = self.agent_obs.copy()
-                prev_rnn_state = self.agent_rnn_state.clone().detach()
 
                 learning_weight = self.vec_env.get_alive()
 
@@ -627,19 +688,17 @@ class PMAlgorithm(MarlAlgorithm):
                 self.episode_score += raw_rewards
                 self.episode_len += 1
 
-                if terminals.sum() > 0:
-                    for i, terminal in enumerate(terminals):
-                        if terminal:
-                            # reset the internal state on episode completion
-                            self.agent_rnn_state[i] *= 0
-                            # reset is handled automatically by vectorized environments
-                            # so just need to keep track of book-keeping
-                            self.log.watch_full("ep_score", self.episode_score[i])
-                            self.log.watch_full("ep_length", self.episode_len[i])
-                            self.episode_score[i] = 0
-                            self.episode_len[i] = 0
+                for i, terminal in enumerate(terminals):
+                    if terminal:
+                        # reset the internal state on episode completion
+                        self.agent_rnn_state[i] *= 0
+                        # reset is handled automatically by vectorized environments
+                        # so just need to keep track of book-keeping
+                        self.log.watch_full("ep_score", self.episode_score[i])
+                        self.log.watch_full("ep_length", self.episode_len[i])
+                        self.episode_score[i] = 0
+                        self.episode_len[i] = 0
 
-                self.prev_rnn_state[t] = prev_rnn_state.detach().cpu().numpy()
                 self.prev_obs[t] = prev_obs
                 self.next_obs[t] = self.agent_obs
                 self.actions[t] = actions
@@ -745,19 +804,24 @@ class PMAlgorithm(MarlAlgorithm):
     def forward(self, obs, update_rnn_state=True):
         """
         Forwards a single observations through model for each agent, updating the agents rnn_state.
+        Any number of observations <= self.n_agents can be used, but only those rnn_states will be updated.
         For more advanced uses call model.forward_sequence directly.
 
-        :param obs: Observations for each agent, tensor of dims [A, *observation_shape]
+        :param obs: Observations for each agent, tensor of dims [B, *observation_shape]
+        :param update_rnn_state: If true RNN states for agents will be updated with the new state information
+
         :return: a dictionary containing,
-            'rnn_state',        [A, 2, memory_dims]
-            'log_policy',       [A, actions]
-            'ext_value', and    [A]
-            'int_value'.        [A]
+            'rnn_state',        [B, 2, memory_dims]
+            'log_policy',       [B, actions]
+            'ext_value', and    [B]
+            'int_value'.        [B]
         """
 
-        # it is possible to forward data for only a few agents, in which case the other ones will be left as is
-        # in this case we need to reduce the agent states to the right number
-        agent_rnn_states = self.agent_rnn_state[:len(obs)]
+        B = len(obs)
+
+        # get a copy of the states (the copy probably isn't needed here, but I do it for safety as forward_sequence
+        # used to modify them in place, if this is fixed this can be put back to a non-copy operation
+        agent_rnn_states = self.agent_rnn_state[:B].clone().detach()
 
         # make a sequence of length 1 and forward it through model
         result, new_rnn_states = self.model.forward_sequence(obs[np.newaxis], agent_rnn_states)
@@ -768,7 +832,8 @@ class PMAlgorithm(MarlAlgorithm):
             unsqueze_result[k] = v[0]
 
         if update_rnn_state:
-            self.agent_rnn_state[:len(obs)] = new_rnn_states # better to copy in the tensor and avoid creating a new one
+            # update only the states which changed
+            self.agent_rnn_state[:B] = new_rnn_states
 
         return unsqueze_result
 
@@ -802,7 +867,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         N, B, *obs_shape = prev_obs.shape
 
-        model_out, rnn_states = self.model.forward_sequence(prev_obs, rnn_states, terminals)
+        model_out, _ = self.model.forward_sequence(prev_obs, rnn_states, terminals)
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
         for k, v in model_out.items():
@@ -836,12 +901,14 @@ class PMAlgorithm(MarlAlgorithm):
                                                                          -self.ppo_epsilon, +self.ppo_epsilon)
                 vf_losses1 = (value_prediction - returns).pow(2)
                 vf_losses2 = (value_prediction_clipped - returns).pow(2)
-                loss_value = -0.5 * torch.mean(torch.max(vf_losses1, vf_losses2) * weights)
+                loss_value = -self.vf_coef * torch.mean(torch.max(vf_losses1, vf_losses2) * weights)
             else:
                 # simpler version, just use MSE.
                 vf_losses1 = (value_prediction - returns).pow(2)
-                loss_value = -0.5 * torch.mean(vf_losses1 * weights)
-            loss_value *= self.vf_coef
+                loss_value = -self.vf_coef * torch.mean(vf_losses1 * weights)
+
+            # chekc is it self.vf_coef * ... or 0.5 * self.vf_coef ...
+
             self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
             loss += loss_value
 
@@ -913,20 +980,20 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["terminals"] = self.terminals
 
         # stub: disable learning weights
+        # this should be for any player that was dead at the start of this transition (but not players who died
+        # during this transition
         # batch_data["learning_weight"] = self.learning_weight
+
 
         for i in range(self.batch_epochs):
 
             assert self.mini_batch_size % self.n_steps == 0, "mini batch size must be multiple of n_steps."
 
-            # pick random segments..., balanced between agents.
-            # segments will be [A, segment_count] containing tuple of agent_id, and time index.
             segments = list(range(self.n_agents))
             np.random.shuffle(segments)
 
             # figure out how many agents to run in parallel so that mini batch size is right
             # this will be num_segments * rnn_block_length
-            # so we want
 
             assert self.mini_batch_size % self.micro_batches == 0
 
@@ -935,16 +1002,17 @@ class PMAlgorithm(MarlAlgorithm):
 
             self.optimizer.zero_grad()
 
+            micro_batch_counter = 0
+
             for j in range(self.mini_batches):
                 with autocast(enabled=self.amp):
                     for k in range(self.micro_batches):
-                        batch_start = j * segments_per_micro_batch
-                        batch_end = (j + 1) * segments_per_micro_batch
+                        batch_start = micro_batch_counter * segments_per_micro_batch
+                        batch_end = (micro_batch_counter + 1) * segments_per_micro_batch
                         sample = segments[batch_start:batch_end]
 
                         # initialize states from state taken during rollout, then upload to gpu
-                        rnn_states = self.prev_rnn_state[0, sample]
-                        rnn_states = torch.tensor(rnn_states, device=self.model.device)
+                        rnn_states = self.prev_rnn_state[sample].to(device=self.model.device)
 
                         # put together a mini batch from all agents at this time step...
                         mini_batch_data = {}
@@ -952,6 +1020,7 @@ class PMAlgorithm(MarlAlgorithm):
                             mini_batch_data[key] = torch.tensor(value[:, sample], device=self.model.device)
 
                         self.forward_mini_batch(mini_batch_data, rnn_states=rnn_states)
+                        micro_batch_counter += 1
                 self.opt_step_minibatch()
 
 # ------------------------------------------------------------------

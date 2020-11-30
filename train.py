@@ -27,6 +27,7 @@ from marl_env import MultiAgentVecEnv
 from tools import load_results, get_score, get_score_alt, export_graph
 from strategies import RTG_ScriptedEnv
 from ppo_marl import PMAlgorithm, MarlAlgorithm
+from typing import Union
 
 class ScenarioSetting():
     """
@@ -63,20 +64,9 @@ class ScenarioSetting():
 class Config():
     """ Class to hold config files"""
 
-    default_algo_params = {
-        'learning_rate': 2.5e-4,
-        'n_steps': 64,      # this does seem to help, 40 is fine sometimes... (should be 128...)
-        'ent_coef': 0.01,
-        'nminibatches': 8,  # used to be 4 but needs to be 8 so we can fit into memory with larger n_steps
-        'max_grad_norm': 5.0,
-        'gamma': 0.995,     # 0.998 was used in openAI hide and seek paper
-        'cliprange_vf': -1  # this has been shown to not be effective so I disable it
-    }
-
     def __init__(self):
         self.log_folder = str()
         self.device = str()
-        self.dtype = str()
         self.epochs = int()
         self.model = str()
         self.parallel_envs = int()
@@ -88,9 +78,7 @@ class Config():
         self.train_scenarios = list()
         self.eval_scenarios = list()
         self.vary_team_player_counts = bool()
-        self.amp = bool()
-        self.micro_batches = object()
-        self.data_parallel = bool()
+
         self.verbose = int()
 
     def __str__(self):
@@ -129,8 +117,7 @@ class Config():
         else:
             self.log_folder = f"run/{args.run} [{self.uuid}]"
         rescue.LOG_FILENAME = self.log_folder
-        self.algo_params = self.default_algo_params.copy()
-        self.algo_params.update(literal_eval(args.algo_params))
+        self.algo_params = literal_eval(args.algo_params)
 
         # work out the device
         if config.device.lower() == "auto":
@@ -393,33 +380,12 @@ def train_model():
 
 def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
 
-    model_name = model_name or config.model
+    algo_params = config.algo_params.copy()
 
-    # figure out a mini_batch size
-    # batch_size = config.algo_params["n_steps"] * vec_env.num_envs
-    # assert batch_size % config.algo_params["mini_batch_size"] == 0, \
-    #     f"Invalid mini_batch size {config.algo_params['mini_batch_size']}, must divide batch size {batch_size}."
-    # n_mini_batches = batch_size // config.algo_params["mini_batch_size"]
-    # print(f" -using {n_mini_batches} mini-batch(s) of size {config.algo_params['mini_batch_size']}.")
+    algo_params["model_name"] = model_name or config.model
 
-    if model_name.lower() == "default":
-        model_params = {
-            "model": "default",
-            "memory_units": 128
-        }
-    elif model_name == "fast":
-        model_params = {
-            "model": "fast",
-            "memory_units": 64
-        }
-    else:
-        raise ValueError(f"Invalid model name {model_name}")
-
-    model_params["device"] = config.device
-    model_params["dtype"] = config.dtype
-    model_params["data_parallel"] = config.data_parallel
-
-    algorithm = PMAlgorithm(vec_env, model_params=model_params, amp=config.amp, verbose=config.verbose >= 2)
+    algorithm = PMAlgorithm(vec_env, device=config.device, verbose=config.verbose >= 2,
+                            **algo_params)
 
     print(f"Model created using batch size of {algorithm.batch_size} and mini-batch size of {algorithm.mini_batch_size}")
 
@@ -586,6 +552,13 @@ def regression_test():
         # return scores
         return load_results(log_file)
 
+    # copy in files
+    # todo, this should be a function...
+    from shutil import copyfile
+    for filename in ["train.py", "rescue.py"]:
+        copyfile(filename, f"{config.log_folder}/{filename}")
+    with open(f"{config.log_folder}/config.txt", "w") as f:
+        f.write(str(config))
 
     for scenario_name, team, required_score in [
 
@@ -622,7 +595,6 @@ def main():
     parser.add_argument('mode', type=str, help="[benchmark|train|test|evaluate]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
     parser.add_argument('--device', type=str, help="[CPU|AUTO|CUDA|CUDA:n]", default="auto")
-    parser.add_argument('--dtype', type=str, help="[torch.float32]", default=torch.float32)
 
     parser.add_argument('--train_scenarios', type=str, default="full",
         help="Scenario settings for training. Can be a single scenario name e.g. 'red2' or for a mixed training setting "
@@ -631,16 +603,20 @@ def main():
         help="Scenario settings used to evaluate (defaults to same as train_scenario)", default=None)
 
     parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=500)
-    parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")
     parser.add_argument('--script_blue_team', type=str, default=None)
     parser.add_argument('--export_video', type=str2bool, nargs='?', const=True, default=True)
-    parser.add_argument('--amp', type=str2bool, nargs='?', const=True, default=False, help="Enable Automatic Mixed Precision")
     parser.add_argument('--algo_params', type=str, default="{}")
     parser.add_argument('--verbose', type=int, default=1, help="Level of logging output, 0=off, 1=normal, 2=full.")
+
     parser.add_argument('--parallel_envs', type=int, default=128,
                         help="The number of times to duplicate the environments. Note: when using mixed learning each"+
                              "environment will be duplicated this number of times.")
+
     parser.add_argument('--vary_team_player_counts', type=str2bool, nargs='?', const=True,  default=False, help="Use a random number of players turning training.")
+
+    parser.add_argument('--amp', type=str2bool, nargs='?', const=True, default=False,
+                        help="Enable Automatic Mixed Precision")
+    parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")
     parser.add_argument('--data_parallel', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable data parallelism, can speed things up on multi-gpu machines.")
 
