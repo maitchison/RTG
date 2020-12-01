@@ -114,7 +114,7 @@ class FastEncoder(BaseEncoder):
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.fc = nn.Linear(prod(self.final_dims), self.out_features)
 
-        print(f"Created fast encoder, final dims {self.final_dims}")
+        print(f" -created fast encoder, final dims {self.final_dims}")
 
     def forward(self, x):
         """
@@ -232,18 +232,20 @@ class PMModel(nn.Module):
         else:
             raise Exception(f"Invalid model {model}, expected [default|fast]")
 
+        self.encoder_features = self.encoder.out_features
+        self.memory_units = memory_units
+
         if data_parallel:
             # enable multi gpu :)
             print(" - enabling multi-GPU support")
             self.encoder = nn.DataParallel(self.encoder)
 
-        self.encoder_features = self.encoder.out_features
-        self.memory_units = memory_units
-
         # note, agents are AI controlled, players maybe scripted, but an AI still needs to predict their behavour.
         self.n_agents = env.total_agents
-        self.game_players = env.max_players
-        self.n_roles = env.max_roles
+        self.n_players = env.max_players
+
+        # hardcode this to 3 for simplicity, could use env.max_roles, but then it might change from game to game
+        self.n_roles = 3
         self.obs_shape = env.observation_space.shape
 
         # memory units
@@ -257,11 +259,11 @@ class PMModel(nn.Module):
         self.local_int_value_head = nn.Linear(self.memory_units, 1)
         self.local_ext_value_head = nn.Linear(self.memory_units, 1)
 
-        # self.role_prediction_head = nn.Linear(self.memory_units, (self.n_players * self.n_roles))
-        # self.observation_prediction_head = BasicDecoder((self.obs_shape[0]*self.n_players, *self.obs_shape[1:]),
-        #                                                 self.memory_units)
-        #
-        # self.self_observation_prediction_head = BasicDecoder((self.obs_shape[0] * self.n_players, *self.obs_shape[1:]),
+        self.role_prediction_head = nn.Linear(self.memory_units, (self.n_players * self.n_roles))
+        #self.observation_prediction_head = BasicDecoder((self.obs_shape[0]*self.n_players, *self.obs_shape[1:]),
+        #                                                self.memory_units)
+
+        #self.self_observation_prediction_head = BasicDecoder((self.obs_shape[0] * self.n_players, *self.obs_shape[1:]),
         #                                                      self.memory_units)
 
         self.set_device_and_dtype(self.device, self.dtype)
@@ -288,7 +290,7 @@ class PMModel(nn.Module):
             assert tuple(terminals.shape) == (N, B)
 
         if terminals is not None and terminals.sum() == 0:
-            # just ignore terminals if none occurred (faster)
+            # just ignore terminals there aren't any (faster)
             terminals = None
 
         obs = obs.reshape([N*B, *obs_shape])
@@ -311,33 +313,32 @@ class PMModel(nn.Module):
             outputs = []
             for t in range(N):
                 output, (h, c) = self.lstm(encoding[t:t+1], (h, c))
-
-                if terminals is not None:
-                    terminals_t = terminals[t][np.newaxis, :, np.newaxis]
-                    h = h * (1.0 - terminals_t)
-                    c = c * (1.0 - terminals_t)
-
+                # the baselines LSTM code zero's state on dones before the lstm... I think it should be after.
+                terminals_t = terminals[t][np.newaxis, :, np.newaxis]
+                h = h * (1.0 - terminals_t)
+                c = c * (1.0 - terminals_t)
                 outputs.append(output)
             lstm_output = torch.cat(outputs, dim=0) # do we loose gradients this way?
 
+        # copy new rnn states into a new tensor
         new_rnn_states = torch.zeros_like(rnn_states)
-
         new_rnn_states[:, 0, :] = h
         new_rnn_states[:, 1, :] = c
 
-        # todo: do we need to role the first two dims together?
-        # stub, I don't think this is necessary, put it back
-        lstm_output = lstm_output.reshape(N*B, *lstm_output.shape[2:])
+        log_policy = torch.log_softmax(self.policy_head(lstm_output), dim=-1)
+        ext_value = self.local_ext_value_head(lstm_output).squeeze(dim=-1)
+        int_value = self.local_int_value_head(lstm_output).squeeze(dim=-1)
 
-        log_policy = self.policy_head(lstm_output)
-        log_policy = torch.log_softmax(log_policy, dim=1).reshape(N, B, self.actions)
-        ext_value = self.local_ext_value_head(lstm_output).squeeze(dim=1).reshape(N, B)
-        int_value = self.local_int_value_head(lstm_output).squeeze(dim=1).reshape(N, B)
+        # these will come out as [N, B, n_players * n_roles] but we need [N, B, n_players, n_roles] for normalization
+        unnormalized_role_predictions = self.role_prediction_head(lstm_output).reshape(
+            [N, B, self.n_players, self.n_roles])
+        role_prediction = torch.log_softmax(unnormalized_role_predictions, dim=-1)
 
         return {
             'log_policy': log_policy,
             'ext_value': ext_value,
-            'int_value': int_value
+            'int_value': int_value,
+            'role_prediction': role_prediction,
         }, new_rnn_states
 
 
@@ -432,9 +433,6 @@ class MarlAlgorithm():
     def learn(self, total_timesteps, reset_num_timesteps=True):
         raise NotImplemented()
 
-    def step(self, obs):
-        raise NotImplemented()
-
     @staticmethod
     def load(filename, env):
         raise NotImplemented()
@@ -442,6 +440,9 @@ class MarlAlgorithm():
     def get_initial_state(self, n_agents=None):
         n_agents = n_agents or self.n_agents
         return np.zeros([n_agents, *self.rnn_state_shape])
+
+    def forward(self, obs, update_rnn_state=True):
+        raise NotImplemented()
 
 class PMAlgorithm(MarlAlgorithm):
     """
@@ -451,22 +452,21 @@ class PMAlgorithm(MarlAlgorithm):
     def __init__(
             self,
             vec_env:MultiAgentVecEnv,  # the environment this agent acts in
-
-            amp=False,                 # automatic mixed precision
             name="agent",              # name of agent
             verbose=False,             # set to true to enable debug printing
 
             # ------ model parameters ------------
 
             data_parallel=False,
+            amp=False,  # automatic mixed precision
             device="cpu",
             memory_units=128,
             out_features=128,
             model_name="default",
-            micro_batches:Union[str, int]="auto",
+            micro_batches: Union[str, int] = "auto",
 
             # ------ long list of parameters to algorithm ------------
-            n_steps=128,
+            n_steps=32,
             learning_rate=2.5e-4,
             adam_epsilon=1e-5,
             normalize_advantages=True,
@@ -475,7 +475,7 @@ class PMAlgorithm(MarlAlgorithm):
             gae_lambda=0.95,
             batch_epochs=4,
             entropy_bonus=0.01,
-            mini_batches=8,  # stub was 4
+            mini_batches=4,
             use_clipped_value_loss=False,  # shown to be not effective
             vf_coef=0.5,
             ppo_epsilon=0.2,
@@ -491,6 +491,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         self.name = name
         self.amp = amp
+        self.data_parallel = data_parallel
         self.verbose = verbose
         self.log = Logger()
         self.vec_env = vec_env
@@ -538,30 +539,33 @@ class PMAlgorithm(MarlAlgorithm):
         # rnn_state of the agent before rollout begins
         self.prev_rnn_state = np.zeros([A, *self.rnn_state_shape], dtype=np.float32)
         # observation of the agent before taking action
-        self.prev_obs = np.zeros([N, A, *self.obs_shape], dtype=np.uint8)
+        self.batch_prev_obs = np.zeros([N, A, *self.obs_shape], dtype=np.uint8)
         # observation of the agent after taking action
         self.next_obs = np.zeros([N, A, *self.obs_shape], dtype=np.uint8) # note, do I need these?
         # action taken by agent to generate the transition
-        self.actions = np.zeros([N, A], dtype=np.int64)
+        self.batch_actions = np.zeros([N, A], dtype=np.int64)
         # log_policy that generated the action
-        self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
+        self.batch_log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
         # float, 1 indicates action resulted in a terminal state, 0 indicates non-terminal state
-        self.terminals = np.zeros([N, A], dtype=np.float32) # 1 if given time step was a terminal timestep for given agent.
+        self.batch_terminals = np.zeros([N, A], dtype=np.float32) # 1 if given time step was a terminal timestep for given agent.
         # learning rate weight, set to 0 to ignore a transition (i.e. if the player is dead)
         self.learning_weight = np.zeros([N, A], dtype=np.float32)
         # rewards generated at transition
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
         self.int_rewards = np.zeros([N, A], dtype=np.float32)
         # value estimates by agent just before action was taken
-        self.ext_value = np.zeros([N, A], dtype=np.float32)
-        self.int_value = np.zeros([N, A], dtype=np.float32)
+        self.batch_ext_value = np.zeros([N, A], dtype=np.float32)
+        self.batch_int_value = np.zeros([N, A], dtype=np.float32)
         # return estimates (from which state though?)
-        self.ext_returns = np.zeros([N, A], dtype=np.float32)
-        self.int_returns = np.zeros([N, A], dtype=np.float32)
+        self.batch_ext_returns = np.zeros([N, A], dtype=np.float32)
+        self.batch_int_returns = np.zeros([N, A], dtype=np.float32)
         self.int_returns_raw = np.zeros([N, A], dtype=np.float32)
 
+        # the true role of each player in the game that agent a is playing
+        self.batch_roles = np.zeros([N, A, vec_env.max_players], dtype=np.int64)
+
         # advantage used during policy gradient (combination of intrinsic and extrinsic reward)
-        self.advantage = np.zeros([N, A], dtype=np.float32)
+        self.batch_advantage = np.zeros([N, A], dtype=np.float32)
 
         self.ext_final_value_estimate = np.zeros([A], dtype=np.float32)
         self.int_final_value_estimate = np.zeros([A], dtype=np.float32)
@@ -588,6 +592,21 @@ class PMAlgorithm(MarlAlgorithm):
     @property
     def mini_batch_size(self):
         return self.batch_size // self.mini_batches
+
+    def save(self, filename):
+
+        data = {
+            'step': self.t,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'logs': self.log,
+        }
+
+        if self.normalize_intrinsic_rewards:
+            data['ems_norm'] = self.ems_norm
+            data['intrinsic_returns_rms'] = self.intrinsic_returns_rms,
+
+        torch.save(data, filename)
 
     def learn(self, total_timesteps, reset_num_timesteps=True):
 
@@ -637,21 +656,6 @@ class PMAlgorithm(MarlAlgorithm):
         self.episode_score *= 0
         self.episode_len *= 0
 
-    def step(self, obs):
-        """
-        Applies one agent step, returning actions, value, new rnn states, log_policy, and updating rnn_state
-        :param obs: tensor of dims [A, *observation_shape]
-        :return: (actions, value, log_policy) as np arrays
-        """
-
-        with torch.no_grad():
-            model_output = self.forward(obs)
-            log_policy = model_output["log_policy"].detach().cpu().numpy()
-            value = model_output["ext_value"].detach().cpu().numpy()
-            actions = utils.sample_action_from_logp(log_policy)
-
-        return actions, value, log_policy
-
     def generate_rollout(self):
         """
         Runs agents through environment for n_steps steps, recording the transitions as it goes.
@@ -666,6 +670,8 @@ class PMAlgorithm(MarlAlgorithm):
                 prev_obs = self.agent_obs.copy()
 
                 learning_weight = self.vec_env.get_alive()
+
+                batch_roles = self.vec_env.get_roles_expanded()
 
                 # forward state through model, then detach the result and convert to numpy.
                 model_out = self.forward(self.agent_obs)
@@ -699,17 +705,18 @@ class PMAlgorithm(MarlAlgorithm):
                         self.episode_score[i] = 0
                         self.episode_len[i] = 0
 
-                self.prev_obs[t] = prev_obs
+                self.batch_prev_obs[t] = prev_obs
                 self.next_obs[t] = self.agent_obs
-                self.actions[t] = actions
+                self.batch_actions[t] = actions
 
                 self.ext_rewards[t] = ext_rewards
-                self.log_policy[t] = log_policy
-                self.terminals[t] = terminals
+                self.batch_log_policy[t] = log_policy
+                self.batch_terminals[t] = terminals
                 self.learning_weight[t] = learning_weight
                 self.int_rewards[t] = int_rewards
-                self.ext_value[t] = ext_value
-                self.int_value[t] = int_value
+                self.batch_ext_value[t] = ext_value
+                self.batch_int_value[t] = int_value
+                self.batch_roles[t] = batch_roles
 
             # get value estimates for final observation.
             model_out = self.forward(self.agent_obs, update_rnn_state=False)
@@ -729,16 +736,16 @@ class PMAlgorithm(MarlAlgorithm):
         :return:
         """
 
-        self.ext_returns = calculate_returns(self.ext_rewards, self.terminals, self.ext_final_value_estimate,
-                                             self.gamma)
+        self.batch_ext_returns = calculate_returns(self.ext_rewards, self.batch_terminals, self.ext_final_value_estimate,
+                                                   self.gamma)
 
-        self.ext_advantage = calculate_gae(self.ext_rewards, self.ext_value, self.ext_final_value_estimate,
-                                           self.terminals, self.gamma, self.gae_lambda, self.normalize_advantages)
+        self.ext_advantage = calculate_gae(self.ext_rewards, self.batch_ext_value, self.ext_final_value_estimate,
+                                           self.batch_terminals, self.gamma, self.gae_lambda, self.normalize_advantages)
 
         # calculate the intrinsic returns, but let returns propagate through terminal states.
         self.int_returns_raw = calculate_returns(
             self.int_rewards,
-            self.intrinsic_reward_propagation * self.terminals,
+            self.intrinsic_reward_propagation * self.batch_terminals,
             self.int_final_value_estimate,
             self.gamma_int
         )
@@ -757,36 +764,36 @@ class PMAlgorithm(MarlAlgorithm):
             self.intrinsic_reward_norm_scale = 1
             self.batch_int_rewards = self.int_rewards
 
-        self.int_returns = calculate_returns(
+        self.batch_int_returns = calculate_returns(
             self.int_rewards,
-            self.intrinsic_reward_propagation * self.terminals,
+            self.intrinsic_reward_propagation * self.batch_terminals,
             self.int_final_value_estimate,
             self.gamma_int
         )
 
-        self.int_advantage = calculate_gae(self.int_rewards, self.int_value, self.int_final_value_estimate, None,
+        self.int_advantage = calculate_gae(self.int_rewards, self.batch_int_value, self.int_final_value_estimate, None,
                                            self.gamma_int)
 
-        self.advantage = self.extrinsic_reward_scale * self.ext_advantage + self.intrinsic_reward_scale * self.int_advantage
+        self.batch_advantage = self.extrinsic_reward_scale * self.ext_advantage + self.intrinsic_reward_scale * self.int_advantage
 
-        self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width=0 if self.normalize_advantages else 10)
-        self.log.watch_mean("adv_std", np.std(self.advantage), display_width=0 if self.normalize_advantages else 10)
-        self.log.watch_mean("adv_max", np.max(self.advantage), display_width=10 if self.normalize_advantages else 0)
-        self.log.watch_mean("adv_min", np.min(self.advantage), display_width=10 if self.normalize_advantages else 0)
+        self.log.watch_mean("adv_mean", np.mean(self.batch_advantage), display_width=0 if self.normalize_advantages else 10)
+        self.log.watch_mean("adv_std", np.std(self.batch_advantage), display_width=0 if self.normalize_advantages else 10)
+        self.log.watch_mean("adv_max", np.max(self.batch_advantage), display_width=0 if self.normalize_advantages else 0)
+        self.log.watch_mean("adv_min", np.min(self.batch_advantage), display_width=0 if self.normalize_advantages else 0)
         self.log.watch_mean("batch_reward_ext", np.mean(self.ext_rewards), display_name="rew_ext", display_width=0)
-        self.log.watch_mean("batch_return_ext", np.mean(self.ext_returns), display_name="ret_ext")
-        self.log.watch_mean("batch_return_ext_std", np.std(self.ext_returns), display_name="ret_ext_std",
+        self.log.watch_mean("batch_return_ext", np.mean(self.batch_ext_returns), display_name="ret_ext")
+        self.log.watch_mean("batch_return_ext_std", np.std(self.batch_ext_returns), display_name="ret_ext_std",
                             display_width=0)
-        self.log.watch_mean("value_est_ext", np.mean(self.ext_value), display_name="est_v_ext")
-        self.log.watch_mean("value_est_ext_std", np.std(self.ext_value), display_name="est_v_ext_std", display_width=0)
-        self.log.watch_mean("ev_ext", utils.explained_variance(self.ext_value.ravel(), self.ext_returns.ravel()))
+        self.log.watch_mean("value_est_ext", np.mean(self.batch_ext_value), display_name="est_v_ext")
+        self.log.watch_mean("value_est_ext_std", np.std(self.batch_ext_value), display_name="est_v_ext_std", display_width=0)
+        self.log.watch_mean("ev_ext", utils.explained_variance(self.batch_ext_value.ravel(), self.batch_ext_returns.ravel()))
 
         if self.deception_bonus:
             self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
             self.log.watch_mean("batch_reward_int_std", np.std(self.int_rewards), display_name="rew_int_std",
                                 display_width=0)
-            self.log.watch_mean("batch_return_int", np.mean(self.int_returns), display_name="ret_int")
-            self.log.watch_mean("batch_return_int_std", np.std(self.int_returns), display_name="ret_int_std")
+            self.log.watch_mean("batch_return_int", np.mean(self.batch_int_returns), display_name="ret_int")
+            self.log.watch_mean("batch_return_int_std", np.std(self.batch_int_returns), display_name="ret_int_std")
             self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.int_returns_raw),
                                 display_name="ret_int_raw_mu",
                                 display_width=0)
@@ -794,9 +801,9 @@ class PMAlgorithm(MarlAlgorithm):
                                 display_name="ret_int_raw_std",
                                 display_width=0)
 
-            self.log.watch_mean("value_est_int", np.mean(self.int_value), display_name="est_v_int")
-            self.log.watch_mean("value_est_int_std", np.std(self.int_value), display_name="est_v_int_std")
-            self.log.watch_mean("ev_int", utils.explained_variance(self.int_value.ravel(), self.int_returns.ravel()))
+            self.log.watch_mean("value_est_int", np.mean(self.batch_int_value), display_name="est_v_int")
+            self.log.watch_mean("value_est_int_std", np.std(self.batch_int_value), display_name="est_v_int_std")
+            self.log.watch_mean("ev_int", utils.explained_variance(self.batch_int_value.ravel(), self.batch_int_returns.ravel()))
 
             if self.normalize_intrinsic_rewards:
                 self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
@@ -837,10 +844,6 @@ class PMAlgorithm(MarlAlgorithm):
 
         return unsqueze_result
 
-    def _merge_down(self, x):
-        """ Combines first two dims. """
-        return x.reshape(-1, *x.shape[2:])
-
     def forward_mini_batch(self, data, rnn_states):
         """
         Run mini batch through model generating loss, call opt_step_mini_batch to apply the update.
@@ -849,6 +852,10 @@ class PMAlgorithm(MarlAlgorithm):
         :param data: dictionary containing data for
         :param rnn_states: current rnn_states of dims [B, 2, memory_units]
         """
+
+        def merge_down(x):
+            """ Combines first two dims. """
+            return x.reshape(-1, *x.shape[2:])
 
         loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
@@ -860,10 +867,10 @@ class PMAlgorithm(MarlAlgorithm):
         terminals = data["terminals"]
 
         # these were provided in N, B format but we want them just as one large batch.
-        actions = self._merge_down(data["actions"])
-        policy_log_probs = self._merge_down(data["log_policy"])
-        advantages = self._merge_down(data["advantages"])
-        weights = self._merge_down(data["learning_weight"]) if "learning_weight" in data else 1
+        actions = merge_down(data["actions"])
+        policy_log_probs = merge_down(data["log_policy"])
+        advantages = merge_down(data["advantages"])
+        weights = merge_down(data["learning_weight"]) if "learning_weight" in data else 1
 
         N, B, *obs_shape = prev_obs.shape
 
@@ -871,7 +878,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
         for k, v in model_out.items():
-            model_out[k] = self._merge_down(v)
+            model_out[k] = merge_down(v)
 
         logps = model_out["log_policy"]
 
@@ -892,8 +899,8 @@ class PMAlgorithm(MarlAlgorithm):
 
         for value_head in value_heads:
             value_prediction = model_out["{}_value".format(value_head)]
-            returns = self._merge_down(data["{}_returns".format(value_head)])
-            old_pred_values = self._merge_down(data["{}_value".format(value_head)])
+            returns = merge_down(data["{}_returns".format(value_head)])
+            old_pred_values = merge_down(data["{}_value".format(value_head)])
 
             if self.use_clipped_value_loss:
                 # is is essentially trust region for value learning, and seems to help a lot.
@@ -907,7 +914,8 @@ class PMAlgorithm(MarlAlgorithm):
                 vf_losses1 = (value_prediction - returns).pow(2)
                 loss_value = -self.vf_coef * torch.mean(vf_losses1 * weights)
 
-            # chekc is it self.vf_coef * ... or 0.5 * self.vf_coef ...
+            # todo:
+            # check is it self.vf_coef * ... or 0.5 * self.vf_coef ...
 
             self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
             loss += loss_value
@@ -920,6 +928,21 @@ class PMAlgorithm(MarlAlgorithm):
         loss_entropy = (loss_entropy * weights * self.entropy_bonus).mean()
         self.log.watch_mean("loss_ent", loss_entropy)
         loss += loss_entropy
+
+        # -------------------------------------------------------------------------
+        # Calculate loss_role
+        # -------------------------------------------------------------------------
+
+        role_targets = merge_down(data["roles"]) # [N*B, n_players]
+        # predictions come out as [N*B, n_players, n_roles], but we need them as [N*B, n_roles, n_players]
+        role_predictions = model_out["role_prediction"].transpose(1, 2)
+        loss_role = - 0.25 * torch.nn.functional.nll_loss(role_predictions, role_targets)
+        loss += loss_role
+        self.log.watch_mean("loss_role", loss_role)
+
+        # -------------------------------------------------------------------------
+        # Apply loss
+        # -------------------------------------------------------------------------
 
         self.log.watch_mean("loss", loss)
         loss = loss / self.micro_batches
@@ -969,15 +992,17 @@ class PMAlgorithm(MarlAlgorithm):
         # put the required data into a dictionary
         batch_data = {}
 
-        batch_data["prev_obs"] = self.prev_obs
-        batch_data["actions"] = self.actions.astype(np.long)
-        batch_data["ext_returns"] = self.ext_returns
-        batch_data["int_returns"] = self.int_returns
-        batch_data["ext_value"] = self.ext_value
-        batch_data["int_value"] = self.int_value
-        batch_data["log_policy"] = self.log_policy
-        batch_data["advantages"] = self.advantage
-        batch_data["terminals"] = self.terminals
+        batch_data["prev_obs"] = self.batch_prev_obs
+        batch_data["actions"] = self.batch_actions.astype(np.long)
+        batch_data["ext_returns"] = self.batch_ext_returns
+        batch_data["int_returns"] = self.batch_int_returns
+        batch_data["ext_value"] = self.batch_ext_value
+        batch_data["int_value"] = self.batch_int_value
+        batch_data["log_policy"] = self.batch_log_policy
+        batch_data["advantages"] = self.batch_advantage
+        batch_data["terminals"] = self.batch_terminals
+
+        batch_data["roles"] = self.batch_roles
 
         # stub: disable learning weights
         # this should be for any player that was dead at the start of this transition (but not players who died

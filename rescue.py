@@ -84,7 +84,7 @@ class RescueTheGeneralScenario():
             "map_height": 48,
             "team_counts": (2, 2, 0),
             "n_trees": 10,
-            "randomize_ids": False,             # makes life simpler, see if sepecialization develops
+            #"randomize_ids": False,             # makes life simpler, see if sepecialization develops
             "reward_per_tree": 1,
             "hidden_roles": "none",
             "max_view_distance": 5,             # makes thins a bit faster
@@ -1224,17 +1224,19 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         w,h,_ = image.shape
         frame[x:x+w, y:y+h] = image
 
-    def _render_rgb(self, use_location=False):
+    def _render_rgb(self, show_location=False, role_predictions=None):
         """
         Render out a frame
-        :param use_location:
+        :param show_location: displays location information
+        :param role_predictions: (optional) np array of dims [n_players, n_players, 3] indicating predictions for each
+            role as a probability distribution
         :return:
         """
 
-        global_frame = self._process_obs(self._get_player_observation(-1), use_location)
+        global_frame = self._process_obs(self._get_player_observation(-1), show_location)
 
         player_frames = [
-            self._process_obs(self._get_player_observation(player_id), use_location) for player_id in range(self.n_players)
+            self._process_obs(self._get_player_observation(player_id), show_location) for player_id in range(self.n_players)
         ]
 
         gw, gh, _ = global_frame.shape
@@ -1289,16 +1291,22 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             frame[0:100, team, team] = 50
             frame[0:length, team, team] = 255
 
+        # show current predictions
+        if role_predictions is not None:
+            for i in range(self.n_players):
+                for j in range(self.n_players):
+                    frame[i, j] = [int(x * 255) for x in role_predictions[i, j]]
+
         frame = frame.swapaxes(0, 1) # I'm using x,y, but video needs y,x
 
         return frame
 
-    def render(self, mode='human', use_location=False):
+    def render(self, mode='human', **kwargs):
         """ render environment """
         if mode == 'human':
             return self._render_human()
         elif mode == 'rgb_array':
-            return self._render_rgb(use_location=use_location)
+            return self._render_rgb(**kwargs)
         else:
             raise ValueError(f"Invalid render mode {mode}")
 

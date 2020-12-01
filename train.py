@@ -18,6 +18,7 @@ import gc
 
 import strategies
 import rescue
+import utils
 
 from typing import Union, List
 from ast import literal_eval
@@ -78,6 +79,7 @@ class Config():
         self.train_scenarios = list()
         self.eval_scenarios = list()
         self.vary_team_player_counts = bool()
+        self.amp = bool()
 
         self.verbose = int()
 
@@ -137,8 +139,6 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     :return:
     """
 
-    # todo: rewrite this
-
     # run them all in parallel at once to make sure we get exactly 'trials' number of environments
     vec_env = make_env(eval_scenario, name="eval", log_path=sub_folder, vary_players=False, parallel_envs=trials)
     env_obs = vec_env.reset()
@@ -147,13 +147,18 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     vec_env.run_once = True
 
     # play the game...
-    results = [[0,0,0] for _ in range(trials)]
+    results = [(0, 0, 0) for _ in range(trials)]
     while not all(env_terminals):
-        actions, agent_rnn_states = flexiable_step(algorithm, env_obs, agent_rnn_states, env_terminals)
+
+        with torch.no_grad():
+            model_output = algorithm.forward(env_obs)
+            log_policy = model_output["log_policy"].detach().cpu().numpy()
+            actions = utils.sample_action_from_logp(log_policy)
+
         env_obs, env_rewards, env_terminals, env_infos = vec_env.step(actions)
 
         # look for finished games
-        for i, env in enumerate(vec_env.envs):
+        for i, env in enumerate(vec_env.games):
             if env.outcome != "":
                 results[i] = env.team_scores
 
@@ -194,12 +199,21 @@ def export_video(filename, algorithm: MarlAlgorithm, scenario):
     # play the game...
     while env.outcome == "":
 
-        # state will be [n, h, w, c], this process will duplicate it.
-        actions, _, _ = algorithm.step(env_obs)
+        with torch.no_grad():
+            model_output = algorithm.forward(env_obs, update_rnn_state=True)
+            log_policy = model_output["log_policy"].detach().cpu().numpy()
+            role_predictions = model_output["role_prediction"].detach().cpu().numpy()
+            actions = utils.sample_action_from_logp(log_policy)
+
         env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
 
+        # role predictions predict the public_id, but change this around to be in index order
+        order = [player.public_id for player in env.players]
+        for i in range(env.n_players):
+            role_predictions[i] = [role_predictions[i][idx] for idx in order]
+
         # generate frames from global perspective
-        frame = env.render("rgb_array")
+        frame = env.render("rgb_array", role_predictions=np.exp(role_predictions))
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
@@ -300,7 +314,7 @@ def train_model():
                        vary_players=config.vary_team_player_counts)
 
     print("Scenario parameters:")
-    scenario_descriptions = set(str(env.scenario) for env in vec_env.envs)
+    scenario_descriptions = set(str(env.scenario) for env in vec_env.games)
     for description in scenario_descriptions:
         print(description)
     print()
@@ -364,7 +378,7 @@ def train_model():
 
         sub_epoch = 0
 
-        step_counter = learn(model, step_counter, (epoch+1)*1e6)
+        step_counter = learn(model, step_counter, (epoch+1)*1e6, verbose=config.verbose == 1)
         print()
 
         # flush the log buffer and print scores
@@ -384,10 +398,11 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
 
     algo_params["model_name"] = model_name or config.model
 
-    algorithm = PMAlgorithm(vec_env, device=config.device, verbose=config.verbose >= 2,
+    algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, verbose=config.verbose >= 2,
                             **algo_params)
 
-    print(f"Model created using batch size of {algorithm.batch_size} and mini-batch size of {algorithm.mini_batch_size}")
+    print(f" -model created using batch size of {algorithm.batch_size} and mini-batch size of\
+            {algorithm.mini_batch_size} with {algorithm.micro_batches} micro batch(es).")
 
     return algorithm
 
@@ -439,6 +454,12 @@ def run_benchmarks(train=True, model=True, env=True):
         steps = 0
         start_time = time.time()
         while time.time() - start_time < 10:
+
+            with torch.no_grad():
+                model_output = agent.forward(obs)
+                log_policy = model_output["log_policy"].detach().cpu().numpy()
+                actions = utils.sample_action_from_logp(log_policy)
+
             _ = agent.step(obs)
             steps += vec_env.num_envs
         torch.cuda.synchronize()
@@ -565,8 +586,8 @@ def regression_test():
         # stub, only one test
 
         ("red2", "red", 7.5),
-        #("green2", "green", 7.5),
-        #("blue2", "blue", 7.5),
+        ("green2", "green", 7.5),
+        ("blue2", "blue", 7.5),
     ]:
 
         results = run_test(scenario_name)

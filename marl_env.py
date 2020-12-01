@@ -122,19 +122,33 @@ class MultiAgentVecEnv(VecEnv):
     def get_roles(self):
         """
         Returns numpy array containing roles for each player
-        :return: tensor of dims [n_envs, n_players]
+        :return: tensor of dims [n_players]
         """
-
-        # todo: is this code correct?
-
         roles = []
         for game in self.games:
-            env_roles = []
             for player in game.players:
-                env_roles.append(player.team)
+                roles.append(player.team)
+        return np.asarray(roles, dtype=np.int64)
+
+
+    def get_roles_expanded(self):
+        """
+        Returns numpy array containing roles for each player in game for each agent in environment ordered by
+        public_id.
+        :return: tensor of dims [n_agents, n_players]
+        """
+
+        # note, this might not work with scripted environments?
+        roles = []
+        for game in self.games:
+            game_players = [(player.public_id, player.team) for player in game.players]
+            game_players.sort()
+            game_players = [team for id, team in game_players]
+
             for _ in game.players:
-                roles.append(env_roles)
-        return np.asarray(roles, dtype=np.int)
+                roles.append(game_players)
+
+        return np.asarray(roles, dtype=np.int64)
 
     def get_alive(self):
         """
