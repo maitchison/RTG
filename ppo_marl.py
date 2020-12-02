@@ -30,6 +30,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import pickle
+import time
+import os
+
 from torch.cuda.amp import GradScaler, autocast
 from logger import Logger
 from typing import Union
@@ -235,9 +239,11 @@ class PMModel(nn.Module):
         self.encoder_features = self.encoder.out_features
         self.memory_units = memory_units
 
+        self._encoder = self.encoder # the encoder before and data_parallel was applied
+
         if data_parallel:
             # enable multi gpu :)
-            print(" - enabling multi-GPU support")
+            print(f" -enabling {utils.Color.OKGREEN}Multi-GPU{utils.Color.ENDC} support")
             self.encoder = nn.DataParallel(self.encoder)
 
         # note, agents are AI controlled, players maybe scripted, but an AI still needs to predict their behavour.
@@ -578,7 +584,7 @@ class PMAlgorithm(MarlAlgorithm):
         if type(micro_batches) is int:
             self.micro_batches = micro_batches
         elif micro_batches.lower() == "auto":
-            self.micro_batches = self._get_auto_micro_batch_size()
+            self.micro_batches = self._get_auto_micro_batch_count()
         elif micro_batches.lower() == "off":
             self.micro_batches = 0
         else:
@@ -598,8 +604,7 @@ class PMAlgorithm(MarlAlgorithm):
         data = {
             'step': self.t,
             'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'logs': self.log,
+            'optimizer_state_dict': self.optimizer.state_dict()
         }
 
         if self.normalize_intrinsic_rewards:
@@ -607,6 +612,12 @@ class PMAlgorithm(MarlAlgorithm):
             data['intrinsic_returns_rms'] = self.intrinsic_returns_rms,
 
         torch.save(data, filename)
+
+        base_path = os.path.split(filename)[0]
+
+        with open(os.path.join(base_path, "checkpoint_log.dat"), "wb") as f:
+            pickle.dump(self.log, f)
+
 
     def learn(self, total_timesteps, reset_num_timesteps=True):
 
@@ -617,27 +628,40 @@ class PMAlgorithm(MarlAlgorithm):
 
         batches = total_timesteps // self.batch_size
         for batch in range(batches):
+
+            self.log.watch("epoch", self.t/1e6, display_width=8, display_priority=3, display_precision=1)
+
+            start_time = time.time()
             self.model.eval()
             self.generate_rollout()
             self.model.train()
             self.train()
             self.model.eval()
+
+            end_time = time.time()
+            step_time = end_time - start_time
+            # measure number of agent interactions with environment per second
+            self.log.watch_mean("ips", self.batch_size / step_time, history_length=4, display_width=8,
+                                display_priority=2, display_precision=0)
+
             if self.verbose:
                 if self.learn_steps % 10 == 0:
                     print(f"{self.learn_steps}, {self.t / 1000 / 1000:.1f}M")
                 self.log.print_variables(include_header=self.learn_steps % 10 == 0)
+
             self.t += self.batch_size
             self.learn_steps += 1
+
             self.log.record_step()
 
-    def _get_auto_micro_batch_size(self):
+    def _get_auto_micro_batch_count(self):
         """ Returns an appropriate microbatch size. """
 
         # working this out will be complex
         # maybe can assume that 12GB gives us 4096 with AMP and 2048 without
-        if type(self.model.encoder) is DefaultEncoder:
+        if type(self.model._encoder) is DefaultEncoder:
             max_micro_batch_size = 2048
-        elif type(self.model.encoder) is FastEncoder:
+        elif type(self.model._encoder) is FastEncoder:
             max_micro_batch_size = 8192
         else:
             max_micro_batch_size = 1024 # just a guess
@@ -646,6 +670,8 @@ class PMAlgorithm(MarlAlgorithm):
             max_micro_batch_size *= 2
         if self.data_parallel:
             max_micro_batch_size *= 4 # should be number of GPUs
+
+        print(f" -found max micro batch size of {max_micro_batch_size}")
 
         return max(1, self.mini_batch_size // max_micro_batch_size)
 

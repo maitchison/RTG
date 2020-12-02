@@ -80,6 +80,7 @@ class Config():
         self.eval_scenarios = list()
         self.vary_team_player_counts = bool()
         self.amp = bool()
+        self.data_parallel = bool()
 
         self.verbose = int()
 
@@ -374,7 +375,7 @@ def train_model():
         # export training video
         if config.export_video:
             export_video(f"{config.log_folder}/training_{epoch:03}_M.mp4", model, config.train_scenarios[0])
-        model.save(f"{config.log_folder}/model_{epoch:03}_M.p")
+        model.save(f"{config.log_folder}/model_{epoch:03}_M.pt")
 
         sub_epoch = 0
 
@@ -398,11 +399,11 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
 
     algo_params["model_name"] = model_name or config.model
 
-    algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, verbose=config.verbose >= 2,
-                            **algo_params)
+    algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, data_parallel=config.data_parallel,
+                            verbose=config.verbose >= 2, **algo_params)
 
-    print(f" -model created using batch size of {algorithm.batch_size} and mini-batch size of\
-            {algorithm.mini_batch_size} with {algorithm.micro_batches} micro batch(es).")
+    print(f" -model created using batch size of {algorithm.batch_size} and mini-batch size of"+
+          f" {algorithm.mini_batch_size} with {algorithm.micro_batches} micro batch(es).")
 
     return algorithm
 

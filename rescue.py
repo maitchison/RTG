@@ -84,7 +84,7 @@ class RescueTheGeneralScenario():
             "map_height": 48,
             "team_counts": (2, 2, 0),
             "n_trees": 10,
-            #"randomize_ids": False,             # makes life simpler, see if sepecialization develops
+            "randomize_ids": False,             # makes life simpler, see if sepecialization develops
             "reward_per_tree": 1,
             "hidden_roles": "none",
             "max_view_distance": 5,             # makes thins a bit faster
@@ -92,6 +92,22 @@ class RescueTheGeneralScenario():
             "team_shoot_range": (4, 4, 4),
             "starting_locations": "random",     # random start locations
             "team_shoot_timeout": (5, 5, 5)      # green is much slower at shooting
+        },
+
+        "r2g2_rp": {
+            "description": "Smaller version of r2g2 with randomized ids, used for testing role prediction",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (2, 2, 0),
+            "n_trees": 10,
+            "randomize_ids": True,
+            "reward_per_tree": 1,
+            "hidden_roles": "none",
+            "max_view_distance": 5,  # makes thins a bit faster
+            "team_view_distance": (5, 5, 5),  # no bonus vision for red
+            "team_shoot_range": (4, 4, 4),
+            "starting_locations": "random",  # random start locations
+            "team_shoot_timeout": (5, 5, 5)  # green is much slower at shooting
         },
 
         "r2g3": {
@@ -1224,6 +1240,31 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         w,h,_ = image.shape
         frame[x:x+w, y:y+h] = image
 
+    def _draw_role_predictions(self, frame, role_predictions, x, y):
+        """
+        draws role predictions onto frame at given location.
+        :param frame:
+        :param x:
+        :param y:
+        :return:
+        """
+
+        # role predictions are in public_id order so that they change each round, we need to put them back
+        # into index order.
+        public_id_to_player_index = [0] * len(self.players)
+        for player in self.players:
+            public_id_to_player_index[player.public_id] = player.index
+
+        # we draw the predictions in id order, so that cell (x,y) = (1,3) is player 3's prediction of player 1's role.
+        for i in range(self.n_players):
+            frame[x + i + 1, y] = self.players[i].team_color # indicate roles
+            frame[x, y + i + 1] = self.players[i].id_color  # indicate id color
+
+        for i in range(self.n_players):
+            for j in range(self.n_players):
+                frame[x + i + 1, y + j + 1] = [int(x * 255) for x in role_predictions[public_id_to_player_index[i], j]]
+
+
     def _render_rgb(self, show_location=False, role_predictions=None):
         """
         Render out a frame
@@ -1293,9 +1334,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # show current predictions
         if role_predictions is not None:
-            for i in range(self.n_players):
-                for j in range(self.n_players):
-                    frame[i, j] = [int(x * 255) for x in role_predictions[i, j]]
+            self._draw_role_predictions(frame, role_predictions, 0, 0)
 
         frame = frame.swapaxes(0, 1) # I'm using x,y, but video needs y,x
 
