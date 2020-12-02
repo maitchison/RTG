@@ -81,7 +81,7 @@ class Config():
         self.vary_team_player_counts = bool()
         self.amp = bool()
         self.data_parallel = bool()
-        self.micro_batches: Union[str, int] = str()
+        self.micro_batch_size: Union[str, int] = str()
 
         self.verbose = int()
 
@@ -204,13 +204,22 @@ def export_video(filename, algorithm: MarlAlgorithm, scenario):
         with torch.no_grad():
             model_output = algorithm.forward(env_obs, update_rnn_state=True)
             log_policy = model_output["log_policy"].detach().cpu().numpy()
-            role_predictions = model_output["role_prediction"].detach().cpu().numpy()
+            raw_predictions = model_output["role_prediction"].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(log_policy)
 
         env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
 
+        # format the role predictions
+        # role predictions are in public_id order so that they change each round, we need to put them back
+        # into index order.
+        n_players = len(env.players)
+        role_predictions = np.zeros_like(raw_predictions)
+        for i in range(n_players):
+            for j in range(n_players):
+                role_predictions[i, j] = np.exp(raw_predictions[i, env.players[j].public_id])
+
         # generate frames from global perspective
-        frame = env.render("rgb_array", role_predictions=np.exp(role_predictions))
+        frame = env.render("rgb_array", role_predictions=role_predictions)
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
@@ -396,7 +405,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
     algo_params["model_name"] = model_name or config.model
 
     algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, data_parallel=config.data_parallel,
-                            micro_batches=config.micro_batches,
+                            micro_batch_size=config.micro_batch_size,
                             verbose=config.verbose >= 2, **algo_params)
 
     print(f" -model created using batch size of {algorithm.batch_size} and mini-batch size of"+
@@ -466,7 +475,7 @@ def run_benchmarks(train=True, model=True, env=True):
 
     if train:
         print("Benchmarking training...")
-        for model_name in ["default", "fast"]:
+        for model_name in ["default", "fast", "global"]:
             bench_training("red2", model_name)
 
     if env:
@@ -486,7 +495,15 @@ def print_scores(epoch=None):
         results = load_results(log_file)
         scores = tuple(round(get_score(results, team), 1) for team in ["red", "green", "blue"])
         print(f" -training scores: {scores}")
-        export_graph(log_file, epoch=epoch, png_base_name="train")
+
+        teams = set()
+
+        for scenario in config.train_scenarios + config.eval_scenarios:
+            for id, team in enumerate(["red", "green", "blue"]):
+                if scenario.team_counts[id] > 0:
+                    teams.add(team)
+
+        export_graph(log_file, epoch=epoch, png_base_name="train", teams=teams)
     except:
         # this usually just means results have not generated yet
         pass
@@ -638,7 +655,7 @@ def main():
     parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")
     parser.add_argument('--data_parallel', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable data parallelism, can speed things up on multi-gpu machines.")
-    parser.add_argument('--micro_batches', type=str, default="auto",
+    parser.add_argument('--micro_batch_size', type=str, default="auto",
                         help="Number of samples per micro-batch, reduce if GPU ram is exceeded.")
 
 

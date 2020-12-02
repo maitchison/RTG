@@ -29,22 +29,24 @@ def parse(s):
 
 LAST_PLOT_FILENAME = dict()
 
-def export_graph(log_filename, epoch=None, png_base_name="results"):
+def export_graph(log_filename, epoch=None, png_base_name="results", teams=None):
     """
     Loads scores for experiment in given path and exports a PNG plot
     :param path:
     :return:
     """
 
+    teams = teams or ["red", "green", "blue"]
+
     base_folder = os.path.split(log_filename)[0]
 
     try:
         results = load_results(log_filename)
-        y_axis = ("score_red", "score_green", "score_blue")
+        y_axis = tuple(f"score_{team}" for team in teams)
         plt.figure(figsize=(12,8)) # make it big
         title = log_filename
         plot_graph(results, title=title, y_axis=y_axis, hold=True)
-        scores = tuple(round(float(get_score(results, team)), 2) for team in ["red", "green", "blue"])
+        scores = tuple(round(float(get_score(results, team)), 2) for team in teams)
         end_tag = "" if epoch is None else f"[{epoch}]"
         png_filename = os.path.join(base_folder, f"{png_base_name} {scores} {end_tag}.png")
 

@@ -1245,18 +1245,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         Draws role predictions onto frame at given location.
         :param frame:
         :param role_predictions: role predictions as np array [n_players, n_players, n_roles]
-            where cell (i,j) indicates i's prediction of j's role.
-            Order is index order for first dim, and public_id order for second dim
+            where cell (i,j) indicates player i's prediction of player j's role.
         :param x:
         :param y:
         :return:
         """
-
-        # role predictions are in public_id order so that they change each round, we need to put them back
-        # into index order.
-        public_id_to_player_index = [0] * len(self.players)
-        for player in self.players:
-            public_id_to_player_index[player.public_id] = player.index
 
         # we draw the predictions in id order, so that cell (x,y) = (1,3) is player 3's prediction of player 1's role.
         for i in range(self.n_players):
@@ -1265,7 +1258,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         for i in range(self.n_players):
             for j in range(self.n_players):
-                frame[x + j + 1, y + i + 1] = [int(x * 255) for x in role_predictions[i, public_id_to_player_index[j]]]
+                frame[x + j + 1, y + i + 1] = [int(x * 255) for x in role_predictions[i, j]]
 
 
     def _render_rgb(self, show_location=False, role_predictions=None):

@@ -82,6 +82,17 @@ def sample_action_from_logp(logp):
     u = np.random.uniform(size=np.shape(logp))
     return np.argmax(logp - np.log(-np.log(u)), axis=-1)
 
+def try_cast_to_int(x):
+    """
+    Casts x to int and returns result, or None if cast fails.
+    :param x:
+    :return:
+    """
+    try:
+        return int(x)
+    except:
+        return None
+
 def explained_variance(ypred, y):
     """
     # from https://github.com/openai/random-network-distillation/blob/436c47b7d42ffe904373c7b8ab6b2d0cff9c80d8/utils.py

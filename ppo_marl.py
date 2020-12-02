@@ -100,6 +100,45 @@ class DefaultEncoder(BaseEncoder):
 
         return x
 
+class GlobalPoolEncoder(BaseEncoder):
+    """ Uses global average pooling instead of a fully connected layer """
+
+    def __init__(self, input_dims, out_features=128):
+        """
+        :param input_dims: intended dims of input, excluding batch size (height, width, channels)
+        """
+        super().__init__(input_dims, out_features)
+
+        self.final_dims = (64, self.input_dims[0]//2//2, self.input_dims[1]//2//2)
+
+        self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, out_features, kernel_size=3, padding=1)
+
+        print(f" -created default encoder, final dims {self.final_dims}")
+
+    def forward(self, x):
+        """
+        input float32 tensor of dims [b, h, w, c]
+        return output tensor of dims [b, d], where d is the number of units in final layer.
+        """
+        assert x.shape[1:] == self.input_dims, f"Input dims {x.shape[1:]} must match {self.input_dims}"
+        assert x.dtype == torch.float32, f"Datatype should be torch.float32 not {x.dtype}"
+
+        b = x.shape[0]
+
+        # put in BCHW format for pytorch.
+        x = x.transpose(2, 3)
+        x = x.transpose(1, 2)
+
+        x = torch.relu(self.conv1(x))
+        x = torch.relu(self.conv2(x))
+        x = torch.max_pool2d(x, 2, 2)
+        x = torch.relu(self.conv3(x)) # [B, C, H, W]
+        x = torch.mean(x, dim=[-2, -1]) # [B, C]
+        return x
+
+
 class FastEncoder(BaseEncoder):
     """ Encodes from observation to hidden representation.
         Optimized to be efficient on CPU
@@ -154,12 +193,12 @@ class BasicDecoder(nn.Module):
         super().__init__()
 
         self.output_dims = output_dims # (c, h, w)
-        self.initial_dims = (64, self.output_dims[1]//4, self.output_dims[0]//4)
+        self.initial_dims = (64, self.output_dims[1]//4, self.output_dims[2]//4)
         self.hidden_features = hidden_features
 
-        self.deconv1 = nn.ConvTranspose2d(64, 64, 3)
-        self.deconv2 = nn.ConvTranspose2d(64, 32, 3)
-        self.deconv3 = nn.ConvTranspose2d(32, self.output_dims[0], 3)
+        self.deconv1 = nn.ConvTranspose2d(64, 64, 3, stride=2)
+        self.deconv2 = nn.ConvTranspose2d(64, 32, 3, stride=2)
+        self.deconv3 = nn.ConvTranspose2d(32, self.output_dims[0], 3, padding=1)
 
         self.fc = nn.Linear(self.hidden_features, prod(self.initial_dims))
 
@@ -172,10 +211,8 @@ class BasicDecoder(nn.Module):
         b = x.shape[0]
 
         x = torch.relu(self.fc(x))
-        x = x.view((b, *self.final_dims))
-        x = torch.max_pool2d(x, (2, 2), (2, 2))
+        x = x.view((b, *self.initial_dims))
         x = torch.relu(self.deconv1(x))
-        x = torch.max_pool2d(x, (2, 2), (2, 2))
         x = torch.relu(self.deconv2(x))
         x = torch.sigmoid(self.deconv3(x))
 
@@ -231,10 +268,12 @@ class PMModel(nn.Module):
 
         if model.lower() == "default":
             self.encoder = DefaultEncoder(env.observation_space.shape, out_features=out_features)
+        elif model.lower() == "global":
+            self.encoder = GlobalPoolEncoder(env.observation_space.shape, out_features=out_features)
         elif model.lower() == "fast":
             self.encoder = FastEncoder(env.observation_space.shape, out_features=out_features)
         else:
-            raise Exception(f"Invalid model {model}, expected [default|fast]")
+            raise Exception(f"Invalid model {model}, expected [default|fast|global]")
 
         self.encoder_features = self.encoder.out_features
         self.memory_units = memory_units
@@ -260,26 +299,28 @@ class PMModel(nn.Module):
 
         # output heads
         self.policy_head = nn.Linear(self.memory_units, env.action_space.n)
-        #torch.nn.init.xavier_uniform_(self.policy_head.weight, gain=0.01)  # this helps with model's initial exploration
 
         self.local_int_value_head = nn.Linear(self.memory_units, 1)
         self.local_ext_value_head = nn.Linear(self.memory_units, 1)
 
+        # prediction of each role, in public_id order
         self.role_prediction_head = nn.Linear(self.memory_units, (self.n_players * self.n_roles))
-        #self.observation_prediction_head = BasicDecoder((self.obs_shape[0]*self.n_players, *self.obs_shape[1:]),
-        #                                                self.memory_units)
+        # prediction of each observation in public_id order
+        self.observation_prediction_head = BasicDecoder((self.obs_shape[2]*self.n_players, *self.obs_shape[0:2]),
+                                                        self.memory_units)
 
         #self.self_observation_prediction_head = BasicDecoder((self.obs_shape[0] * self.n_players, *self.obs_shape[1:]),
         #                                                      self.memory_units)
 
         self.set_device_and_dtype(self.device, self.dtype)
 
-    def forward_sequence(self, obs, rnn_states, terminals=None):
+    def forward_sequence(self, obs, rnn_states, terminals=None, include_deception=False):
         """
         Forward a sequence of observations through model, returns dictionary of outputs.
         :param obs: input observations, tensor of dims [N, B, observation_shape], which should be channels last. (BHWC)
         :param rnn_states: float32 tensor of dims [B, 2, memory_dims] containing the initial rnn h,c states
         :param terminals: (optional) tensor of dims [N, B] indicating transitions with a terminal state with a 1
+        :param include_deception: enables prediction heads used for deception
         :return: tuple(
             dictionary containing log_policy, value_ext, and value_int
             new rnn_state
@@ -340,44 +381,21 @@ class PMModel(nn.Module):
             [N, B, self.n_players, self.n_roles])
         role_prediction = torch.log_softmax(unnormalized_role_predictions, dim=-1)
 
-        return {
+        result = {
             'log_policy': log_policy,
             'ext_value': ext_value,
             'int_value': int_value,
-            'role_prediction': role_prediction,
-        }, new_rnn_states
+            'role_prediction': role_prediction
+        }
 
+        # observation predictions
+        if include_deception:
+            lstm_output_reshaped = lstm_output.reshape(N * B, self.memory_units)
+            obs_prediction = self.observation_prediction_head(lstm_output_reshaped)
+            obs_prediction = obs_prediction.reshape(N, B, self.n_players, *self.obs_shape)
+            result['obs_prediction'] = obs_prediction
 
-    # def __get_role_prediction(self):
-    #     """
-    #     Give roles prediction for each player as a distribution over roles
-    #     :return: tensor of dims [b, n, r] representing log prob for each role for each player
-    #     """
-    #
-    #     predictions = self.role_prediction_head(self.hidden_features)
-    #     predictions = predictions.reshape((self.n_agents, self.n_players, self.n_roles))
-    #     predictions = torch.log_softmax(predictions, dim=2)
-    #     return predictions
-    #
-    # def __get_observation_prediction(self):
-    #     """
-    #     Predict observations for all players for each other player
-    #     :return: float16 tensor of dims [b, p, c, h, w], where out[i, j, ...] is i's prediction about j's observation
-    #     """
-    #
-    #     prediction = self.observation_prediction_head(self.hidden_features)
-    #     prediction = prediction.view((self.n_agents, self.n_players, *self.obs_shape))
-    #     return prediction
-    #
-    # def __get_self_observation_prediction(self):
-    #     """
-    #     Predict other players predictions of our current observation
-    #     :return: float16 tensor of dims [b, p, c, h, w], where out[i, j, ...] is i's prediction about j's observation
-    #     """
-    #
-    #     prediction = self.self_observation_prediction_head(self.hidden_features)
-    #     prediction = prediction.view((self.n_agents, self.n_players, *self.obs_shape))
-    #     return prediction
+        return result, new_rnn_states
 
     def prep_for_model(self, x, scale_int=True):
         """ Converts data to format for model (i.e. uploads to GPU, converts type).
@@ -531,6 +549,8 @@ class PMAlgorithm(MarlAlgorithm):
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
 
+        self.enable_deception = False
+
         # ------------------------------------
         # current agent state
 
@@ -569,6 +589,10 @@ class PMAlgorithm(MarlAlgorithm):
 
         # the true role of each player in the game that agent a is playing
         self.batch_roles = np.zeros([N, A, vec_env.max_players], dtype=np.int64)
+        # ground truth observations for each player in public_id order,
+        # this is so when we take a random sample we always have the information we need.
+        # It's a bit wasteful with memory though, especially with high player counts.
+        self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
 
         # advantage used during policy gradient (combination of intrinsic and extrinsic reward)
         self.batch_advantage = np.zeros([N, A], dtype=np.float32)
@@ -581,8 +605,8 @@ class PMAlgorithm(MarlAlgorithm):
         # get micro batch size
         self.micro_batches = 0
 
-        if type(micro_batch_size) is int:
-            pass
+        if utils.try_cast_to_int(micro_batch_size) is not None:
+            micro_batch_size = utils.try_cast_to_int(micro_batch_size)
         elif micro_batch_size.lower() == "auto":
             micro_batch_size = self._get_auto_micro_batch_size()
         elif micro_batch_size.lower() == "off":
@@ -665,6 +689,8 @@ class PMAlgorithm(MarlAlgorithm):
             micro_batch_size = 2048
         elif type(self.model._encoder) is FastEncoder:
             micro_batch_size = 8192
+        elif type(self.model._encoder) is GlobalPoolEncoder:
+            micro_batch_size = 2048 # just a guess
         else:
             micro_batch_size = 1024 # just a guess
 
@@ -695,11 +721,31 @@ class PMAlgorithm(MarlAlgorithm):
 
             for t in range(self.n_steps):
 
-                prev_obs = self.agent_obs.copy()
+                prev_obs = self.agent_obs.copy() #[A, *obs_shape]
 
                 learning_weight = self.vec_env.get_alive()
 
                 batch_roles = self.vec_env.get_roles_expanded()
+
+                if self.enable_deception:
+                    orderings = []
+                    for game in self.vec_env.games:
+                        game_players = [(player.public_id, player.index) for player in game.players]
+                        game_players.sort()
+                        order = [index for public_id, index in game_players]
+                        orderings.append(order)
+
+                    # get batch_player_obs and shape to [n_games, n_players, *obs_shape]
+                    batch_player_obs = self.agent_obs.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *self.obs_shape)
+                    self.batch_player_obs[t] = batch_player_obs
+
+                # put observations into public_id order
+                # todo: find a tensor operation to do this
+                for i in range(len(batch_player_obs)):
+                    batch_player_obs[i] = batch_player_obs[i, orderings]
+
+                # make batch_player_obs [A, n_players, *obs_shape]
+                batch_player_obs = batch_player_obs.repeat(self.vec_env.max_players, axis=0)
 
                 # forward state through model, then detach the result and convert to numpy.
                 model_out = self.forward(self.agent_obs)
@@ -859,7 +905,11 @@ class PMAlgorithm(MarlAlgorithm):
         agent_rnn_states = self.agent_rnn_state[:B].clone().detach()
 
         # make a sequence of length 1 and forward it through model
-        result, new_rnn_states = self.model.forward_sequence(obs[np.newaxis], agent_rnn_states)
+        result, new_rnn_states = self.model.forward_sequence(
+            obs=obs[np.newaxis],
+            rnn_states=agent_rnn_states,
+            include_deception=self.enable_deception
+        )
 
         # remove the sequence of length 1
         unsqueze_result = {}
@@ -902,7 +952,12 @@ class PMAlgorithm(MarlAlgorithm):
 
         N, B, *obs_shape = prev_obs.shape
 
-        model_out, _ = self.model.forward_sequence(prev_obs, rnn_states, terminals)
+        model_out, _ = self.model.forward_sequence(
+            obs=prev_obs,
+            rnn_states=rnn_states,
+            terminals=terminals,
+            include_deception=self.enable_deception
+        )
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
         for k, v in model_out.items():
@@ -942,9 +997,6 @@ class PMAlgorithm(MarlAlgorithm):
                 vf_losses1 = (value_prediction - returns).pow(2)
                 loss_value = -self.vf_coef * 0.5 * torch.mean(vf_losses1 * weights)
 
-            # todo:
-            # check is it self.vf_coef * ... or 0.5 * self.vf_coef ...
-
             self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
             loss += loss_value
 
@@ -971,12 +1023,27 @@ class PMAlgorithm(MarlAlgorithm):
         # switch to a slower nll loss system, to see if this is the issue?
         loss_role = torch.zeros_like(loss)
         for i in range(self.vec_env.max_players):
-            loss_role += - rp_coef * torch.nn.functional.nll_loss(role_predictions[:, :, i], role_targets[:, i]) / self.vec_env.max_players
+            # nll doesn't seem to converge on uniform when unknown so I'm going to try RMSE
+            # loss_role += - rp_coef * torch.nn.functional.nll_loss(role_predictions[:, :, i], role_targets[:, i]) / self.vec_env.max_players
+
+            role_one_hot_targets = F.one_hot(role_targets[:, i], num_classes=3).float()  # [N*B, n_players, n_roles]
+            exp_role_predictions = role_predictions[:, :, i].exp()
+            loss_role += - rp_coef * 8 * torch.nn.functional.mse_loss(exp_role_predictions, role_one_hot_targets) / self.vec_env.max_players
 
         loss += loss_role
-
-
         self.log.watch_mean("loss_role", loss_role)
+
+        # -------------------------------------------------------------------------
+        # Calculate observation prediction loss
+        # -------------------------------------------------------------------------
+
+        # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
+
+        obs_predictions = model_out["obs_prediction"] # [N*B, n_players, *obs_shape]
+        obs_truth = merge_down(data["player_obs"]) # [N*B, n_players, *obs_shape] (in public_id order)
+        loss_obs_prediction = 0.5 * F.mse_loss(obs_predictions.reshape(-1, *obs_shape), obs_truth.reshape(-1, *obs_shape))
+        loss += loss_obs_prediction
+        self.log.watch_mean("loss_obs", loss_obs_prediction)
 
         # -------------------------------------------------------------------------
         # Apply loss
@@ -1041,6 +1108,9 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["terminals"] = self.batch_terminals
 
         batch_data["roles"] = self.batch_roles
+
+        if self.enable_deception:
+            batch_data["player_obs"] = self.batch_player_obs
 
         # stub: disable learning weights
         # this should be for any player that was dead at the start of this transition (but not players who died
