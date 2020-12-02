@@ -247,7 +247,7 @@ class BaseModel(nn.Module):
 
         # merge first two dims into a batch, run it through encoder, then reshape it back into the correct form.
         assert tuple(obs_shape) == self.obs_shape
-        assert tuple(rnn_states.shape) == (B, 2, self.memory_units)
+        assert tuple(rnn_states.shape) == (B, 2, self.memory_units), f"Expected {(B, 2, self.memory_units)} found {rnn_states.shape}."
         if terminals is not None:
             assert tuple(terminals.shape) == (N, B)
 
@@ -329,8 +329,8 @@ class BaseModel(nn.Module):
             self.double()
         else:
             raise Exception("Invalid dtype {} for model.".format(dtype))
-        self.device, self.dtype = device, dtype
 
+        self.device, self.dtype = device, dtype
 
 
 class DeceptionModel(BaseModel):
@@ -352,6 +352,8 @@ class DeceptionModel(BaseModel):
         # prediction of each observation in public_id order
         #self.observation_prediction_head = BasicDecoder((self.obs_shape[2] * self.n_players, *self.obs_shape[0:2]),
         #                                                self.memory_units)
+
+        self.set_device_and_dtype(self.device, self.dtype)
 
     def forward_sequence(self, obs, rnn_states, terminals=None):
 
@@ -376,6 +378,7 @@ class DeceptionModel(BaseModel):
 
         result = {}
         result['role_prediction'] = role_prediction
+        return result, new_rnn_states
 
 
 class PolicyModel(BaseModel):

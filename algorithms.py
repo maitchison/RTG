@@ -62,9 +62,9 @@ class MarlAlgorithm():
 
     def get_initial_state(self, n_agents=None):
         n_agents = n_agents or self.n_agents
-        return np.zeros([n_agents, *self.rnn_state_shape])
+        return torch.zeros([n_agents, *self.rnn_state_shape], dtype=torch.float32, device=self.model.device)
 
-    def forward(self, obs, update_rnn_state=True):
+    def forward(self, obs, rnn_state, deception_rnn_state):
         raise NotImplemented()
 
 class PMAlgorithm(MarlAlgorithm):
@@ -173,7 +173,7 @@ class PMAlgorithm(MarlAlgorithm):
         # the rollout transitions (batch)
 
         # rnn_state of the agent before rollout begins
-        self.prev_rnn_state = np.zeros([A, *self.rnn_state_shape], dtype=np.float32)
+        self.prev_agent_rnn_state = np.zeros([A, *self.rnn_state_shape], dtype=np.float32)
         # observation of the agent before taking action
         self.batch_prev_obs = np.zeros([N, A, *self.obs_shape], dtype=np.uint8)
         # observation of the agent after taking action
@@ -267,7 +267,7 @@ class PMAlgorithm(MarlAlgorithm):
     def _train(self):
         self.model.train()
         if self.deception_model is not None:
-            self.deception_model.train_policy()
+            self.deception_model.train()
 
     def learn(self, total_timesteps, reset_num_timesteps=True):
 
@@ -343,7 +343,7 @@ class PMAlgorithm(MarlAlgorithm):
         """
         with torch.no_grad():
 
-            self.prev_rnn_state = self.agent_rnn_state.clone().detach()
+            self.prev_agent_rnn_state = self.agent_rnn_state.clone().detach()
             self.prev_deception_rnn_state = self.deception_rnn_state.clone().detach()
 
             for t in range(self.n_steps):
@@ -378,7 +378,11 @@ class PMAlgorithm(MarlAlgorithm):
 
 
                 # forward state through model, then detach the result and convert to numpy.
-                model_out = self.forward(self.agent_obs)
+                model_out, new_agent_rnn_state, new_deception_rnn_state = \
+                    self.forward(self.agent_obs, self.agent_rnn_state, self.deception_rnn_state)
+
+                self.agent_rnn_state[:] = new_agent_rnn_state
+                self.deception_rnn_state[:] = new_deception_rnn_state
 
                 log_policy = model_out["log_policy"].detach().cpu().numpy()
                 ext_value = model_out["ext_value"].detach().cpu().numpy()
@@ -424,7 +428,7 @@ class PMAlgorithm(MarlAlgorithm):
                 self.batch_int_value[t] = int_value
 
             # get value estimates for final observation.
-            model_out = self.forward(self.agent_obs, update_rnn_state=False)
+            model_out, _, _ = self.forward(self.agent_obs, self.agent_rnn_state, self.deception_rnn_state)
 
             self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
             if "int_value" in model_out:
@@ -493,27 +497,28 @@ class PMAlgorithm(MarlAlgorithm):
         self.log.watch_mean("value_est_ext_std", np.std(self.batch_ext_value), display_name="est_v_ext_std", display_width=0)
         self.log.watch_mean("ev_ext", utils.explained_variance(self.batch_ext_value.ravel(), self.batch_ext_returns.ravel()))
 
-        if self.enable_deception:
-            self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
-            self.log.watch_mean("batch_reward_int_std", np.std(self.int_rewards), display_name="rew_int_std",
-                                display_width=0)
-            self.log.watch_mean("batch_return_int", np.mean(self.batch_int_returns), display_name="ret_int")
-            self.log.watch_mean("batch_return_int_std", np.std(self.batch_int_returns), display_name="ret_int_std")
-            self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.int_returns_raw),
-                                display_name="ret_int_raw_mu",
-                                display_width=0)
-            self.log.watch_mean("batch_return_int_raw_std", np.std(self.int_returns_raw),
-                                display_name="ret_int_raw_std",
-                                display_width=0)
+        # these are not helpful yet...
+        # if self.enable_deception:
+        #     self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
+        #     self.log.watch_mean("batch_reward_int_std", np.std(self.int_rewards), display_name="rew_int_std",
+        #                         display_width=0)
+        #     self.log.watch_mean("batch_return_int", np.mean(self.batch_int_returns), display_name="ret_int")
+        #     self.log.watch_mean("batch_return_int_std", np.std(self.batch_int_returns), display_name="ret_int_std")
+        #     self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.int_returns_raw),
+        #                         display_name="ret_int_raw_mu",
+        #                         display_width=0)
+        #     self.log.watch_mean("batch_return_int_raw_std", np.std(self.int_returns_raw),
+        #                         display_name="ret_int_raw_std",
+        #                         display_width=0)
+        #
+        #     self.log.watch_mean("value_est_int", np.mean(self.batch_int_value), display_name="est_v_int")
+        #     self.log.watch_mean("value_est_int_std", np.std(self.batch_int_value), display_name="est_v_int_std")
+        #     self.log.watch_mean("ev_int", utils.explained_variance(self.batch_int_value.ravel(), self.batch_int_returns.ravel()))
+        #
+        #     if self.normalize_intrinsic_rewards:
+        #         self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
 
-            self.log.watch_mean("value_est_int", np.mean(self.batch_int_value), display_name="est_v_int")
-            self.log.watch_mean("value_est_int_std", np.std(self.batch_int_value), display_name="est_v_int_std")
-            self.log.watch_mean("ev_int", utils.explained_variance(self.batch_int_value.ravel(), self.batch_int_returns.ravel()))
-
-            if self.normalize_intrinsic_rewards:
-                self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
-
-    def forward(self, obs, update_rnn_state=True):
+    def forward(self, obs, agent_rnn_state, deception_rnn_state):
         """
         Forwards a single observations through model for each agent, updating the agents rnn_state.
         Any number of observations <= self.n_agents can be used, but only those rnn_states will be updated.
@@ -531,36 +536,29 @@ class PMAlgorithm(MarlAlgorithm):
 
         B = len(obs)
 
-        # get a copy of the states (the copy probably isn't needed here, but I do it for safety as forward_sequence
-        # used to modify them in place, if this is fixed this can be put back to a non-copy operation
-        agent_rnn_states = self.agent_rnn_state[:B].clone().detach()
-        deception_rnn_states = self.deception_rnn_state[:B].clone().detach()
-
         # make a sequence of length 1 and forward it through model
         result, new_rnn_states = self.model.forward_sequence(
             obs=obs[np.newaxis],
-            rnn_states=agent_rnn_states
+            rnn_states=agent_rnn_state
         )
 
         if self.enable_deception:
             deception_result, new_deception_rnn_states = self.deception_model.forward_sequence(
                 obs=obs[np.newaxis],
-                rnn_states=deception_rnn_states
+                rnn_states=deception_rnn_state
             )
             for k, v in deception_result.items():
                 result[k] = v
+        else:
+            new_deception_rnn_state = None
 
         # remove the sequence of length 1
         unsqueze_result = {}
         for k, v in result.items():
             unsqueze_result[k] = v[0]
 
-        if update_rnn_state:
-            # update only the states which changed
-            self.agent_rnn_state[:B] = new_rnn_states
-            self.deception_rnn_state[:B] = deception_rnn_states
+        return unsqueze_result, new_rnn_states, new_deception_rnn_states
 
-        return unsqueze_result
 
     def forward_policy_mini_batch(self, data, rnn_states):
         """
@@ -671,7 +669,7 @@ class PMAlgorithm(MarlAlgorithm):
         terminals = data["terminals"]
         N, B, *obs_shape = prev_obs.shape
 
-        model_out, _ = self.deception_model.forward(
+        model_out, _ = self.deception_model.forward_sequence(
             obs=prev_obs,
             rnn_states=deception_rnn_states,
             terminals=terminals
@@ -683,8 +681,8 @@ class PMAlgorithm(MarlAlgorithm):
 
         role_targets = merge_down(data["roles"]) # [N*B, n_players]
         # predictions come out as [N*B, n_players, n_roles], but we need them as [N*B, n_roles, n_players]
-        rp_coef = 0.1
-        role_predictions = model_out["role_prediction"].transpose(1, 2)
+        rp_coef = 1.0
+        role_predictions = merge_down(model_out["role_prediction"]).transpose(1, 2)
         loss_role = rp_coef * torch.nn.functional.nll_loss(role_predictions, role_targets)
 
         loss += loss_role
@@ -711,7 +709,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Apply loss
         # -------------------------------------------------------------------------
 
-        self.log.watch_mean("deception_loss", loss)
+        #self.log.watch_mean("deception_loss", loss)
         loss = loss / self.micro_batches
 
         # -------------------------------------------------------------------------
@@ -724,33 +722,33 @@ class PMAlgorithm(MarlAlgorithm):
         else:
             loss.backward()
 
-    def _log_and_clip_grad_norm(self):
+    def _log_and_clip_grad_norm(self, model, log_var_name="opt_grad"):
         if self.max_grad_norm is not None and self.max_grad_norm != 0:
-            grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
         else:
             # even if we don't clip the gradient we should at least log the norm. This is probably a bit slow though.
             # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
             grad_norm = 0
-            parameters = list(filter(lambda p: p.grad is not None, self.model.parameters()))
+            parameters = list(filter(lambda p: p.grad is not None, model.parameters()))
             for p in parameters:
                 param_norm = p.grad.data.norm(2)
                 grad_norm += param_norm.item() ** 2
             grad_norm = grad_norm ** 0.5
-        self.log.watch_mean("opt_grad", grad_norm)
+        self.log.watch_mean(log_var_name, grad_norm)
 
-    def opt_step_minibatch(self, optimizer):
+    def opt_step_minibatch(self, model, optimizer, log_var_name):
         """ Runs the optimization step for a minimatch, forward_minibatch should be called first."""
 
         if self.amp:
             self.scaler.unscale_(optimizer)
-            self._log_and_clip_grad_norm()
+            self._log_and_clip_grad_norm(model, log_var_name)
             self.scaler.step(optimizer)
             self.scaler.update()
-            self.optimizer.zero_grad()
+            optimizer.zero_grad()
         else:
-            self._log_and_clip_grad_norm()
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+            self._log_and_clip_grad_norm(model, log_var_name)
+            optimizer.step()
+            optimizer.zero_grad()
 
 
     def train_policy(self):
@@ -808,7 +806,7 @@ class PMAlgorithm(MarlAlgorithm):
                         sample = segments[batch_start:batch_end]
 
                         # initialize states from state taken during rollout, then upload to gpu
-                        rnn_states = self.prev_rnn_state[sample].to(device=self.model.device)
+                        rnn_states = self.prev_agent_rnn_state[sample].to(device=self.model.device)
 
                         # put together a mini batch from all agents at this time step...
                         mini_batch_data = {}
@@ -817,7 +815,7 @@ class PMAlgorithm(MarlAlgorithm):
 
                         self.forward_policy_mini_batch(mini_batch_data, rnn_states=rnn_states)
                         micro_batch_counter += 1
-                self.opt_step_minibatch(self.optimizer)
+                self.opt_step_minibatch(self.model, self.optimizer, "opt_grad")
 
 
     def train_deception(self):
@@ -869,7 +867,7 @@ class PMAlgorithm(MarlAlgorithm):
 
                         self.forward_deception_mini_batch(mini_batch_data, deception_rnn_states=deception_rnn_states)
                         micro_batch_counter += 1
-                self.opt_step_minibatch(self.deception_optimizer)
+                self.opt_step_minibatch(self.deception_model, self.deception_optimizer, "dec_grad")
 
 # ------------------------------------------------------------------
 # Helper functions

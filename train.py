@@ -82,6 +82,7 @@ class Config():
         self.amp = bool()
         self.data_parallel = bool()
         self.micro_batch_size: Union[str, int] = str()
+        self.n_steps = int()
 
         self.verbose = int()
 
@@ -145,6 +146,7 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     vec_env = make_env(eval_scenario, name="eval", log_path=sub_folder, vary_players=False, parallel_envs=trials)
     env_obs = vec_env.reset()
     agent_rnn_states = algorithm.get_initial_state(vec_env.num_envs)
+    deception_rnn_states = algorithm.get_initial_state(vec_env.num_envs)
     env_terminals = np.zeros([len(agent_rnn_states)], dtype=np.bool)
     vec_env.run_once = True
 
@@ -153,7 +155,11 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     while not all(env_terminals):
 
         with torch.no_grad():
-            model_output = algorithm.forward(env_obs)
+            model_output, new_agent_rnn_states, new_deception_rnn_states = \
+                algorithm.forward(env_obs, agent_rnn_states, deception_rnn_states)
+            agent_rnn_states[:] = new_agent_rnn_states[:]
+            deception_rnn_states[:] = new_deception_rnn_states[:]
+
             log_policy = model_output["log_policy"].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(log_policy)
 
@@ -172,7 +178,7 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     return red_score, green_score, blue_score
 
 
-def export_video(filename, algorithm: MarlAlgorithm, scenario):
+def export_video(filename, algorithm: PMAlgorithm, scenario):
     """
     Exports a movie of model playing in given scenario
     """
@@ -198,11 +204,19 @@ def export_video(filename, algorithm: MarlAlgorithm, scenario):
     # this is required to make sure the last frame is visible
     vec_env.auto_reset = False
 
+    agent_rnn_state = torch.zeros_like(algorithm.agent_rnn_state)[:len(env.players)]
+    deception_rnn_state = torch.zeros_like(algorithm.deception_rnn_state)[:len(env.players)]
+
     # play the game...
     while env.outcome == "":
 
         with torch.no_grad():
-            model_output = algorithm.forward(env_obs, update_rnn_state=True)
+            model_output, new_agent_rnn_state, new_deception_rnn_state = \
+                algorithm.forward(env_obs, agent_rnn_state, deception_rnn_state)
+
+            agent_rnn_state[:] = new_agent_rnn_state[:]
+            deception_rnn_state[:] = new_deception_rnn_state[:]
+
             log_policy = model_output["log_policy"].detach().cpu().numpy()
             raw_predictions = model_output["role_prediction"].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(log_policy)
@@ -405,7 +419,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
     algo_params["model_name"] = model_name or config.model
 
     algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, data_parallel=config.data_parallel,
-                            micro_batch_size=config.micro_batch_size,
+                            micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
                             verbose=config.verbose >= 2, **algo_params)
 
     print(f" -model created using batch size of {algorithm.batch_size} and mini-batch size of"+
@@ -464,11 +478,9 @@ def run_benchmarks(train=True, model=True, env=True):
         while time.time() - start_time < 10:
 
             with torch.no_grad():
-                model_output = agent.forward(obs)
+                model_output, _, _ = agent.forward(obs, agent.agent_rnn_state, agent.deception_rnn_state)
                 log_policy = model_output["log_policy"].detach().cpu().numpy()
                 actions = utils.sample_action_from_logp(log_policy)
-
-            _ = agent.step(obs)
             steps += vec_env.num_envs
         torch.cuda.synchronize()
         time_taken = (time.time() - start_time)
@@ -648,6 +660,8 @@ def main():
     parser.add_argument('--parallel_envs', type=int, default=128,
                         help="The number of times to duplicate the environments. Note: when using mixed learning each"+
                              "environment will be duplicated this number of times.")
+
+    parser.add_argument('--n_steps', type=int, default=32)
 
     parser.add_argument('--vary_team_player_counts', type=str2bool, nargs='?', const=True,  default=False, help="Use a random number of players turning training.")
 
