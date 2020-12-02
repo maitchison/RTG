@@ -145,9 +145,8 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     # run them all in parallel at once to make sure we get exactly 'trials' number of environments
     vec_env = make_env(eval_scenario, name="eval", log_path=sub_folder, vary_players=False, parallel_envs=trials)
     env_obs = vec_env.reset()
-    agent_rnn_states = algorithm.get_initial_state(vec_env.num_envs)
-    deception_rnn_states = algorithm.get_initial_state(vec_env.num_envs)
-    env_terminals = np.zeros([len(agent_rnn_states)], dtype=np.bool)
+    rnn_states = algorithm.get_initial_state(vec_env.num_envs)
+    env_terminals = np.zeros([len(rnn_states)], dtype=np.bool)
     vec_env.run_once = True
 
     # play the game...
@@ -155,10 +154,8 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     while not all(env_terminals):
 
         with torch.no_grad():
-            model_output, new_agent_rnn_states, new_deception_rnn_states = \
-                algorithm.forward(env_obs, agent_rnn_states, deception_rnn_states)
-            agent_rnn_states[:] = new_agent_rnn_states[:]
-            deception_rnn_states[:] = new_deception_rnn_states[:]
+            model_output, new_rnn_states = algorithm.forward(env_obs, rnn_states)
+            rnn_states[:] = new_rnn_states[:]
 
             log_policy = model_output["log_policy"].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(log_policy)
@@ -204,18 +201,15 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     # this is required to make sure the last frame is visible
     vec_env.auto_reset = False
 
-    agent_rnn_state = torch.zeros_like(algorithm.agent_rnn_state)[:len(env.players)]
-    deception_rnn_state = torch.zeros_like(algorithm.deception_rnn_state)[:len(env.players)]
+    rnn_state = algorithm.get_initial_state(len(env.players))
 
     # play the game...
     while env.outcome == "":
 
         with torch.no_grad():
-            model_output, new_agent_rnn_state, new_deception_rnn_state = \
-                algorithm.forward(env_obs, agent_rnn_state, deception_rnn_state)
+            model_output, new_rnn_state = algorithm.forward(env_obs, rnn_state)
 
-            agent_rnn_state[:] = new_agent_rnn_state[:]
-            deception_rnn_state[:] = new_deception_rnn_state[:]
+            rnn_state[:] = new_rnn_state[:]
 
             log_policy = model_output["log_policy"].detach().cpu().numpy()
             raw_predictions = model_output["role_prediction"].detach().cpu().numpy()
@@ -478,7 +472,7 @@ def run_benchmarks(train=True, model=True, env=True):
         while time.time() - start_time < 10:
 
             with torch.no_grad():
-                model_output, _, _ = agent.forward(obs, agent.agent_rnn_state, agent.deception_rnn_state)
+                model_output, _ = agent.forward(obs, agent.agent_rnn_state)
                 log_policy = model_output["log_policy"].detach().cpu().numpy()
                 actions = utils.sample_action_from_logp(log_policy)
             steps += vec_env.num_envs

@@ -50,7 +50,7 @@ class MarlAlgorithm():
         self.n_agents = A
 
         self.obs_shape = self.model.input_dims
-        self.rnn_state_shape = [2, self.model.memory_units]  # records h and c for LSTM units.
+        self.rnn_state_shape = [2, self.model.memory_units]  # records h and c for LSTM units
         self.policy_shape = [self.model.actions]
 
     def learn(self, total_timesteps, reset_num_timesteps=True):
@@ -64,7 +64,7 @@ class MarlAlgorithm():
         n_agents = n_agents or self.n_agents
         return torch.zeros([n_agents, *self.rnn_state_shape], dtype=torch.float32, device=self.model.device)
 
-    def forward(self, obs, rnn_state, deception_rnn_state):
+    def forward(self, obs, rnn_state):
         raise NotImplemented()
 
 class PMAlgorithm(MarlAlgorithm):
@@ -122,6 +122,11 @@ class PMAlgorithm(MarlAlgorithm):
 
         super().__init__(n_steps, A, model)
 
+        if self.enable_deception:
+            # normally the rnn_states are h,c, but with the deception model we use h, c, h_deception, c_deception
+            # this means both models must have the same number of memory units but that's fine.
+            self.rnn_state_shape[0] *= 2
+
         self.name = name
         self.amp = amp
         self.data_parallel = data_parallel
@@ -167,13 +172,12 @@ class PMAlgorithm(MarlAlgorithm):
         self.agent_obs = np.zeros([A, *self.obs_shape], dtype=np.uint8)
         # agents current rnn state
         self.agent_rnn_state = torch.zeros([A, *self.rnn_state_shape], dtype=torch.float32, device=self.model.device)
-        self.deception_rnn_state = torch.zeros([A, *self.rnn_state_shape], dtype=torch.float32, device=self.model.device)
 
         # ------------------------------------
         # the rollout transitions (batch)
 
         # rnn_state of the agent before rollout begins
-        self.prev_agent_rnn_state = np.zeros([A, *self.rnn_state_shape], dtype=np.float32)
+        self.prev_rnn_states = np.zeros([A, *self.rnn_state_shape], dtype=np.float32)
         # observation of the agent before taking action
         self.batch_prev_obs = np.zeros([N, A, *self.obs_shape], dtype=np.uint8)
         # observation of the agent after taking action
@@ -332,7 +336,6 @@ class PMAlgorithm(MarlAlgorithm):
         # initialize agent
         self.agent_obs = self.vec_env.reset()
         self.agent_rnn_state *= 0
-        self.deception_rnn_state *= 0
         self.episode_score *= 0
         self.episode_len *= 0
 
@@ -343,8 +346,8 @@ class PMAlgorithm(MarlAlgorithm):
         """
         with torch.no_grad():
 
-            self.prev_agent_rnn_state = self.agent_rnn_state.clone().detach()
-            self.prev_deception_rnn_state = self.deception_rnn_state.clone().detach()
+            # make a copy of rnn_states at beginning of rollout, which we will use to initialize the rnn state.
+            self.prev_rnn_states[:] = self.agent_rnn_state[:]
 
             for t in range(self.n_steps):
 
@@ -378,11 +381,9 @@ class PMAlgorithm(MarlAlgorithm):
 
 
                 # forward state through model, then detach the result and convert to numpy.
-                model_out, new_agent_rnn_state, new_deception_rnn_state = \
-                    self.forward(self.agent_obs, self.agent_rnn_state, self.deception_rnn_state)
+                model_out, new_agent_rnn_state = self.forward(self.agent_obs, self.agent_rnn_state)
 
                 self.agent_rnn_state[:] = new_agent_rnn_state
-                self.deception_rnn_state[:] = new_deception_rnn_state
 
                 log_policy = model_out["log_policy"].detach().cpu().numpy()
                 ext_value = model_out["ext_value"].detach().cpu().numpy()
@@ -407,7 +408,6 @@ class PMAlgorithm(MarlAlgorithm):
                         # todo: check this is right
                         # reset the internal state on episode completion
                         self.agent_rnn_state[i] *= 0
-                        self.deception_rnn_state[i] *= 0
                         # reset is handled automatically by vectorized environments
                         # so just need to keep track of book-keeping
                         self.log.watch_full("ep_score", self.episode_score[i])
@@ -428,7 +428,7 @@ class PMAlgorithm(MarlAlgorithm):
                 self.batch_int_value[t] = int_value
 
             # get value estimates for final observation.
-            model_out, _, _ = self.forward(self.agent_obs, self.agent_rnn_state, self.deception_rnn_state)
+            model_out, _ = self.forward(self.agent_obs, self.agent_rnn_state)
 
             self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
             if "int_value" in model_out:
@@ -518,46 +518,45 @@ class PMAlgorithm(MarlAlgorithm):
         #     if self.normalize_intrinsic_rewards:
         #         self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
 
-    def forward(self, obs, agent_rnn_state, deception_rnn_state):
+    def forward(self, obs, rnn_states):
         """
-        Forwards a single observations through model for each agent, updating the agents rnn_state.
-        Any number of observations <= self.n_agents can be used, but only those rnn_states will be updated.
+        Forwards a single observations through model for each agent
         For more advanced uses call model.forward_sequence directly.
 
         :param obs: Observations for each agent, tensor of dims [B, *observation_shape]
-        :param update_rnn_state: If true RNN states for agents will be updated with the new state information
+        :param rnn_states: tensor of dims [B, 2|4, memory_units]
 
-        :return: a dictionary containing,
-            'rnn_state',        [B, 2, memory_dims]
-            'log_policy',       [B, actions]
-            'ext_value', and    [B]
-            'int_value'.        [B]
+        :return: a tuple(
+            dictionary containing,
+                'log_policy',       [B, actions]
+                'ext_value', and    [B]
+                'int_value'.        [B],
+            new_rnn_states         [B, 2|4, memory_dims]
+
         """
-
-        B = len(obs)
 
         # make a sequence of length 1 and forward it through model
         result, new_rnn_states = self.model.forward_sequence(
             obs=obs[np.newaxis],
-            rnn_states=agent_rnn_state
+            rnn_states=rnn_states[:, 0:2, :]
         )
 
         if self.enable_deception:
             deception_result, new_deception_rnn_states = self.deception_model.forward_sequence(
                 obs=obs[np.newaxis],
-                rnn_states=deception_rnn_state
+                rnn_states=rnn_states[:, 2:4, :]
             )
             for k, v in deception_result.items():
                 result[k] = v
-        else:
-            new_deception_rnn_state = None
+            new_rnn_states = torch.cat([new_rnn_states, new_deception_rnn_states], dim=1)
+
 
         # remove the sequence of length 1
         unsqueze_result = {}
         for k, v in result.items():
             unsqueze_result[k] = v[0]
 
-        return unsqueze_result, new_rnn_states, new_deception_rnn_states
+        return unsqueze_result, new_rnn_states
 
 
     def forward_policy_mini_batch(self, data, rnn_states):
@@ -806,7 +805,7 @@ class PMAlgorithm(MarlAlgorithm):
                         sample = segments[batch_start:batch_end]
 
                         # initialize states from state taken during rollout, then upload to gpu
-                        rnn_states = self.prev_agent_rnn_state[sample].to(device=self.model.device)
+                        rnn_states = self.prev_rnn_states[sample, 0:2].to(device=self.model.device)
 
                         # put together a mini batch from all agents at this time step...
                         mini_batch_data = {}
@@ -858,7 +857,7 @@ class PMAlgorithm(MarlAlgorithm):
                         sample = segments[batch_start:batch_end]
 
                         # initialize states from state taken during rollout, then upload to gpu
-                        deception_rnn_states = self.prev_deception_rnn_state[sample].to(device=self.model.device)
+                        deception_rnn_states = self.prev_rnn_states[sample, 2:4].to(device=self.model.device)
 
                         # put together a mini batch from all agents at this time step...
                         mini_batch_data = {}
