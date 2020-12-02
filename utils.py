@@ -139,3 +139,14 @@ def validate_dims(x, dims, dtype=None):
     assert len(x.shape) == len(dims), "Invalid dims, expected {} but found {}".format(dims, x.shape)
 
     assert all((a is None) or a == b for a,b in zip(dims, x.shape)), "Invalid dims, expected {} but found {}".format(dims, x.shape)
+
+def prod(X):
+    """
+    Return the product of elements in X
+    :param X:
+    :return:
+    """
+    y = 1
+    for x in X:
+        y *= x
+    return y

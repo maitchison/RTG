@@ -27,7 +27,7 @@ from rescue import RescueTheGeneralEnv
 from marl_env import MultiAgentVecEnv
 from tools import load_results, get_score, get_score_alt, export_graph
 from strategies import RTG_ScriptedEnv
-from ppo_marl import PMAlgorithm, MarlAlgorithm
+from algorithms import PMAlgorithm, MarlAlgorithm
 from typing import Union
 
 class ScenarioSetting():
@@ -447,7 +447,8 @@ def run_benchmarks(train=True, model=True, env=True):
         algo.learn(2 * algo.batch_size)
         torch.cuda.synchronize()
         time_taken = (time.time() - start_time)
-        print(f" - model {model_name} trains at {2 * algo.batch_size / time_taken / 1000:.1f}k FPS.")
+        print(f" -model {model_name} trains at {utils.Color.WARNING}{2 * algo.batch_size / time_taken / 1000:.1f}k"+
+              f"{utils.Color.ENDC} FPS.")
 
     def bench_model(model_name):
         """

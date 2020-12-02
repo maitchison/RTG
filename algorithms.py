@@ -26,9 +26,6 @@ extrinsic and intrinsic rewards are learned separately as value_int, and value_e
 
 """
 
-import numpy as np
-import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import pickle
 import time
@@ -38,407 +35,9 @@ from torch.cuda.amp import GradScaler, autocast
 from logger import Logger
 from typing import Union
 
-import utils
+from models import *
 
 from marl_env import MultiAgentVecEnv
-
-class BaseEncoder(nn.Module):
-
-    def __init__(self, input_dims, out_features):
-        """
-        :param input_dims: intended dims of input, excluding batch size (height, width, channels)
-        """
-        super().__init__()
-
-        self.input_dims = input_dims
-        self.final_dims = None
-        self.out_features = out_features
-
-    def forward(self, x):
-        raise NotImplemented()
-
-class DefaultEncoder(BaseEncoder):
-    """ Encodes from observation to hidden representation. """
-
-    def __init__(self, input_dims, out_features=128):
-        """
-        :param input_dims: intended dims of input, excluding batch size (height, width, channels)
-        """
-        super().__init__(input_dims, out_features)
-
-        self.final_dims = (64, self.input_dims[0]//2//2, self.input_dims[1]//2//2)
-
-        self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.fc = nn.Linear(prod(self.final_dims), self.out_features)
-
-        print(f" -created default encoder, final dims {self.final_dims}")
-
-    def forward(self, x):
-        """
-        input float32 tensor of dims [b, h, w, c]
-        return output tensor of dims [b, d], where d is the number of units in final layer.
-        """
-        assert x.shape[1:] == self.input_dims, f"Input dims {x.shape[1:]} must match {self.input_dims}"
-        assert x.dtype == torch.float32, f"Datatype should be torch.float32 not {x.dtype}"
-
-        b = x.shape[0]
-
-        # put in BCHW format for pytorch.
-        x = x.transpose(2, 3)
-        x = x.transpose(1, 2)
-
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = torch.max_pool2d(x, 2, 2)
-        x = torch.relu(self.conv3(x))
-        x = torch.max_pool2d(x, 2, 2)
-        assert x.shape[1:] == self.final_dims, f"Expected final shape to be {self.final_dims} but found {x.shape[1:]}"
-        x = x.reshape((b, -1))
-        x = torch.relu(self.fc(x))
-
-        return x
-
-class GlobalPoolEncoder(BaseEncoder):
-    """ Uses global average pooling instead of a fully connected layer """
-
-    def __init__(self, input_dims, out_features=128):
-        """
-        :param input_dims: intended dims of input, excluding batch size (height, width, channels)
-        """
-        super().__init__(input_dims, out_features)
-
-        self.final_dims = (64, self.input_dims[0]//2//2, self.input_dims[1]//2//2)
-
-        self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, out_features, kernel_size=3, padding=1)
-
-        print(f" -created default encoder, final dims {self.final_dims}")
-
-    def forward(self, x):
-        """
-        input float32 tensor of dims [b, h, w, c]
-        return output tensor of dims [b, d], where d is the number of units in final layer.
-        """
-        assert x.shape[1:] == self.input_dims, f"Input dims {x.shape[1:]} must match {self.input_dims}"
-        assert x.dtype == torch.float32, f"Datatype should be torch.float32 not {x.dtype}"
-
-        b = x.shape[0]
-
-        # put in BCHW format for pytorch.
-        x = x.transpose(2, 3)
-        x = x.transpose(1, 2)
-
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = torch.max_pool2d(x, 2, 2)
-        x = torch.relu(self.conv3(x)) # [B, C, H, W]
-        x = torch.mean(x, dim=[-2, -1]) # [B, C]
-        return x
-
-
-class FastEncoder(BaseEncoder):
-    """ Encodes from observation to hidden representation.
-        Optimized to be efficient on CPU
-    """
-
-    def __init__(self, input_dims, out_features=64):
-        """
-        :param input_dims: intended dims of input, excluding batch size (height, width, channels)
-        """
-        super().__init__(input_dims, out_features)
-
-        self.final_dims = (64, self.input_dims[0]//3//2, self.input_dims[1]//3//2)
-
-        self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3, stride=3)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.fc = nn.Linear(prod(self.final_dims), self.out_features)
-
-        print(f" -created fast encoder, final dims {self.final_dims}")
-
-    def forward(self, x):
-        """
-        input float32 tensor of dims [b, h, w, c]
-        return output tensor of dims [b, d], where d is the number of units in final layer.
-        """
-
-        assert x.shape[1:] == self.input_dims, f"Input dims {x.shape[1:]} must match {self.input_dims}"
-        assert x.dtype == torch.float32, f"Datatype should be torch.float32 not {x.dtype}"
-
-        b = x.shape[0]
-
-        # put in BCHW format for pytorch.
-        x = x.transpose(2, 3)
-        x = x.transpose(1, 2)
-
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = torch.relu(self.conv3(x))
-        x = torch.max_pool2d(x, 2, 2)
-        assert x.shape[1:] == self.final_dims, f"Expected final shape to be {self.final_dims} but found {x.shape[1:]}"
-        x = x.reshape((b, -1))
-
-        x = torch.relu(self.fc(x))
-
-        return x
-
-class BasicDecoder(nn.Module):
-    """ Decodes from hidden representation to observation. """
-
-    def __init__(self, output_dims, hidden_features=128):
-
-        super().__init__()
-
-        self.output_dims = output_dims # (c, h, w)
-        self.initial_dims = (64, self.output_dims[1]//4, self.output_dims[2]//4)
-        self.hidden_features = hidden_features
-
-        self.deconv1 = nn.ConvTranspose2d(64, 64, 3, stride=2)
-        self.deconv2 = nn.ConvTranspose2d(64, 32, 3, stride=2)
-        self.deconv3 = nn.ConvTranspose2d(32, self.output_dims[0], 3, padding=1)
-
-        self.fc = nn.Linear(self.hidden_features, prod(self.initial_dims))
-
-    def forward(self, x):
-        """
-        input tensor of dims [b, d], where d is the number of hidden features.
-        return tensor of dims [b, c, h, w] of type float16 (will be cast to float16 if not)
-        """
-
-        b = x.shape[0]
-
-        x = torch.relu(self.fc(x))
-        x = x.view((b, *self.initial_dims))
-        x = torch.relu(self.deconv1(x))
-        x = torch.relu(self.deconv2(x))
-        x = torch.sigmoid(self.deconv3(x))
-
-        return x
-
-class CentralizedCritic():
-    """
-    This model takes as input one global state and provides the following outputs for each player
-
-        Feature Extractor -> Extrinsic Value
-                          -> Intrinsic Value
-
-    It can be used when estimating returns to reduce variance during training. This need not be used once policys have
-    been formed.
-    """
-    pass
-
-
-class PMModel(nn.Module):
-
-    """
-    Multi-agent model for PPO Marl implementation
-
-    This model provides the following outputs
-
-    Feature Extractor -> LSTM -> Policy
-                              -> Extrinsic Value (local estimation)
-                              -> Intrinsic Value (local estimation)
-                              -> Observation estimates for each player
-                              -> Estimate of other players prediction of our own observation
-    """
-
-    def __init__(
-            self,
-            env: MultiAgentVecEnv,
-            device="cpu",
-            dtype=torch.float32,
-            memory_units=128,
-            out_features=128,
-            model="default",
-            data_parallel=False
-    ):
-
-        self.name = "PM"
-
-        assert env.observation_space.dtype == np.uint8, "Observation space should be 8bit integer"
-
-        super().__init__()
-        self.input_dims = env.observation_space.shape
-        self.actions = env.action_space.n
-        self.device = device
-        self.dtype = dtype
-
-        if model.lower() == "default":
-            self.encoder = DefaultEncoder(env.observation_space.shape, out_features=out_features)
-        elif model.lower() == "global":
-            self.encoder = GlobalPoolEncoder(env.observation_space.shape, out_features=out_features)
-        elif model.lower() == "fast":
-            self.encoder = FastEncoder(env.observation_space.shape, out_features=out_features)
-        else:
-            raise Exception(f"Invalid model {model}, expected [default|fast|global]")
-
-        self.encoder_features = self.encoder.out_features
-        self.memory_units = memory_units
-
-        self._encoder = self.encoder # the encoder before and data_parallel was applied
-
-        if data_parallel:
-            # enable multi gpu :)
-            print(f" -enabling {utils.Color.OKGREEN}Multi-GPU{utils.Color.ENDC} support")
-            self.encoder = nn.DataParallel(self.encoder)
-
-        # note, agents are AI controlled, players maybe scripted, but an AI still needs to predict their behavour.
-        self.n_agents = env.total_agents
-        self.n_players = env.max_players
-
-        # hardcode this to 3 for simplicity, could use env.max_roles, but then it might change from game to game
-        self.n_roles = 3
-        self.obs_shape = env.observation_space.shape
-
-        # memory units
-        self.lstm = torch.nn.LSTM(input_size=self.encoder_features, hidden_size=self.memory_units, num_layers=1,
-                                  batch_first=False, dropout=0)
-
-        # output heads
-        self.policy_head = nn.Linear(self.memory_units, env.action_space.n)
-
-        self.local_int_value_head = nn.Linear(self.memory_units, 1)
-        self.local_ext_value_head = nn.Linear(self.memory_units, 1)
-
-        # prediction of each role, in public_id order
-        self.role_prediction_head = nn.Linear(self.memory_units, (self.n_players * self.n_roles))
-        # prediction of each observation in public_id order
-        self.observation_prediction_head = BasicDecoder((self.obs_shape[2]*self.n_players, *self.obs_shape[0:2]),
-                                                        self.memory_units)
-
-        #self.self_observation_prediction_head = BasicDecoder((self.obs_shape[0] * self.n_players, *self.obs_shape[1:]),
-        #                                                      self.memory_units)
-
-        self.set_device_and_dtype(self.device, self.dtype)
-
-    def forward_sequence(self, obs, rnn_states, terminals=None, include_deception=False):
-        """
-        Forward a sequence of observations through model, returns dictionary of outputs.
-        :param obs: input observations, tensor of dims [N, B, observation_shape], which should be channels last. (BHWC)
-        :param rnn_states: float32 tensor of dims [B, 2, memory_dims] containing the initial rnn h,c states
-        :param terminals: (optional) tensor of dims [N, B] indicating transitions with a terminal state with a 1
-        :param include_deception: enables prediction heads used for deception
-        :return: tuple(
-            dictionary containing log_policy, value_ext, and value_int
-            new rnn_state
-            ) all having structure [N, B, ...]
-
-        """
-
-        N, B, *obs_shape = obs.shape
-
-        # merge first two dims into a batch, run it through encoder, then reshape it back into the correct form.
-        assert tuple(obs_shape) == self.obs_shape
-        assert tuple(rnn_states.shape) == (B, 2, self.memory_units)
-        if terminals is not None:
-            assert tuple(terminals.shape) == (N, B)
-
-        if terminals is not None and terminals.sum() == 0:
-            # just ignore terminals there aren't any (faster)
-            terminals = None
-
-        obs = obs.reshape([N*B, *obs_shape])
-        obs = self.prep_for_model(obs)
-
-        encoding = self.encoder(obs)
-        encoding = encoding.reshape([N, B, -1])
-
-        # torch requires these to be contiguous, it's a shame we have to do this but it keeps things simpler to use
-        # one tensor rather than a separate one for h and c.
-        # also, h,c should be dims [1, B, memory_units] as we have 1 LSTM layer and it is unidirectional
-        h = rnn_states[np.newaxis, :, 0, :].clone().detach().contiguous()
-        c = rnn_states[np.newaxis, :, 1, :].clone().detach().contiguous()
-
-        if terminals is None:
-            # this is the faster path if there are no terminals
-            lstm_output, (h, c) = self.lstm(encoding, (h, c))
-        else:
-            # this is about 2x slower, and takes around 100ms on a batch size of 4096
-            outputs = []
-            for t in range(N):
-                output, (h, c) = self.lstm(encoding[t:t+1], (h, c))
-                # the baselines LSTM code zero's state on dones before the lstm... I think it should be after.
-                terminals_t = terminals[t][np.newaxis, :, np.newaxis]
-                h = h * (1.0 - terminals_t)
-                c = c * (1.0 - terminals_t)
-                outputs.append(output)
-            lstm_output = torch.cat(outputs, dim=0) # do we loose gradients this way?
-
-        # copy new rnn states into a new tensor
-        new_rnn_states = torch.zeros_like(rnn_states)
-        new_rnn_states[:, 0, :] = h
-        new_rnn_states[:, 1, :] = c
-
-        log_policy = torch.log_softmax(self.policy_head(lstm_output), dim=-1)
-        ext_value = self.local_ext_value_head(lstm_output).squeeze(dim=-1)
-        int_value = self.local_int_value_head(lstm_output).squeeze(dim=-1)
-
-        # these will come out as [N, B, n_players * n_roles] but we need [N, B, n_players, n_roles] for normalization
-        unnormalized_role_predictions = self.role_prediction_head(lstm_output).reshape(
-            [N, B, self.n_players, self.n_roles])
-        role_prediction = torch.log_softmax(unnormalized_role_predictions, dim=-1)
-
-        result = {
-            'log_policy': log_policy,
-            'ext_value': ext_value,
-            'int_value': int_value,
-            'role_prediction': role_prediction
-        }
-
-        # observation predictions
-        if include_deception:
-            lstm_output_reshaped = lstm_output.reshape(N * B, self.memory_units)
-            obs_prediction = self.observation_prediction_head(lstm_output_reshaped)
-            obs_prediction = obs_prediction.reshape(N, B, self.n_players, *self.obs_shape)
-            result['obs_prediction'] = obs_prediction
-
-        return result, new_rnn_states
-
-    def prep_for_model(self, x, scale_int=True):
-        """ Converts data to format for model (i.e. uploads to GPU, converts type).
-            Can accept tensor or ndarray.
-            scale_int scales uint8 to [0..1]
-         """
-
-        assert self.device is not None, "Must call set_device_and_dtype."
-
-        utils.validate_dims(x, (None, *self.input_dims))
-
-        # if this is numpy convert it over
-        if type(x) is np.ndarray:
-            x = torch.from_numpy(x)
-
-        # move it to the correct device
-        x = x.to(device=self.device, non_blocking=True)
-
-        # then covert the type (faster to upload uint8 then convert on GPU)
-        if x.dtype == torch.uint8:
-            x = x.to(dtype=self.dtype, non_blocking=True)
-            if scale_int:
-                x = x / 255
-        elif x.dtype == self.dtype:
-            pass
-        else:
-            raise Exception("Invalid dtype {}".format(x.dtype))
-
-        return x
-
-    def set_device_and_dtype(self, device, dtype):
-
-        self.to(device)
-        if str(dtype) in ["torch.half", "torch.float16"]:
-            self.half()
-        elif str(dtype) in  ["torch.float", "torch.float32"]:
-            self.float()
-        elif str(dtype) in ["torch.double", "torch.float64"]:
-            self.double()
-        else:
-            raise Exception("Invalid dtype {} for model.".format(dtype))
-        self.device, self.dtype = device, dtype
-
 
 class MarlAlgorithm():
 
@@ -509,8 +108,18 @@ class PMAlgorithm(MarlAlgorithm):
         A = vec_env.total_agents
         N = n_steps
 
-        model = PMModel(vec_env, device=device, memory_units=memory_units, model=model_name,
+        self.enable_deception = True
+
+        model = PolicyModel(vec_env, device=device, memory_units=memory_units, model=model_name,
                         data_parallel=data_parallel, out_features=out_features)
+
+        if self.enable_deception:
+            self.deception_model = DeceptionModel(vec_env, device=device, memory_units=memory_units, model=model_name,
+                        data_parallel=data_parallel, out_features=out_features)
+        else:
+            self.deception_model = None
+
+
         super().__init__(n_steps, A, model)
 
         self.name = name
@@ -538,9 +147,11 @@ class PMAlgorithm(MarlAlgorithm):
         self.extrinsic_reward_scale = 1.0
         self.intrinsic_reward_scale = 1.0
         self.log_folder = "."
-        self.deception_bonus = False  # this is not implemented yet
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, eps=adam_epsilon)
+        if self.deception_model is not None:
+            self.deception_optimizer = torch.optim.Adam(self.deception_model.parameters(), lr=learning_rate,
+                                                        eps=adam_epsilon)
 
         self.t = 0
         self.learn_steps = 0
@@ -549,8 +160,6 @@ class PMAlgorithm(MarlAlgorithm):
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
 
-        self.enable_deception = False
-
         # ------------------------------------
         # current agent state
 
@@ -558,6 +167,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.agent_obs = np.zeros([A, *self.obs_shape], dtype=np.uint8)
         # agents current rnn state
         self.agent_rnn_state = torch.zeros([A, *self.rnn_state_shape], dtype=torch.float32, device=self.model.device)
+        self.deception_rnn_state = torch.zeros([A, *self.rnn_state_shape], dtype=torch.float32, device=self.model.device)
 
         # ------------------------------------
         # the rollout transitions (batch)
@@ -633,6 +243,10 @@ class PMAlgorithm(MarlAlgorithm):
             'optimizer_state_dict': self.optimizer.state_dict()
         }
 
+        if self.enable_deception:
+            data['deception_model_state_dict'] = self.deception_model.state_dict()
+            data['deception_optimizer_state_dict'] = self.deception_optimizer.state_dict()
+
         if self.normalize_intrinsic_rewards:
             data['ems_norm'] = self.ems_norm
             data['intrinsic_returns_rms'] = self.intrinsic_returns_rms,
@@ -644,6 +258,16 @@ class PMAlgorithm(MarlAlgorithm):
         with open(os.path.join(base_path, "checkpoint_log.dat"), "wb") as f:
             pickle.dump(self.log, f)
 
+
+    def _eval(self):
+        self.model.eval()
+        if self.deception_model is not None:
+            self.deception_model.eval()
+
+    def _train(self):
+        self.model.train()
+        if self.deception_model is not None:
+            self.deception_model.train_policy()
 
     def learn(self, total_timesteps, reset_num_timesteps=True):
 
@@ -658,11 +282,12 @@ class PMAlgorithm(MarlAlgorithm):
             self.log.watch("epoch", self.t/1e6, display_width=8, display_priority=3, display_precision=1)
 
             start_time = time.time()
-            self.model.eval()
+            self._eval()
             self.generate_rollout()
-            self.model.train()
-            self.train()
-            self.model.eval()
+            self._train()
+            self.train_policy()
+            if self.enable_deception:
+                self.train_deception()
 
             end_time = time.time()
             step_time = end_time - start_time
@@ -699,7 +324,7 @@ class PMAlgorithm(MarlAlgorithm):
         if self.data_parallel:
             micro_batch_size *= 4 # should be number of GPUs
 
-        print(f" -found max micro batch size of {micro_batch_size}")
+        print(f" -found max micro-batch size of {micro_batch_size}")
 
         return micro_batch_size
 
@@ -707,6 +332,7 @@ class PMAlgorithm(MarlAlgorithm):
         # initialize agent
         self.agent_obs = self.vec_env.reset()
         self.agent_rnn_state *= 0
+        self.deception_rnn_state *= 0
         self.episode_score *= 0
         self.episode_len *= 0
 
@@ -718,6 +344,7 @@ class PMAlgorithm(MarlAlgorithm):
         with torch.no_grad():
 
             self.prev_rnn_state = self.agent_rnn_state.clone().detach()
+            self.prev_deception_rnn_state = self.deception_rnn_state.clone().detach()
 
             for t in range(self.n_steps):
 
@@ -725,27 +352,30 @@ class PMAlgorithm(MarlAlgorithm):
 
                 learning_weight = self.vec_env.get_alive()
 
-                batch_roles = self.vec_env.get_roles_expanded()
-
                 if self.enable_deception:
-                    orderings = []
-                    for game in self.vec_env.games:
-                        game_players = [(player.public_id, player.index) for player in game.players]
-                        game_players.sort()
-                        order = [index for public_id, index in game_players]
-                        orderings.append(order)
+                    batch_roles = self.vec_env.get_roles_expanded()
+                    self.batch_roles[t] = batch_roles
 
-                    # get batch_player_obs and shape to [n_games, n_players, *obs_shape]
-                    batch_player_obs = self.agent_obs.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *self.obs_shape)
-                    self.batch_player_obs[t] = batch_player_obs
+                    # todo: record batch player_obs
+                    # orderings = []
+                    # for game in self.vec_env.games:
+                    #     game_players = [(player.public_id, player.index) for player in game.players]
+                    #     game_players.sort()
+                    #     order = [index for public_id, index in game_players]
+                    #     orderings.append(order)
+                    #
+                    # # get batch_player_obs and shape to [n_games, n_players, *obs_shape]
+                    # batch_player_obs = self.agent_obs.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *self.obs_shape)
+                    # self.batch_player_obs[t] = batch_player_obs
+                    #
+                    # # put observations into public_id order
+                    # # todo: find a tensor operation to do this
+                    # for i in range(len(batch_player_obs)):
+                    #     batch_player_obs[i] = batch_player_obs[i, orderings]
+                    #
+                    # # make batch_player_obs [A, n_players, *obs_shape]
+                    # batch_player_obs = batch_player_obs.repeat(self.vec_env.max_players, axis=0)
 
-                # put observations into public_id order
-                # todo: find a tensor operation to do this
-                for i in range(len(batch_player_obs)):
-                    batch_player_obs[i] = batch_player_obs[i, orderings]
-
-                # make batch_player_obs [A, n_players, *obs_shape]
-                batch_player_obs = batch_player_obs.repeat(self.vec_env.max_players, axis=0)
 
                 # forward state through model, then detach the result and convert to numpy.
                 model_out = self.forward(self.agent_obs)
@@ -770,8 +400,10 @@ class PMAlgorithm(MarlAlgorithm):
 
                 for i, terminal in enumerate(terminals):
                     if terminal:
+                        # todo: check this is right
                         # reset the internal state on episode completion
                         self.agent_rnn_state[i] *= 0
+                        self.deception_rnn_state[i] *= 0
                         # reset is handled automatically by vectorized environments
                         # so just need to keep track of book-keeping
                         self.log.watch_full("ep_score", self.episode_score[i])
@@ -790,7 +422,6 @@ class PMAlgorithm(MarlAlgorithm):
                 self.int_rewards[t] = int_rewards
                 self.batch_ext_value[t] = ext_value
                 self.batch_int_value[t] = int_value
-                self.batch_roles[t] = batch_roles
 
             # get value estimates for final observation.
             model_out = self.forward(self.agent_obs, update_rnn_state=False)
@@ -862,7 +493,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.log.watch_mean("value_est_ext_std", np.std(self.batch_ext_value), display_name="est_v_ext_std", display_width=0)
         self.log.watch_mean("ev_ext", utils.explained_variance(self.batch_ext_value.ravel(), self.batch_ext_returns.ravel()))
 
-        if self.deception_bonus:
+        if self.enable_deception:
             self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
             self.log.watch_mean("batch_reward_int_std", np.std(self.int_rewards), display_name="rew_int_std",
                                 display_width=0)
@@ -903,13 +534,21 @@ class PMAlgorithm(MarlAlgorithm):
         # get a copy of the states (the copy probably isn't needed here, but I do it for safety as forward_sequence
         # used to modify them in place, if this is fixed this can be put back to a non-copy operation
         agent_rnn_states = self.agent_rnn_state[:B].clone().detach()
+        deception_rnn_states = self.deception_rnn_state[:B].clone().detach()
 
         # make a sequence of length 1 and forward it through model
         result, new_rnn_states = self.model.forward_sequence(
             obs=obs[np.newaxis],
-            rnn_states=agent_rnn_states,
-            include_deception=self.enable_deception
+            rnn_states=agent_rnn_states
         )
+
+        if self.enable_deception:
+            deception_result, new_deception_rnn_states = self.deception_model.forward_sequence(
+                obs=obs[np.newaxis],
+                rnn_states=deception_rnn_states
+            )
+            for k, v in deception_result.items():
+                result[k] = v
 
         # remove the sequence of length 1
         unsqueze_result = {}
@@ -919,10 +558,11 @@ class PMAlgorithm(MarlAlgorithm):
         if update_rnn_state:
             # update only the states which changed
             self.agent_rnn_state[:B] = new_rnn_states
+            self.deception_rnn_state[:B] = deception_rnn_states
 
         return unsqueze_result
 
-    def forward_mini_batch(self, data, rnn_states):
+    def forward_policy_mini_batch(self, data, rnn_states):
         """
         Run mini batch through model generating loss, call opt_step_mini_batch to apply the update.
         mini batch should have the structure [N, B, *] where N is the sequence length, and is the batch length
@@ -930,10 +570,6 @@ class PMAlgorithm(MarlAlgorithm):
         :param data: dictionary containing data for
         :param rnn_states: current rnn_states of dims [B, 2, memory_units]
         """
-
-        def merge_down(x):
-            """ Combines first two dims. """
-            return x.reshape(-1, *x.shape[2:])
 
         loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
@@ -948,15 +584,15 @@ class PMAlgorithm(MarlAlgorithm):
         actions = merge_down(data["actions"])
         policy_log_probs = merge_down(data["log_policy"])
         advantages = merge_down(data["advantages"])
-        weights = merge_down(data["learning_weight"]) if "learning_weight" in data else 1
+        # stub: put this back in
+        weights = 1
 
         N, B, *obs_shape = prev_obs.shape
 
         model_out, _ = self.model.forward_sequence(
             obs=prev_obs,
             rnn_states=rnn_states,
-            terminals=terminals,
-            include_deception=self.enable_deception
+            terminals=terminals
         )
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
@@ -1010,42 +646,6 @@ class PMAlgorithm(MarlAlgorithm):
         loss += loss_entropy
 
         # -------------------------------------------------------------------------
-        # Calculate loss_role
-        # -------------------------------------------------------------------------
-
-        role_targets = merge_down(data["roles"]) # [N*B, n_players]
-        # predictions come out as [N*B, n_players, n_roles], but we need them as [N*B, n_roles, n_players]
-        rp_coef = 0.25 # probably too high?
-        role_predictions = model_out["role_prediction"].transpose(1, 2)
-
-        # loss_role = - rp_coef * torch.nn.functional.nll_loss(role_predictions, role_targets)
-
-        # switch to a slower nll loss system, to see if this is the issue?
-        loss_role = torch.zeros_like(loss)
-        for i in range(self.vec_env.max_players):
-            # nll doesn't seem to converge on uniform when unknown so I'm going to try RMSE
-            # loss_role += - rp_coef * torch.nn.functional.nll_loss(role_predictions[:, :, i], role_targets[:, i]) / self.vec_env.max_players
-
-            role_one_hot_targets = F.one_hot(role_targets[:, i], num_classes=3).float()  # [N*B, n_players, n_roles]
-            exp_role_predictions = role_predictions[:, :, i].exp()
-            loss_role += - rp_coef * 8 * torch.nn.functional.mse_loss(exp_role_predictions, role_one_hot_targets) / self.vec_env.max_players
-
-        loss += loss_role
-        self.log.watch_mean("loss_role", loss_role)
-
-        # -------------------------------------------------------------------------
-        # Calculate observation prediction loss
-        # -------------------------------------------------------------------------
-
-        # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
-
-        obs_predictions = model_out["obs_prediction"] # [N*B, n_players, *obs_shape]
-        obs_truth = merge_down(data["player_obs"]) # [N*B, n_players, *obs_shape] (in public_id order)
-        loss_obs_prediction = 0.5 * F.mse_loss(obs_predictions.reshape(-1, *obs_shape), obs_truth.reshape(-1, *obs_shape))
-        loss += loss_obs_prediction
-        self.log.watch_mean("loss_obs", loss_obs_prediction)
-
-        # -------------------------------------------------------------------------
         # Apply loss
         # -------------------------------------------------------------------------
 
@@ -1062,6 +662,68 @@ class PMAlgorithm(MarlAlgorithm):
         else:
             (-loss).backward()
 
+
+    def forward_deception_mini_batch(self, data, deception_rnn_states):
+
+        loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
+
+        prev_obs = data["prev_obs"]
+        terminals = data["terminals"]
+        N, B, *obs_shape = prev_obs.shape
+
+        model_out, _ = self.deception_model.forward(
+            obs=prev_obs,
+            rnn_states=deception_rnn_states,
+            terminals=terminals
+        )
+
+        # -------------------------------------------------------------------------
+        # Calculate loss_role
+        # -------------------------------------------------------------------------
+
+        role_targets = merge_down(data["roles"]) # [N*B, n_players]
+        # predictions come out as [N*B, n_players, n_roles], but we need them as [N*B, n_roles, n_players]
+        rp_coef = 0.1
+        role_predictions = model_out["role_prediction"].transpose(1, 2)
+        loss_role = rp_coef * torch.nn.functional.nll_loss(role_predictions, role_targets)
+
+        loss += loss_role
+        self.log.watch_mean("loss_role", loss_role)
+
+        # -------------------------------------------------------------------------
+        # Calculate observation prediction loss
+        # -------------------------------------------------------------------------
+
+        # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
+
+        # stub: remove observation prediction..
+        # obs_predictions = model_out["obs_prediction"] # [N*B, n_players, *obs_shape]
+        # obs_truth = merge_down(data["player_obs"]) # [N*B, n_players, *obs_shape] (in public_id order)
+        # loss_obs_prediction = 0.5 * F.mse_loss(obs_predictions.reshape(-1, *obs_shape), obs_truth.reshape(-1, *obs_shape))
+        # loss += loss_obs_prediction
+        # self.log.watch_mean("loss_obs", loss_obs_prediction)
+
+        # output will be a sequence of [N, B] but we want this just as [N*B] for processing
+        for k, v in model_out.items():
+            model_out[k] = merge_down(v)
+
+        # -------------------------------------------------------------------------
+        # Apply loss
+        # -------------------------------------------------------------------------
+
+        self.log.watch_mean("deception_loss", loss)
+        loss = loss / self.micro_batches
+
+        # -------------------------------------------------------------------------
+        # Run optimizer
+        # -------------------------------------------------------------------------
+
+        # calculate gradients, and log grad_norm
+        if self.amp:
+            self.scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
     def _log_and_clip_grad_norm(self):
         if self.max_grad_norm is not None and self.max_grad_norm != 0:
             grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
@@ -1076,13 +738,13 @@ class PMAlgorithm(MarlAlgorithm):
             grad_norm = grad_norm ** 0.5
         self.log.watch_mean("opt_grad", grad_norm)
 
-    def opt_step_minibatch(self):
+    def opt_step_minibatch(self, optimizer):
         """ Runs the optimization step for a minimatch, forward_minibatch should be called first."""
 
         if self.amp:
-            self.scaler.unscale_(self.optimizer)
+            self.scaler.unscale_(optimizer)
             self._log_and_clip_grad_norm()
-            self.scaler.step(self.optimizer)
+            self.scaler.step(optimizer)
             self.scaler.update()
             self.optimizer.zero_grad()
         else:
@@ -1091,7 +753,7 @@ class PMAlgorithm(MarlAlgorithm):
             self.optimizer.zero_grad()
 
 
-    def train(self):
+    def train_policy(self):
         """ trains agent on it's own experience, using the rnn training loop """
 
         # put the required data into a dictionary
@@ -1107,10 +769,10 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["advantages"] = self.batch_advantage
         batch_data["terminals"] = self.batch_terminals
 
-        batch_data["roles"] = self.batch_roles
-
-        if self.enable_deception:
-            batch_data["player_obs"] = self.batch_player_obs
+        #if self.enable_deception:
+            #batch_data["roles"] = self.batch_roles
+            # stub: enable this
+            #batch_data["player_obs"] = self.batch_player_obs
 
         # stub: disable learning weights
         # this should be for any player that was dead at the start of this transition (but not players who died
@@ -1124,6 +786,7 @@ class PMAlgorithm(MarlAlgorithm):
 
             segments = list(range(self.n_agents))
             np.random.shuffle(segments)
+
 
             # figure out how many agents to run in parallel so that mini batch size is right
             # this will be num_segments * rnn_block_length
@@ -1152,9 +815,61 @@ class PMAlgorithm(MarlAlgorithm):
                         for key, value in batch_data.items():
                             mini_batch_data[key] = torch.tensor(value[:, sample], device=self.model.device)
 
-                        self.forward_mini_batch(mini_batch_data, rnn_states=rnn_states)
+                        self.forward_policy_mini_batch(mini_batch_data, rnn_states=rnn_states)
                         micro_batch_counter += 1
-                self.opt_step_minibatch()
+                self.opt_step_minibatch(self.optimizer)
+
+
+    def train_deception(self):
+        """ trains agent on it's own experience, using the rnn training loop """
+
+        # put the required data into a dictionary
+        batch_data = {}
+
+        batch_data["prev_obs"] = self.batch_prev_obs
+        batch_data["terminals"] = self.batch_terminals
+        batch_data["roles"] = self.batch_roles
+        # stub: enable this
+        #batch_data["player_obs"] = self.batch_player_obs
+
+        for i in range(self.batch_epochs):
+
+            assert self.mini_batch_size % self.n_steps == 0, "mini batch size must be multiple of n_steps."
+
+            segments = list(range(self.n_agents))
+            np.random.shuffle(segments)
+
+            # figure out how many agents to run in parallel so that mini batch size is right
+            # this will be num_segments * rnn_block_length
+
+            assert self.mini_batch_size % self.micro_batches == 0
+
+            segments_per_micro_batch = self.batch_size // self.n_steps // \
+                                       (self.mini_batches * self.micro_batches)
+
+            self.deception_optimizer.zero_grad()
+
+            micro_batch_counter = 0
+
+            # todo: this is repeated, make it share code with train_policy
+            for j in range(self.mini_batches):
+                with autocast(enabled=self.amp):
+                    for k in range(self.micro_batches):
+                        batch_start = micro_batch_counter * segments_per_micro_batch
+                        batch_end = (micro_batch_counter + 1) * segments_per_micro_batch
+                        sample = segments[batch_start:batch_end]
+
+                        # initialize states from state taken during rollout, then upload to gpu
+                        deception_rnn_states = self.prev_deception_rnn_state[sample].to(device=self.model.device)
+
+                        # put together a mini batch from all agents at this time step...
+                        mini_batch_data = {}
+                        for key, value in batch_data.items():
+                            mini_batch_data[key] = torch.tensor(value[:, sample], device=self.model.device)
+
+                        self.forward_deception_mini_batch(mini_batch_data, deception_rnn_states=deception_rnn_states)
+                        micro_batch_counter += 1
+                self.opt_step_minibatch(self.deception_optimizer)
 
 # ------------------------------------------------------------------
 # Helper functions
@@ -1198,13 +913,6 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
     return batch_advantage
 
-def prod(X):
-    """
-    Return the product of elements in X
-    :param X:
-    :return:
-    """
-    y = 1
-    for x in X:
-        y *= x
-    return y
+def merge_down(x):
+    """ Combines first two dims. """
+    return x.reshape(-1, *x.shape[2:])
