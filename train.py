@@ -81,6 +81,7 @@ class Config():
         self.vary_team_player_counts = bool()
         self.amp = bool()
         self.data_parallel = bool()
+        self.micro_batches: Union[str, int] = str()
 
         self.verbose = int()
 
@@ -207,11 +208,6 @@ def export_video(filename, algorithm: MarlAlgorithm, scenario):
             actions = utils.sample_action_from_logp(log_policy)
 
         env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
-
-        # role predictions predict the public_id, but change this around to be in index order
-        order = [player.public_id for player in env.players]
-        for i in range(env.n_players):
-            role_predictions[i] = [role_predictions[i][idx] for idx in order]
 
         # generate frames from global perspective
         frame = env.render("rgb_array", role_predictions=np.exp(role_predictions))
@@ -400,6 +396,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
     algo_params["model_name"] = model_name or config.model
 
     algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, data_parallel=config.data_parallel,
+                            micro_batches=config.micro_batches,
                             verbose=config.verbose >= 2, **algo_params)
 
     print(f" -model created using batch size of {algorithm.batch_size} and mini-batch size of"+
@@ -641,6 +638,8 @@ def main():
     parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")
     parser.add_argument('--data_parallel', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable data parallelism, can speed things up on multi-gpu machines.")
+    parser.add_argument('--micro_batches', type=str, default="auto",
+                        help="Number of samples per micro-batch, reduce if GPU ram is exceeded.")
 
 
 

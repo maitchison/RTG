@@ -469,7 +469,7 @@ class PMAlgorithm(MarlAlgorithm):
             memory_units=128,
             out_features=128,
             model_name="default",
-            micro_batches: Union[str, int] = "auto",
+            micro_batch_size: Union[str, int] = "auto",
 
             # ------ long list of parameters to algorithm ------------
             n_steps=32,
@@ -581,17 +581,19 @@ class PMAlgorithm(MarlAlgorithm):
         # get micro batch size
         self.micro_batches = 0
 
-        if type(micro_batches) is int:
-            self.micro_batches = micro_batches
-        elif micro_batches.lower() == "auto":
-            self.micro_batches = self._get_auto_micro_batch_count()
-        elif micro_batches.lower() == "off":
-            self.micro_batches = 0
+        if type(micro_batch_size) is int:
+            pass
+        elif micro_batch_size.lower() == "auto":
+            micro_batch_size = self._get_auto_micro_batch_size()
+        elif micro_batch_size.lower() == "off":
+            micro_batch_size = self.mini_batch_size
         else:
-            raise ValueError(f"Invalid micro batches parameter {micro_batches}")
+            raise ValueError(f"Invalid micro batch size {micro_batch_size}")
+
+        self.micro_batches = max(1, self.mini_batch_size // micro_batch_size)
 
         if self.micro_batches != 1:
-            print(f" -using micro_batches={self.micro_batches}")
+            print(f" -using {self.micro_batches} micro_batches of size {micro_batch_size}")
 
         self.scaler = GradScaler() if self.amp else None
 
@@ -654,26 +656,26 @@ class PMAlgorithm(MarlAlgorithm):
 
             self.log.record_step()
 
-    def _get_auto_micro_batch_count(self):
-        """ Returns an appropriate microbatch size. """
+    def _get_auto_micro_batch_size(self):
+        """ Returns an appropriate micro-batch size. """
 
         # working this out will be complex
         # maybe can assume that 12GB gives us 4096 with AMP and 2048 without
         if type(self.model._encoder) is DefaultEncoder:
-            max_micro_batch_size = 2048
+            micro_batch_size = 2048
         elif type(self.model._encoder) is FastEncoder:
-            max_micro_batch_size = 8192
+            micro_batch_size = 8192
         else:
-            max_micro_batch_size = 1024 # just a guess
+            micro_batch_size = 1024 # just a guess
 
         if self.amp:
-            max_micro_batch_size *= 2
+            micro_batch_size *= 2
         if self.data_parallel:
-            max_micro_batch_size *= 4 # should be number of GPUs
+            micro_batch_size *= 4 # should be number of GPUs
 
-        print(f" -found max micro batch size of {max_micro_batch_size}")
+        print(f" -found max micro batch size of {micro_batch_size}")
 
-        return max(1, self.mini_batch_size // max_micro_batch_size)
+        return micro_batch_size
 
     def reset(self):
         # initialize agent
@@ -934,11 +936,11 @@ class PMAlgorithm(MarlAlgorithm):
                                                                          -self.ppo_epsilon, +self.ppo_epsilon)
                 vf_losses1 = (value_prediction - returns).pow(2)
                 vf_losses2 = (value_prediction_clipped - returns).pow(2)
-                loss_value = -self.vf_coef * torch.mean(torch.max(vf_losses1, vf_losses2) * weights)
+                loss_value = -self.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2) * weights)
             else:
                 # simpler version, just use MSE.
                 vf_losses1 = (value_prediction - returns).pow(2)
-                loss_value = -self.vf_coef * torch.mean(vf_losses1 * weights)
+                loss_value = -self.vf_coef * 0.5 * torch.mean(vf_losses1 * weights)
 
             # todo:
             # check is it self.vf_coef * ... or 0.5 * self.vf_coef ...
@@ -961,9 +963,19 @@ class PMAlgorithm(MarlAlgorithm):
 
         role_targets = merge_down(data["roles"]) # [N*B, n_players]
         # predictions come out as [N*B, n_players, n_roles], but we need them as [N*B, n_roles, n_players]
+        rp_coef = 0.25 # probably too high?
         role_predictions = model_out["role_prediction"].transpose(1, 2)
-        loss_role = - 0.25 * torch.nn.functional.nll_loss(role_predictions, role_targets)
+
+        # loss_role = - rp_coef * torch.nn.functional.nll_loss(role_predictions, role_targets)
+
+        # switch to a slower nll loss system, to see if this is the issue?
+        loss_role = torch.zeros_like(loss)
+        for i in range(self.vec_env.max_players):
+            loss_role += - rp_coef * torch.nn.functional.nll_loss(role_predictions[:, :, i], role_targets[:, i]) / self.vec_env.max_players
+
         loss += loss_role
+
+
         self.log.watch_mean("loss_role", loss_role)
 
         # -------------------------------------------------------------------------
