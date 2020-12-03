@@ -98,7 +98,7 @@ class PMAlgorithm(MarlAlgorithm):
             gae_lambda=0.95,
             batch_epochs=4,
             entropy_bonus=0.01,
-            mini_batches=4,
+            mini_batches=8,
             use_clipped_value_loss=False,  # shown to be not effective
             vf_coef=0.5,
             ppo_epsilon=0.2,
@@ -191,15 +191,14 @@ class PMAlgorithm(MarlAlgorithm):
         # the current terminal state of each agent
         self.terminals = np.zeros([A], dtype=np.float32)
         # rewards generated at transition
-        self.ext_rewards = np.zeros([N, A], dtype=np.float32)
-        self.int_rewards = np.zeros([N, A], dtype=np.float32)
+        self.batch_ext_rewards = np.zeros([N, A], dtype=np.float32)
+        self.batch_int_rewards = np.zeros([N, A], dtype=np.float32)
         # value estimates by agent just before action was taken
         self.batch_ext_value = np.zeros([N, A], dtype=np.float32)
         self.batch_int_value = np.zeros([N, A], dtype=np.float32)
         # return estimates (from which state though?)
         self.batch_ext_returns = np.zeros([N, A], dtype=np.float32)
         self.batch_int_returns = np.zeros([N, A], dtype=np.float32)
-        self.int_returns_raw = np.zeros([N, A], dtype=np.float32)
 
         # the true role of each player in the game that agent a is playing
         self.batch_roles = np.zeros([N, A, vec_env.max_players], dtype=np.int64)
@@ -418,10 +417,10 @@ class PMAlgorithm(MarlAlgorithm):
                 self.batch_prev_obs[t] = prev_obs
                 self.next_obs[t] = self.agent_obs
                 self.batch_actions[t] = actions
-                self.ext_rewards[t] = ext_rewards
+                self.batch_ext_rewards[t] = ext_rewards
                 self.batch_log_policy[t] = log_policy
                 self.batch_terminals[t] = prev_terminals
-                self.int_rewards[t] = int_rewards
+                self.batch_int_rewards[t] = int_rewards
                 self.batch_ext_value[t] = ext_value
                 self.batch_int_value[t] = int_value
 
@@ -443,52 +442,42 @@ class PMAlgorithm(MarlAlgorithm):
         :return:
         """
 
-        self.batch_ext_returns = calculate_returns(self.ext_rewards, self.batch_terminals, self.ext_final_value_estimate,
-                                                   self.gamma)
-
-        self.ext_advantage = calculate_gae(self.ext_rewards, self.batch_ext_value, self.ext_final_value_estimate,
-                                           self.batch_terminals, self.terminals, self.gamma, self.gae_lambda, self.normalize_advantages)
+        ext_advantage = calculate_gae(self.batch_ext_rewards, self.batch_ext_value, self.ext_final_value_estimate,
+            self.batch_terminals, self.terminals, self.gamma, self.gae_lambda)
+        self.batch_ext_returns = ext_advantage + self.batch_ext_value
 
         # calculate the intrinsic returns, but let returns propagate through terminal states.
-        self.int_returns_raw = calculate_returns(
-            self.int_rewards,
-            self.intrinsic_reward_propagation * self.batch_terminals,
-            self.int_final_value_estimate,
-            self.gamma_int
-        )
-
         if self.normalize_intrinsic_rewards:
             # normalize returns using EMS
             for t in range(self.n_steps):
-                self.ems_norm = 0.99 * self.ems_norm + self.int_rewards[t, :]
+                self.ems_norm = 0.99 * self.ems_norm + self.batch_int_rewards[t, :]
                 self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
             # normalize the intrinsic rewards
             # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4,
             # which is approximately where normalized returns will sit.
             self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
-            self.batch_int_rewards = self.int_rewards / self.intrinsic_reward_norm_scale * 0.4
+            scaled_int_rewards = self.batch_int_rewards / self.intrinsic_reward_norm_scale * 0.4
         else:
             self.intrinsic_reward_norm_scale = 1
-            self.batch_int_rewards = self.int_rewards
+            scaled_int_rewards = self.batch_int_rewards
 
-        self.batch_int_returns = calculate_returns(
-            self.int_rewards,
-            self.intrinsic_reward_propagation * self.batch_terminals,
-            self.int_final_value_estimate,
-            self.gamma_int
-        )
+        int_advantage = calculate_gae(scaled_int_rewards, self.batch_int_value, self.int_final_value_estimate,
+                                           self.batch_terminals * self.intrinsic_reward_propagation,  # let rewards through
+                                           self.terminals * self.intrinsic_reward_propagation,
+                                           self.gamma_int, self.gae_lambda)
+        self.batch_int_returns = int_advantage + self.batch_int_value
 
-        self.int_advantage = calculate_gae(self.int_rewards, self.batch_int_value, self.int_final_value_estimate,
-                                           self.batch_terminals, self.terminals,
-                                           self.gamma_int)
+        # sum them together
+        self.batch_advantage = self.extrinsic_reward_scale * ext_advantage + self.intrinsic_reward_scale * int_advantage
+        if self.normalize_advantages:
+            self.batch_advantage = (self.batch_advantage - self.batch_advantage.mean()) / (self.batch_advantage.std() + 1e-8)
 
-        self.batch_advantage = self.extrinsic_reward_scale * self.ext_advantage + self.intrinsic_reward_scale * self.int_advantage
 
         self.log.watch_mean("adv_mean", np.mean(self.batch_advantage), display_width=0 if self.normalize_advantages else 10)
         self.log.watch_mean("adv_std", np.std(self.batch_advantage), display_width=0 if self.normalize_advantages else 10)
         self.log.watch_mean("adv_max", np.max(self.batch_advantage), display_width=0 if self.normalize_advantages else 0)
         self.log.watch_mean("adv_min", np.min(self.batch_advantage), display_width=0 if self.normalize_advantages else 0)
-        self.log.watch_mean("batch_reward_ext", np.mean(self.ext_rewards), display_name="rew_ext", display_width=0)
+        self.log.watch_mean("batch_reward_ext", np.mean(self.batch_ext_rewards), display_name="rew_ext", display_width=0)
         self.log.watch_mean("batch_return_ext", np.mean(self.batch_ext_returns), display_name="ret_ext")
         self.log.watch_mean("batch_return_ext_std", np.std(self.batch_ext_returns), display_name="ret_ext_std",
                             display_width=0)
@@ -655,6 +644,8 @@ class PMAlgorithm(MarlAlgorithm):
         # calculate gradients, and log grad_norm
         if self.amp:
             self.scaler.scale(-loss).backward()
+            self.log.watch_mean("s_skip", self.scaler._get_growth_tracker())
+            self.log.watch_mean("s_scale", self.scaler.get_scale())
         else:
             (-loss).backward()
 
@@ -768,14 +759,13 @@ class PMAlgorithm(MarlAlgorithm):
         for i in range(self.batch_epochs):
 
             assert self.mini_batch_size % self.n_steps == 0, "mini batch size must be multiple of n_steps."
+            assert self.n_agents == self.batch_prev_obs.shape[1]
 
             segments = list(range(self.n_agents))
             np.random.shuffle(segments)
 
-
             # figure out how many agents to run in parallel so that mini batch size is right
             # this will be num_segments * rnn_block_length
-
             assert self.mini_batch_size % self.micro_batches == 0
 
             segments_per_micro_batch = self.batch_size // self.n_steps // \
@@ -814,8 +804,6 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["prev_obs"] = self.batch_prev_obs
         batch_data["terminals"] = self.batch_terminals
         batch_data["roles"] = self.batch_roles
-        # stub: enable this
-        #batch_data["player_obs"] = self.batch_player_obs
 
         for i in range(self.batch_epochs):
 
@@ -881,7 +869,7 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
 
     return returns
 
-def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, final_terminal, gamma, lamb=1.0, normalize=False):
+def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, final_terminal, gamma, lamb):
 
     N, A = batch_rewards.shape
 
@@ -890,7 +878,7 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
     for t in reversed(range(N)):
 
         if t != N-1:
-            is_next_terminal = final_terminal
+            is_next_terminal = batch_terminal[t + 1]
             value_next_t = batch_value[t + 1]
         else:
             is_next_terminal = final_terminal
@@ -899,8 +887,7 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
         delta = batch_rewards[t] + gamma * value_next_t * (1.0 - is_next_terminal) - batch_value[t]
         batch_advantage[t] = prev_adv = delta + gamma * lamb * (
                 1.0 - is_next_terminal) * prev_adv
-    if normalize:
-        batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
+
     return batch_advantage
 
 def merge_down(x):
