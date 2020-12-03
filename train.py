@@ -83,6 +83,7 @@ class Config():
         self.data_parallel = bool()
         self.micro_batch_size: Union[str, int] = str()
         self.n_steps = int()
+        self.enable_deception = bool()
 
         self.verbose = int()
 
@@ -414,6 +415,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
 
     algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, data_parallel=config.data_parallel,
                             micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
+                            enable_deception=config.enable_deception,
                             verbose=config.verbose >= 2, **algo_params)
 
     print(f" -model created using batch size of {algorithm.batch_size} and mini-batch size of"+
@@ -686,6 +688,10 @@ def main():
 
     parser.add_argument('--amp', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable Automatic Mixed Precision")
+
+    parser.add_argument('--enable_deception', type=str2bool, nargs='?', const=True, default=False,
+                        help="Enables the deception module during training")
+
     parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")
     parser.add_argument('--data_parallel', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable data parallelism, can speed things up on multi-gpu machines.")

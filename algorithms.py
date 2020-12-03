@@ -78,6 +78,8 @@ class PMAlgorithm(MarlAlgorithm):
             name="agent",              # name of agent
             verbose=False,             # set to true to enable debug printing
 
+            enable_deception=False,    # enables the deception model
+
             # ------ model parameters ------------
 
             data_parallel=False,
@@ -108,7 +110,7 @@ class PMAlgorithm(MarlAlgorithm):
         A = vec_env.total_agents
         N = n_steps
 
-        self.enable_deception = True
+        self.enable_deception = enable_deception
 
         model = PolicyModel(vec_env, device=device, memory_units=memory_units, model=model_name,
                         data_parallel=data_parallel, out_features=out_features)
@@ -644,7 +646,7 @@ class PMAlgorithm(MarlAlgorithm):
         # calculate gradients, and log grad_norm
         if self.amp:
             self.scaler.scale(-loss).backward()
-            self.log.watch_mean("s_skip", self.scaler._get_growth_tracker())
+            self.log.watch_mean("s_unskip", self.scaler._get_growth_tracker())
             self.log.watch_mean("s_scale", self.scaler.get_scale())
         else:
             (-loss).backward()
