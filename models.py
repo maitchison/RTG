@@ -353,6 +353,9 @@ class DeceptionModel(BaseModel):
         self.observation_prediction_head = BasicDecoder((self.obs_shape[2] * self.n_players, *self.obs_shape[0:2]),
                                                         self.memory_units)
 
+        if data_parallel:
+            self.observation_prediction_head = torch.nn.DataParallel(self.observation_prediction_head)
+
         self.set_device_and_dtype(self.device, self.dtype)
 
     def forward_sequence(self, obs, rnn_states, terminals=None):

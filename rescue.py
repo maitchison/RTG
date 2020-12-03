@@ -1260,7 +1260,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             for j in range(self.n_players):
                 frame[x + j + 1, y + i + 1] = [int(x * 255) for x in role_predictions[i, j]]
 
-
     def _render_rgb(self, show_location=False, role_predictions=None):
         """
         Render out a frame

@@ -192,8 +192,12 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     env = vec_env.games[0]
     frame = env.render("rgb_array")
 
+    obs_size = 39
+
     # work out our height
     height, width, channels = frame.shape
+    if algorithm.enable_deception:
+        height += len(env.players) * obs_size
     width = (width * scale) // 4 * 4 # make sure these are multiples of 4
     height = (height * scale) // 4 * 4
 
@@ -218,12 +222,15 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
         env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
 
+        n_players = len(env.players)
+
         # format the role predictions
         # role predictions are in public_id order so that they change each round, we need to put them back
         # into index order.
         if config.enable_deception:
+
+            # role prediction
             raw_predictions = model_output["role_prediction"].detach().cpu().numpy()
-            n_players = len(env.players)
             role_predictions = np.zeros_like(raw_predictions)
             for i in range(n_players):
                 for j in range(n_players):
@@ -233,6 +240,30 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
         # generate frames from global perspective
         frame = env.render("rgb_array", role_predictions=role_predictions)
+
+
+        # overlay observation predictions
+        if config.enable_deception:
+
+            blank_frame = np.zeros([height, width, 3], dtype=np.uint8)
+            blank_frame[:frame.shape[0], :frame.shape[1], :] = frame  # copy into potentially larger frame
+            frame = blank_frame
+
+            # observation frames are [n_players, n_players, h, w, c]
+            obs_predictions = model_output["obs_prediction"].detach().cpu().numpy()
+            obs_truth = env_obs.copy()
+
+            # ground truth
+            for i in range(n_players):
+                dx = 0
+                dy = height//2 + i * obs_size
+                frame[dy:dy + obs_size, dx:dx + obs_size] = obs_truth[i, :, :, :3]
+
+            for i in range(n_players):
+                for j in range(n_players):
+                    dx = j * obs_size + obs_size
+                    dy = height//2 + i * obs_size
+                    frame[dy:dy+obs_size, dx:dx+obs_size] = np.asarray(obs_predictions[i, j, :, :, :3]*255, dtype=np.uint8)
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
@@ -417,7 +448,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
 
     algo_params["model_name"] = model_name or config.model
 
-    algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, 
+    algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp,
                             micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
                             enable_deception=config.enable_deception,
                             verbose=config.verbose >= 2, **algo_params)

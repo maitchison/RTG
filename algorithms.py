@@ -112,7 +112,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         self.enable_deception = enable_deception
 
-        if device=="data_parallel":
+        if device == "data_parallel":
             device = "cuda"
             data_parallel = True
         else:
@@ -334,10 +334,13 @@ class PMAlgorithm(MarlAlgorithm):
         else:
             micro_batch_size = 1024 # just a guess
 
+        if self.enable_deception:
+            micro_batch_size //= 2
+
         if self.amp:
             # amp seems to work very poorly for large batchsizes (perhaps due to the issue with adding lots of small
             # gradients together. If we keep the micro_batch_size small it works ok, but performance is not great.
-            micro_batch_size = 1024
+            micro_batch_size = min(1024, micro_batch_size)
         if self.data_parallel:
             micro_batch_size *= 4 # should be number of GPUs
 
@@ -544,7 +547,7 @@ class PMAlgorithm(MarlAlgorithm):
                 'log_policy',       [B, actions]
                 'ext_value', and    [B]
                 'int_value'.        [B],
-            new_rnn_states         [B, 2|4, memory_dims]
+            new_rnn_states          [B, 2|4, memory_dims]
 
         """
 
@@ -707,10 +710,11 @@ class PMAlgorithm(MarlAlgorithm):
         # -------------------------------------------------------------------------
 
         # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
+        ob_coef = 4.0
         obs_predictions = model_out["obs_prediction"] # [N*B, n_players, *obs_shape]
         obs_truth = merge_down(data["player_obs"]) # [N*B, n_players, *obs_shape] (in public_id order)
         obs_truth = obs_truth.float()/255
-        loss_obs_prediction = 0.5 * F.mse_loss(obs_predictions.reshape(-1, *obs_shape), obs_truth.reshape(-1, *obs_shape))
+        loss_obs_prediction = ob_coef * F.mse_loss(obs_predictions.reshape(-1, *obs_shape), obs_truth.reshape(-1, *obs_shape))
         loss += loss_obs_prediction
         self.log.watch_mean("loss_obs", loss_obs_prediction)
 
