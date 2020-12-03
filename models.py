@@ -30,7 +30,7 @@ class DefaultEncoder(BaseEncoder):
         """
         super().__init__(input_dims, out_features)
 
-        self.final_dims = (64, self.input_dims[0]//2//2, self.input_dims[1]//2//2)
+        self.final_dims = (64, self.input_dims[0]//2//2//2, self.input_dims[1]//2//2//2)
 
         self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
@@ -54,6 +54,7 @@ class DefaultEncoder(BaseEncoder):
         x = x.transpose(1, 2)
 
         x = torch.relu(self.conv1(x))
+        x = torch.max_pool2d(x, 2, 2)
         x = torch.relu(self.conv2(x))
         x = torch.max_pool2d(x, 2, 2)
         x = torch.relu(self.conv3(x))
@@ -349,8 +350,8 @@ class DeceptionModel(BaseModel):
         # prediction of each role, in public_id order
         self.role_prediction_head = nn.Linear(self.memory_units, (self.n_players * self.n_roles))
         # prediction of each observation in public_id order
-        #self.observation_prediction_head = BasicDecoder((self.obs_shape[2] * self.n_players, *self.obs_shape[0:2]),
-        #                                                self.memory_units)
+        self.observation_prediction_head = BasicDecoder((self.obs_shape[2] * self.n_players, *self.obs_shape[0:2]),
+                                                        self.memory_units)
 
         self.set_device_and_dtype(self.device, self.dtype)
 
@@ -371,12 +372,12 @@ class DeceptionModel(BaseModel):
         # ------------------------------
         # obs prediction
         # ------------------------------
-        # obs_prediction = self.observation_prediction_head(lstm_output_reshaped)
-        # obs_prediction = obs_prediction.reshape(N, B, self.n_players, *self.obs_shape)
-        # result['obs_prediction'] = obs_prediction
+        obs_prediction = self.observation_prediction_head(lstm_output_reshaped)
+        obs_prediction = obs_prediction.reshape(N, B, self.n_players, *self.obs_shape)
 
         result = {}
         result['role_prediction'] = role_prediction
+        result['obs_prediction'] = obs_prediction
         return result, new_rnn_states
 
 

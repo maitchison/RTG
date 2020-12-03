@@ -38,6 +38,7 @@ from typing import Union
 from models import *
 
 from marl_env import MultiAgentVecEnv
+import torch.autograd.profiler as profiler
 
 class MarlAlgorithm():
 
@@ -91,7 +92,7 @@ class PMAlgorithm(MarlAlgorithm):
             micro_batch_size: Union[str, int] = "auto",
 
             # ------ long list of parameters to algorithm ------------
-            n_steps=32,
+            n_steps=128,
             learning_rate=2.5e-4,
             adam_epsilon=1e-5,
             normalize_advantages=True,
@@ -100,7 +101,7 @@ class PMAlgorithm(MarlAlgorithm):
             gae_lambda=0.95,
             batch_epochs=4,
             entropy_bonus=0.01,
-            mini_batches=8,
+            mini_batches=4,
             use_clipped_value_loss=False,  # shown to be not effective
             vf_coef=0.5,
             ppo_epsilon=0.2,
@@ -207,7 +208,8 @@ class PMAlgorithm(MarlAlgorithm):
         # ground truth observations for each player in public_id order,
         # this is so when we take a random sample we always have the information we need.
         # It's a bit wasteful with memory though, especially with high player counts.
-        self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
+        if self.enable_deception:
+            self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
 
         # advantage used during policy gradient (combination of intrinsic and extrinsic reward)
         self.batch_advantage = np.zeros([N, A], dtype=np.float32)
@@ -276,6 +278,7 @@ class PMAlgorithm(MarlAlgorithm):
         if self.deception_model is not None:
             self.deception_model.train()
 
+    @profiler.record_function("learn")
     def learn(self, total_timesteps, reset_num_timesteps=True):
 
         if reset_num_timesteps:
@@ -318,7 +321,7 @@ class PMAlgorithm(MarlAlgorithm):
         # working this out will be complex
         # maybe can assume that 12GB gives us 4096 with AMP and 2048 without
         if type(self.model._encoder) is DefaultEncoder:
-            micro_batch_size = 2048
+            micro_batch_size = 4096
         elif type(self.model._encoder) is FastEncoder:
             micro_batch_size = 8192
         elif type(self.model._encoder) is GlobalPoolEncoder:
@@ -327,11 +330,13 @@ class PMAlgorithm(MarlAlgorithm):
             micro_batch_size = 1024 # just a guess
 
         if self.amp:
-            micro_batch_size *= 2
+            # amp seems to work very poorly for large batchsizes (perhaps due to the issue with adding lots of small
+            # gradients together. If we keep the micro_batch_size small it works ok, but performance is not great.
+            micro_batch_size = 1024
         if self.data_parallel:
             micro_batch_size *= 4 # should be number of GPUs
 
-        print(f" -found max micro-batch size of {micro_batch_size}")
+        print(f" -using max micro-batch size of {micro_batch_size}")
 
         return micro_batch_size
 
@@ -343,6 +348,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.episode_len *= 0
         self.terminals *= 0
 
+    @profiler.record_function("generate_rollout")
     def generate_rollout(self):
         """
         Runs agents through environment for n_steps steps, recording the transitions as it goes.
@@ -355,36 +361,43 @@ class PMAlgorithm(MarlAlgorithm):
 
             for t in range(self.n_steps):
 
+                # performance:
+                # around 10ms to forward the model on GPU, and 30ms to step the environment
+                # this is for 256 players, which means env only runs at ~1000FPS (it improves with more players though)
+
                 prev_obs = self.agent_obs.copy() #[A, *obs_shape]
                 prev_terminals = self.terminals.copy()
 
                 if self.enable_deception:
+
+                    # roles
                     batch_roles = self.vec_env.get_roles_expanded()
                     self.batch_roles[t] = batch_roles
 
-                    # todo: record batch player_obs
-                    # orderings = []
-                    # for game in self.vec_env.games:
-                    #     game_players = [(player.public_id, player.index) for player in game.players]
-                    #     game_players.sort()
-                    #     order = [index for public_id, index in game_players]
-                    #     orderings.append(order)
-                    #
-                    # # get batch_player_obs and shape to [n_games, n_players, *obs_shape]
-                    # batch_player_obs = self.agent_obs.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *self.obs_shape)
-                    # self.batch_player_obs[t] = batch_player_obs
-                    #
-                    # # put observations into public_id order
-                    # # todo: find a tensor operation to do this
-                    # for i in range(len(batch_player_obs)):
-                    #     batch_player_obs[i] = batch_player_obs[i, orderings]
-                    #
-                    # # make batch_player_obs [A, n_players, *obs_shape]
-                    # batch_player_obs = batch_player_obs.repeat(self.vec_env.max_players, axis=0)
+                    # observations
+                    orderings = []
+                    for game in self.vec_env.games:
+                        game_players = [(player.public_id, player.index) for player in game.players]
+                        game_players.sort()
+                        order = [index for public_id, index in game_players]
+                        for _ in range(game.n_players):
+                            orderings.append(order)
 
+                    # get batch_player_obs and reshape to [n_games, n_players, *obs_shape]
+                    batch_player_obs = self.agent_obs.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *self.obs_shape)
+
+                    # put observations into public_id order
+                    # todo: find a tensor operation to do this
+                    for i in range(len(batch_player_obs)):
+                        batch_player_obs[i, :] = batch_player_obs[i, orderings[i]]
+
+                    # make batch_player_obs [A, n_players, *obs_shape] by duplicating for each player
+                    batch_player_obs = batch_player_obs.repeat(self.vec_env.max_players, axis=0)
+                    self.batch_player_obs[t] = batch_player_obs
 
                 # forward state through model, then detach the result and convert to numpy.
-                model_out, new_agent_rnn_state = self.forward(self.agent_obs, self.agent_rnn_state)
+                with profiler.record_function("gr_model_step"):
+                    model_out, new_agent_rnn_state = self.forward(self.agent_obs, self.agent_rnn_state)
                 self.agent_rnn_state[:] = new_agent_rnn_state
 
                 log_policy = model_out["log_policy"].detach().cpu().numpy()
@@ -392,7 +405,10 @@ class PMAlgorithm(MarlAlgorithm):
 
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
-                self.agent_obs, ext_rewards, self.terminals, infos = self.vec_env.step(actions)
+                with profiler.record_function("gr_env_step"):
+                    self.agent_obs, ext_rewards, new_terminals, infos = self.vec_env.step(actions)
+
+                self.terminals[:] = new_terminals
 
                 # work out our intrinsic rewards
                 int_value = model_out["int_value"].detach().cpu().numpy()
@@ -416,15 +432,16 @@ class PMAlgorithm(MarlAlgorithm):
                         self.episode_score[i] = 0
                         self.episode_len[i] = 0
 
-                self.batch_prev_obs[t] = prev_obs
-                self.next_obs[t] = self.agent_obs
-                self.batch_actions[t] = actions
-                self.batch_ext_rewards[t] = ext_rewards
-                self.batch_log_policy[t] = log_policy
-                self.batch_terminals[t] = prev_terminals
-                self.batch_int_rewards[t] = int_rewards
-                self.batch_ext_value[t] = ext_value
-                self.batch_int_value[t] = int_value
+                with profiler.record_function("gr_copy"):
+                    self.batch_prev_obs[t] = prev_obs
+                    self.next_obs[t] = self.agent_obs
+                    self.batch_actions[t] = actions
+                    self.batch_ext_rewards[t] = ext_rewards
+                    self.batch_log_policy[t] = log_policy
+                    self.batch_terminals[t] = prev_terminals
+                    self.batch_int_rewards[t] = int_rewards
+                    self.batch_ext_value[t] = ext_value
+                    self.batch_int_value[t] = int_value
 
             # get value estimates for final observation.
             model_out, _ = self.forward(self.agent_obs, self.agent_rnn_state)
@@ -508,6 +525,7 @@ class PMAlgorithm(MarlAlgorithm):
         #     if self.normalize_intrinsic_rewards:
         #         self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
 
+    @profiler.record_function("model_forward")
     def forward(self, obs, rnn_states):
         """
         Forwards a single observations through model for each agent
@@ -548,7 +566,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         return unsqueze_result, new_rnn_states
 
-
+    @profiler.record_function("minibatch_forward")
     def forward_policy_mini_batch(self, data, rnn_states):
         """
         Run mini batch through model generating loss, call opt_step_mini_batch to apply the update.
@@ -576,11 +594,12 @@ class PMAlgorithm(MarlAlgorithm):
 
         N, B, *obs_shape = prev_obs.shape
 
-        model_out, _ = self.model.forward_sequence(
-            obs=prev_obs,
-            rnn_states=rnn_states,
-            terminals=terminals
-        )
+        with profiler.record_function("fmb_forward_model"):
+            model_out, _ = self.model.forward_sequence(
+                obs=prev_obs,
+                rnn_states=rnn_states,
+                terminals=terminals
+            )
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
         for k, v in model_out.items():
@@ -651,7 +670,6 @@ class PMAlgorithm(MarlAlgorithm):
         else:
             (-loss).backward()
 
-
     def forward_deception_mini_batch(self, data, deception_rnn_states):
 
         loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
@@ -684,13 +702,12 @@ class PMAlgorithm(MarlAlgorithm):
         # -------------------------------------------------------------------------
 
         # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
-
-        # stub: remove observation prediction..
-        # obs_predictions = model_out["obs_prediction"] # [N*B, n_players, *obs_shape]
-        # obs_truth = merge_down(data["player_obs"]) # [N*B, n_players, *obs_shape] (in public_id order)
-        # loss_obs_prediction = 0.5 * F.mse_loss(obs_predictions.reshape(-1, *obs_shape), obs_truth.reshape(-1, *obs_shape))
-        # loss += loss_obs_prediction
-        # self.log.watch_mean("loss_obs", loss_obs_prediction)
+        obs_predictions = model_out["obs_prediction"] # [N*B, n_players, *obs_shape]
+        obs_truth = merge_down(data["player_obs"]) # [N*B, n_players, *obs_shape] (in public_id order)
+        obs_truth = obs_truth.float()/255
+        loss_obs_prediction = 0.5 * F.mse_loss(obs_predictions.reshape(-1, *obs_shape), obs_truth.reshape(-1, *obs_shape))
+        loss += loss_obs_prediction
+        self.log.watch_mean("loss_obs", loss_obs_prediction)
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
         for k, v in model_out.items():
@@ -700,7 +717,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Apply loss
         # -------------------------------------------------------------------------
 
-        #self.log.watch_mean("deception_loss", loss)
+        self.log.watch_mean("dec_loss", loss)
         loss = loss / self.micro_batches
 
         # -------------------------------------------------------------------------
@@ -713,6 +730,7 @@ class PMAlgorithm(MarlAlgorithm):
         else:
             loss.backward()
 
+    @profiler.record_function("grad_clip")
     def _log_and_clip_grad_norm(self, model, log_var_name="opt_grad"):
         if self.max_grad_norm is not None and self.max_grad_norm != 0:
             grad_norm = nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
@@ -727,6 +745,7 @@ class PMAlgorithm(MarlAlgorithm):
             grad_norm = grad_norm ** 0.5
         self.log.watch_mean(log_var_name, grad_norm)
 
+    @profiler.record_function("minibatch_back")
     def opt_step_minibatch(self, model, optimizer, log_var_name):
         """ Runs the optimization step for a minimatch, forward_minibatch should be called first."""
 
@@ -741,7 +760,7 @@ class PMAlgorithm(MarlAlgorithm):
             optimizer.step()
             optimizer.zero_grad()
 
-
+    @profiler.record_function("train_policy")
     def train_policy(self):
         """ trains agent on it's own experience, using the rnn training loop """
 
@@ -784,16 +803,18 @@ class PMAlgorithm(MarlAlgorithm):
                         batch_end = (micro_batch_counter + 1) * segments_per_micro_batch
                         sample = segments[batch_start:batch_end]
 
-                        # initialize states from state taken during rollout, then upload to gpu
-                        rnn_states = torch.tensor(self.prev_rnn_states[sample, 0:2], device=self.model.device)
+                        with profiler.record_function("tp_upload"):
+                            # initialize states from state taken during rollout, then upload to gpu
+                            rnn_states = torch.tensor(self.prev_rnn_states[sample, 0:2], device=self.model.device)
 
-                        # put together a mini batch from all agents at this time step...
-                        mini_batch_data = {}
-                        for key, value in batch_data.items():
-                            mini_batch_data[key] = torch.tensor(value[:, sample], device=self.model.device)
+                            # put together a mini batch from all agents at this time step...
+                            mini_batch_data = {}
+                            for key, value in batch_data.items():
+                                mini_batch_data[key] = torch.from_numpy(value[:, sample]).to(device=self.model.device)
 
                         self.forward_policy_mini_batch(mini_batch_data, rnn_states=rnn_states)
                         micro_batch_counter += 1
+
                 self.opt_step_minibatch(self.model, self.optimizer, "opt_grad")
 
 
@@ -804,6 +825,7 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data = {}
 
         batch_data["prev_obs"] = self.batch_prev_obs
+        batch_data["player_obs"] = self.batch_player_obs
         batch_data["terminals"] = self.batch_terminals
         batch_data["roles"] = self.batch_roles
 

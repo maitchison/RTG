@@ -29,6 +29,7 @@ from tools import load_results, get_score, get_score_alt, export_graph
 from strategies import RTG_ScriptedEnv
 from algorithms import PMAlgorithm, MarlAlgorithm
 from typing import Union
+import torch.autograd.profiler as profiler
 
 class ScenarioSetting():
     """
@@ -213,7 +214,6 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             rnn_state[:] = new_rnn_state[:]
 
             log_policy = model_output["log_policy"].detach().cpu().numpy()
-            raw_predictions = model_output["role_prediction"].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(log_policy)
 
         env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
@@ -221,11 +221,15 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         # format the role predictions
         # role predictions are in public_id order so that they change each round, we need to put them back
         # into index order.
-        n_players = len(env.players)
-        role_predictions = np.zeros_like(raw_predictions)
-        for i in range(n_players):
-            for j in range(n_players):
-                role_predictions[i, j] = np.exp(raw_predictions[i, env.players[j].public_id])
+        if config.enable_deception:
+            raw_predictions = model_output["role_prediction"].detach().cpu().numpy()
+            n_players = len(env.players)
+            role_predictions = np.zeros_like(raw_predictions)
+            for i in range(n_players):
+                for j in range(n_players):
+                    role_predictions[i, j] = np.exp(raw_predictions[i, env.players[j].public_id])
+        else:
+            role_predictions = None
 
         # generate frames from global perspective
         frame = env.render("rgb_array", role_predictions=role_predictions)
@@ -550,7 +554,7 @@ def learn(agent: MarlAlgorithm, step_counter, max_steps, verbose=True):
         # ignore first sub-epoch as FPS will be lower than normal
         if verbose:
             if sub_epoch == 1:
-                print(f" -FPS: {fps:.0f} .", end='', flush=True)
+                print(f" -FPS: {utils.Color.OKGREEN}{fps:.0f}{utils.Color.ENDC} .", end='', flush=True)
             elif sub_epoch > 1:
                 print(".", end='', flush=True)
 
@@ -659,6 +663,32 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
+def profile():
+
+    print("Profiling model")
+
+    vec_env = make_env("red2", name="profile")
+    algo = make_algo(vec_env)
+    algo.learn(algo.batch_size)  # just to warm it up
+
+    # run profiler
+    with profiler.profile(profile_memory=True, record_shapes=True, use_cuda=True) as prof:
+        algo.learn(algo.batch_size)
+
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+    print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=20))
+    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=20))
+
+    # get a trace
+    with profiler.profile() as prof:
+        with profiler.record_function("train_step"):
+            algo.learn(algo.batch_size)
+    prof.export_chrome_trace("trace.json")
+
+    print("done.")
+
+
+
 def main():
 
     parser = argparse.ArgumentParser()
@@ -682,7 +712,7 @@ def main():
                         help="The number of times to duplicate the environments. Note: when using mixed learning each"+
                              "environment will be duplicated this number of times.")
 
-    parser.add_argument('--n_steps', type=int, default=32)
+    parser.add_argument('--n_steps', type=int, default=128)
 
     parser.add_argument('--vary_team_player_counts', type=str2bool, nargs='?', const=True,  default=False, help="Use a random number of players turning training.")
 
@@ -720,6 +750,8 @@ def main():
         train_model()
     elif args.mode == "test":
         regression_test()
+    elif args.mode == "profile":
+        profile()
     elif args.mode == "quick_test":
         quick_test()
     else:
@@ -727,6 +759,7 @@ def main():
 
 
 if __name__ == "__main__":
+
     CURRENT_EPOCH = 0
     RescueTheGeneralEnv.get_current_epoch = get_current_epoch
     config = Config()
