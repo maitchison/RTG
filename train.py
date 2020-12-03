@@ -417,7 +417,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
 
     algo_params["model_name"] = model_name or config.model
 
-    algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, data_parallel=config.data_parallel,
+    algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, 
                             micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
                             enable_deception=config.enable_deception,
                             verbose=config.verbose >= 2, **algo_params)

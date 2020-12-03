@@ -83,7 +83,6 @@ class PMAlgorithm(MarlAlgorithm):
 
             # ------ model parameters ------------
 
-            data_parallel=False,
             amp=False,  # automatic mixed precision
             device="cpu",
             memory_units=128,
@@ -112,6 +111,12 @@ class PMAlgorithm(MarlAlgorithm):
         N = n_steps
 
         self.enable_deception = enable_deception
+
+        if device=="data_parallel":
+            device = "cuda"
+            data_parallel = True
+        else:
+            data_parallel = False
 
         model = PolicyModel(vec_env, device=device, memory_units=memory_units, model=model_name,
                         data_parallel=data_parallel, out_features=out_features)
