@@ -391,6 +391,14 @@ class PMAlgorithm(MarlAlgorithm):
                         for _ in range(game.n_players):
                             orderings.append(order)
 
+
+                    # agent_obs is [n_games*n_players, *obs_shape]
+
+                    # stub: mark the order of observations go
+                    for i in range(len(self.agent_obs)):
+                        self.agent_obs[i,0,0,0] = i
+
+
                     # get batch_player_obs and reshape to [n_games, n_players, *obs_shape]
                     batch_player_obs = self.agent_obs.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *self.obs_shape)
 

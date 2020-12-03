@@ -192,17 +192,20 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     env = vec_env.games[0]
     frame = env.render("rgb_array")
 
-    obs_size = 39
+    obs_size = 39 # stub, make this a shape and get from env
+    n_players = len(env.players)
 
     # work out our height
     height, width, channels = frame.shape
+    orig_height = height
     if algorithm.enable_deception:
-        height += len(env.players) * obs_size
-    width = (width * scale) // 4 * 4 # make sure these are multiples of 4
-    height = (height * scale) // 4 * 4
+        height = height + n_players * obs_size
+        width = max(width, (n_players + 1) * obs_size)
+    scaled_width = (width * scale) // 4 * 4 # make sure these are multiples of 4
+    scaled_height = (height * scale) // 4 * 4
 
     # create video recorder
-    video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 8, (width, height), isColor=True)
+    video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 8, (scaled_width, scaled_height), isColor=True)
 
     # this is required to make sure the last frame is visible
     vec_env.auto_reset = False
@@ -221,8 +224,6 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             actions = utils.sample_action_from_logp(log_policy)
 
         env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
-
-        n_players = len(env.players)
 
         # format the role predictions
         # role predictions are in public_id order so that they change each round, we need to put them back
@@ -256,24 +257,24 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             # ground truth
             for i in range(n_players):
                 dx = 0
-                dy = height//2 + i * obs_size
+                dy = orig_height + i * obs_size
                 frame[dy:dy + obs_size, dx:dx + obs_size] = obs_truth[i, :, :, :3]
 
             for i in range(n_players):
                 for j in range(n_players):
                     dx = j * obs_size + obs_size
-                    dy = height//2 + i * obs_size
+                    dy = orig_height + i * obs_size
                     frame[dy:dy+obs_size, dx:dx+obs_size] = np.asarray(obs_predictions[i, j, :, :, :3]*255, dtype=np.uint8)
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
 
-        if frame.shape[0] != width or frame.shape[1] != height:
-            frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
+        if frame.shape[0] != scaled_width or frame.shape[1] != scaled_height:
+            frame = cv2.resize(frame, (scaled_width, scaled_height), interpolation=cv2.INTER_NEAREST)
 
         assert \
-            frame.shape[1] == width and frame.shape[0] == height, \
-            "Frame should be {} but is {}".format((width, height, 3), frame.shape)
+            frame.shape[1] == scaled_width and frame.shape[0] == scaled_height, \
+            "Frame should be {} but is {}".format((scaled_width, scaled_height, 3), frame.shape)
 
         video_out.write(frame)
 

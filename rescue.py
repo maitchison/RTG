@@ -348,9 +348,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     SIGNAL_COLOR = np.asarray([20, 20, 20], dtype=np.uint8)
     HIGHLIGHT_COLOR = np.asarray([180, 180, 50], dtype=np.uint8)
     GENERAL_COLOR = np.asarray([255, 255, 255], dtype=np.uint8)
-    NEUTRAL_COLOR = np.asarray([64, 64, 64], dtype=np.uint8)
-    GRASS_COLOR = np.asarray([0, 128, 0], dtype=np.uint8)
-    TREE_COLOR = np.asarray([125, 255, 150], dtype=np.uint8)
+    NEUTRAL_COLOR = np.asarray([96, 96, 96], dtype=np.uint8)
+    GRASS_COLOR = np.asarray([32, 32, 32], dtype=np.uint8)
+    TREE_COLOR = np.asarray([12, 174, 91], dtype=np.uint8)
     DEAD_COLOR = np.asarray([0, 0, 0], dtype=np.uint8)
 
     ID_COLOR = np.asarray(
