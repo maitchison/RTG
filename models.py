@@ -238,7 +238,7 @@ class BaseModel(nn.Module):
         Forward a sequence of observations through model, returns dictionary of outputs.
         :param obs: input observations, tensor of dims [N, B, observation_shape], which should be channels last. (BHWC)
         :param rnn_states: float32 tensor of dims [B, 2, memory_dims] containing the initial rnn h,c states
-        :param terminals: (optional) tensor of dims [N, B] indicating transitions with a terminal state with a 1
+        :param terminals: (optional) tensor of dims [N, B] indicating timesteps that are terminal
         :return: lstm outputs
 
         """
@@ -274,11 +274,10 @@ class BaseModel(nn.Module):
             # this is about 2x slower, and takes around 100ms on a batch size of 4096
             outputs = []
             for t in range(N):
-                output, (h, c) = self.lstm(encoding[t:t+1], (h, c))
-                # the baselines LSTM code zero's state on dones before the lstm... I think it should be after.
                 terminals_t = terminals[t][np.newaxis, :, np.newaxis]
                 h = h * (1.0 - terminals_t)
                 c = c * (1.0 - terminals_t)
+                output, (h, c) = self.lstm(encoding[t:t+1], (h, c))
                 outputs.append(output)
             lstm_output = torch.cat(outputs, dim=0) # do we loose gradients this way?
 

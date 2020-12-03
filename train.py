@@ -559,41 +559,40 @@ def learn(agent: MarlAlgorithm, step_counter, max_steps, verbose=True):
 
     return step_counter
 
+def run_test(scenario_name, n_steps=int(2e6)):
+
+    destination_folder = os.path.join(config.log_folder, scenario_name)
+    os.makedirs(destination_folder, exist_ok=True)
+    log_file = os.path.join(destination_folder, "env_0.csv")
+
+    # our MARL environments are handled like vectorized environments
+    make_env = lambda: RescueTheGeneralEnv(scenario_name=scenario_name, name="test", log_file=log_file)
+    vec_env = MultiAgentVecEnv([make_env for _ in range(config.parallel_envs)])
+
+    model = make_algo(vec_env)
+
+    learn(model, 0, n_steps, verbose=config.verbose == 1)
+    print()
+
+    export_video(f"{destination_folder}/{scenario_name}.mp4", model, scenario_name)
+
+    # flush the log buffer
+    rescue.flush_logs()
+
+    try:
+        export_graph(log_file, epoch=2, png_base_name="results")
+    except Exception as e:
+        # not worried about this not working...
+        print(e)
+
+    # return scores
+    return load_results(log_file)
 
 def regression_test():
 
     print("Performing regression test, this could take some time.")
 
     start_time = time.time()
-
-    def run_test(scenario_name, n_steps=int(2e6)):
-
-        destination_folder = os.path.join(config.log_folder, scenario_name)
-        os.makedirs(destination_folder, exist_ok=True)
-        log_file = os.path.join(destination_folder, "env_0.csv")
-
-        # our MARL environments are handled like vectorized environments
-        make_env = lambda: RescueTheGeneralEnv(scenario_name=scenario_name, name="test", log_file=log_file)
-        vec_env = MultiAgentVecEnv([make_env for _ in range(config.parallel_envs)])
-
-        model = make_algo(vec_env)
-
-        learn(model, 0, n_steps, verbose=config.verbose == 1)
-        print()
-
-        export_video(f"{destination_folder}/{scenario_name}.mp4", model, scenario_name)
-
-        # flush the log buffer
-        rescue.flush_logs()
-
-        try:
-            export_graph(log_file, epoch=2, png_base_name="results")
-        except Exception as e:
-            # not worried about this not working...
-            print(e)
-
-        # return scores
-        return load_results(log_file)
 
     # copy in files
     # todo, this should be a function...
@@ -604,9 +603,6 @@ def regression_test():
         f.write(str(config))
 
     for scenario_name, team, required_score in [
-
-        # stub, only one test
-
         ("red2", "red", 7.5),
         ("green2", "green", 7.5),
         ("blue2", "blue", 7.5),
@@ -621,6 +617,35 @@ def regression_test():
 
     time_taken = time.time() - start_time
     print(f"Finished tests in {time_taken/60:.1f}m.")
+
+def quick_test():
+
+    print("Performing regression test, this could take some time.")
+
+    start_time = time.time()
+
+    # copy in files
+    # todo, this should be a function...
+    from shutil import copyfile
+    for filename in ["train.py", "rescue.py"]:
+        copyfile(filename, f"{config.log_folder}/{filename}")
+    with open(f"{config.log_folder}/config.txt", "w") as f:
+        f.write(str(config))
+
+    for scenario_name, team, required_score in [
+        ("red2", "red", 7.5)
+    ]:
+
+        results = run_test(scenario_name)
+        score = get_score(results, team)
+        score_alt = get_score_alt(results, team)
+
+        result = "FAIL" if score < required_score else "PASS"
+        print(f"  [{result:}] {scenario_name:<20} ({score:.1f}, {score_alt:.1f})")
+
+    time_taken = time.time() - start_time
+    print(f"Finished tests in {time_taken/60:.1f}m.")
+
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -689,6 +714,8 @@ def main():
         train_model()
     elif args.mode == "test":
         regression_test()
+    elif args.mode == "quick_test":
+        quick_test()
     else:
         raise Exception(f"Invalid mode {args.mode}")
 

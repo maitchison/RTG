@@ -259,12 +259,6 @@ class Logger():
                 time_str = datetime.datetime.fromtimestamp(time_code)
                 f.write("{:<10} {} {}\n".format(level_code, time_str, line))
 
-    def export_to_tensor_board(self):
-        raise NotImplemented()
-
-    def export_to_graphs(self):
-        raise NotImplemented()
-
     def __getitem__(self, key):
         return self._vars[key].value
 

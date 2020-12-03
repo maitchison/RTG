@@ -186,10 +186,10 @@ class PMAlgorithm(MarlAlgorithm):
         self.batch_actions = np.zeros([N, A], dtype=np.int64)
         # log_policy that generated the action
         self.batch_log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
-        # float, 1 indicates action resulted in a terminal state, 0 indicates non-terminal state
-        self.batch_terminals = np.zeros([N, A], dtype=np.float32) # 1 if given time step was a terminal timestep for given agent.
-        # learning rate weight, set to 0 to ignore a transition (i.e. if the player is dead)
-        self.learning_weight = np.zeros([N, A], dtype=np.float32)
+        # float, batch_terminals[t] indicates if timestep t+1 was terminal or not
+        self.batch_terminals = np.zeros([N, A], dtype=np.float32)
+        # the current terminal state of each agent
+        self.terminals = np.zeros([A], dtype=np.float32)
         # rewards generated at transition
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
         self.int_rewards = np.zeros([N, A], dtype=np.float32)
@@ -261,6 +261,8 @@ class PMAlgorithm(MarlAlgorithm):
 
         with open(os.path.join(base_path, "checkpoint_log.dat"), "wb") as f:
             pickle.dump(self.log, f)
+
+        self.log.export_to_csv(os.path.join(base_path, "training_log.csv"))
 
 
     def _eval(self):
@@ -338,6 +340,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.agent_rnn_state *= 0
         self.episode_score *= 0
         self.episode_len *= 0
+        self.terminals *= 0
 
     def generate_rollout(self):
         """
@@ -347,13 +350,12 @@ class PMAlgorithm(MarlAlgorithm):
         with torch.no_grad():
 
             # make a copy of rnn_states at beginning of rollout, which we will use to initialize the rnn state.
-            self.prev_rnn_states[:] = self.agent_rnn_state[:]
+            self.prev_rnn_states[:] = self.agent_rnn_state.cpu()[:]
 
             for t in range(self.n_steps):
 
                 prev_obs = self.agent_obs.copy() #[A, *obs_shape]
-
-                learning_weight = self.vec_env.get_alive()
+                prev_terminals = self.terminals.copy()
 
                 if self.enable_deception:
                     batch_roles = self.vec_env.get_roles_expanded()
@@ -382,7 +384,6 @@ class PMAlgorithm(MarlAlgorithm):
 
                 # forward state through model, then detach the result and convert to numpy.
                 model_out, new_agent_rnn_state = self.forward(self.agent_obs, self.agent_rnn_state)
-
                 self.agent_rnn_state[:] = new_agent_rnn_state
 
                 log_policy = model_out["log_policy"].detach().cpu().numpy()
@@ -390,7 +391,7 @@ class PMAlgorithm(MarlAlgorithm):
 
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
-                self.agent_obs, ext_rewards, terminals, infos = self.vec_env.step(actions)
+                self.agent_obs, ext_rewards, self.terminals, infos = self.vec_env.step(actions)
 
                 # work out our intrinsic rewards
                 int_value = model_out["int_value"].detach().cpu().numpy()
@@ -403,9 +404,8 @@ class PMAlgorithm(MarlAlgorithm):
                 self.episode_score += raw_rewards
                 self.episode_len += 1
 
-                for i, terminal in enumerate(terminals):
+                for i, terminal in enumerate(self.terminals):
                     if terminal:
-                        # todo: check this is right
                         # reset the internal state on episode completion
                         self.agent_rnn_state[i] *= 0
                         # reset is handled automatically by vectorized environments
@@ -418,11 +418,9 @@ class PMAlgorithm(MarlAlgorithm):
                 self.batch_prev_obs[t] = prev_obs
                 self.next_obs[t] = self.agent_obs
                 self.batch_actions[t] = actions
-
                 self.ext_rewards[t] = ext_rewards
                 self.batch_log_policy[t] = log_policy
-                self.batch_terminals[t] = terminals
-                self.learning_weight[t] = learning_weight
+                self.batch_terminals[t] = prev_terminals
                 self.int_rewards[t] = int_rewards
                 self.batch_ext_value[t] = ext_value
                 self.batch_int_value[t] = int_value
@@ -449,7 +447,7 @@ class PMAlgorithm(MarlAlgorithm):
                                                    self.gamma)
 
         self.ext_advantage = calculate_gae(self.ext_rewards, self.batch_ext_value, self.ext_final_value_estimate,
-                                           self.batch_terminals, self.gamma, self.gae_lambda, self.normalize_advantages)
+                                           self.batch_terminals, self.terminals, self.gamma, self.gae_lambda, self.normalize_advantages)
 
         # calculate the intrinsic returns, but let returns propagate through terminal states.
         self.int_returns_raw = calculate_returns(
@@ -480,7 +478,8 @@ class PMAlgorithm(MarlAlgorithm):
             self.gamma_int
         )
 
-        self.int_advantage = calculate_gae(self.int_rewards, self.batch_int_value, self.int_final_value_estimate, None,
+        self.int_advantage = calculate_gae(self.int_rewards, self.batch_int_value, self.int_final_value_estimate,
+                                           self.batch_terminals, self.terminals,
                                            self.gamma_int)
 
         self.batch_advantage = self.extrinsic_reward_scale * self.ext_advantage + self.intrinsic_reward_scale * self.int_advantage
@@ -766,17 +765,6 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["advantages"] = self.batch_advantage
         batch_data["terminals"] = self.batch_terminals
 
-        #if self.enable_deception:
-            #batch_data["roles"] = self.batch_roles
-            # stub: enable this
-            #batch_data["player_obs"] = self.batch_player_obs
-
-        # stub: disable learning weights
-        # this should be for any player that was dead at the start of this transition (but not players who died
-        # during this transition
-        # batch_data["learning_weight"] = self.learning_weight
-
-
         for i in range(self.batch_epochs):
 
             assert self.mini_batch_size % self.n_steps == 0, "mini batch size must be multiple of n_steps."
@@ -805,7 +793,7 @@ class PMAlgorithm(MarlAlgorithm):
                         sample = segments[batch_start:batch_end]
 
                         # initialize states from state taken during rollout, then upload to gpu
-                        rnn_states = self.prev_rnn_states[sample, 0:2].to(device=self.model.device)
+                        rnn_states = torch.tensor(self.prev_rnn_states[sample, 0:2], device=self.model.device)
 
                         # put together a mini batch from all agents at this time step...
                         mini_batch_data = {}
@@ -857,7 +845,7 @@ class PMAlgorithm(MarlAlgorithm):
                         sample = segments[batch_start:batch_end]
 
                         # initialize states from state taken during rollout, then upload to gpu
-                        deception_rnn_states = self.prev_rnn_states[sample, 2:4].to(device=self.model.device)
+                        deception_rnn_states = torch.tensor(self.prev_rnn_states[sample, 2:4], device=self.model.device)
 
                         # put together a mini batch from all agents at this time step...
                         mini_batch_data = {}
@@ -877,7 +865,7 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
     Calculates returns given a batch of rewards, dones, and a final value estimate.
     Input is vectorized so it can calculate returns for multiple agents at once.
     :param rewards: nd array of dims [N,A]
-    :param dones:   nd array of dims [N,A] where 1 = done and 0 = not done.
+    :param dones:   nd array of dims [N,A] where 1 = done and 0 = not done for given timestep
     :param final_value_estimate: nd array [A] containing value estimate of final state after last action.
     :param gamma:   discount rate.
     :return:
@@ -893,16 +881,21 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
 
     return returns
 
-def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, lamb=1.0, normalize=False):
+def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, final_terminal, gamma, lamb=1.0, normalize=False):
 
     N, A = batch_rewards.shape
 
     batch_advantage = np.zeros_like(batch_rewards, dtype=np.float32)
     prev_adv = np.zeros([A], dtype=np.float32)
     for t in reversed(range(N)):
-        is_next_terminal = batch_terminal[
-            t] if batch_terminal is not None else False  # batch_terminal[t] records if t+1 is a terminal state)
-        value_next_t = batch_value[t + 1] if t != N - 1 else final_value_estimate
+
+        if t != N-1:
+            is_next_terminal = final_terminal
+            value_next_t = batch_value[t + 1]
+        else:
+            is_next_terminal = final_terminal
+            value_next_t = final_value_estimate
+
         delta = batch_rewards[t] + gamma * value_next_t * (1.0 - is_next_terminal) - batch_value[t]
         batch_advantage[t] = prev_adv = delta + gamma * lamb * (
                 1.0 - is_next_terminal) * prev_adv
@@ -913,3 +906,11 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
 def merge_down(x):
     """ Combines first two dims. """
     return x.reshape(-1, *x.shape[2:])
+
+def test_calculate_returns():
+    rewards = np.asarray([[0], [2], [1], [4], [1]])
+    dones = np.asarray([[0], [0], [0], [1], [0]])
+    assert list(calculate_returns(rewards, dones, final_value_estimate=6, gamma=1.0).ravel()) == [7, 7, 5, 4, 7]
+
+
+test_calculate_returns()
