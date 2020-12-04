@@ -807,14 +807,14 @@ class PMAlgorithm(MarlAlgorithm):
                         sample = segments[batch_start:batch_end]
 
                         # initialize states from state taken during rollout, then upload to gpu
-                        rnn_states = torch.tensor(rnn_states[sample], device=model.device)
+                        sampled_rnn_states = torch.from_numpy(rnn_states[sample]).clone().detach().to(device=model.device)
 
                         # put together a mini batch from all agents at this time step...
                         mini_batch_data = {}
                         for key, value in batch_data.items():
-                            mini_batch_data[key] = torch.tensor(value[:, sample], device=self.policy_model.device)
+                            mini_batch_data[key] = torch.from_numpy(value[:, sample]).to(device=model.device)
 
-                        forward_func(mini_batch_data, rnn_states)
+                        forward_func(mini_batch_data, sampled_rnn_states)
                         micro_batch_counter += 1
                 self.opt_step_minibatch(model, optimizer, short_name+"_grad")
 
@@ -824,7 +824,6 @@ class PMAlgorithm(MarlAlgorithm):
 
         # put the required data into a dictionary
         batch_data = {}
-
         batch_data["prev_obs"] = self.batch_prev_obs
         batch_data["player_obs"] = self.batch_player_obs
         batch_data["terminals"] = self.batch_terminals
@@ -845,7 +844,6 @@ class PMAlgorithm(MarlAlgorithm):
 
         # put the required data into a dictionary
         batch_data = {}
-
         batch_data["prev_obs"] = self.batch_prev_obs
         batch_data["actions"] = self.batch_actions.astype(np.long)
         batch_data["ext_returns"] = self.batch_ext_returns
