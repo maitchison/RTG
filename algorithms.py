@@ -378,26 +378,27 @@ class PMAlgorithm(MarlAlgorithm):
 
                 if self.enable_deception:
 
+                    # ------------------------------------
                     # roles
                     batch_roles = self.vec_env.get_roles_expanded()
                     self.batch_roles[t] = batch_roles
 
+                    # ------------------------------------
                     # observations
+
+                    # get order for observations
                     orderings = []
                     for game in self.vec_env.games:
                         game_players = [(player.public_id, player.index) for player in game.players]
                         game_players.sort()
                         order = [index for public_id, index in game_players]
-                        for _ in range(game.n_players):
-                            orderings.append(order)
-
+                        orderings.append(order)
 
                     # agent_obs is [n_games*n_players, *obs_shape]
 
                     # stub: mark the order of observations go
                     for i in range(len(self.agent_obs)):
                         self.agent_obs[i,0,0,0] = i
-
 
                     # get batch_player_obs and reshape to [n_games, n_players, *obs_shape]
                     batch_player_obs = self.agent_obs.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *self.obs_shape)

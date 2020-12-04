@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.nn import DataParallel as DP
+import math
 
 import utils
 
@@ -154,19 +156,19 @@ class BasicDecoder(nn.Module):
         super().__init__()
 
         self.output_dims = output_dims # (c, h, w)
-        self.initial_dims = (64, self.output_dims[1]//4, self.output_dims[2]//4)
+        self.initial_dims = (64, math.ceil((self.output_dims[1]+2)/8), math.ceil((self.output_dims[2]+2)/8))
         self.hidden_features = hidden_features
 
-        self.deconv1 = nn.ConvTranspose2d(64, 64, 3, stride=2)
-        self.deconv2 = nn.ConvTranspose2d(64, 32, 3, stride=2)
-        self.deconv3 = nn.ConvTranspose2d(32, self.output_dims[0], 3, padding=1)
-
         self.fc = nn.Linear(self.hidden_features, utils.prod(self.initial_dims))
+        self.deconv1 = nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2, padding=1)
+        self.deconv2 = nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1)
+        self.deconv3 = nn.ConvTranspose2d(32, self.output_dims[0], kernel_size=4, stride=2, padding=1)
+
 
     def forward(self, x):
         """
         input tensor of dims [b, d], where d is the number of hidden features.
-        return tensor of dims [b, c, h, w] of type float16 (will be cast to float16 if not)
+        return tensor of dims [b, c, h, w]
         """
 
         b = x.shape[0]
@@ -176,6 +178,12 @@ class BasicDecoder(nn.Module):
         x = torch.relu(self.deconv1(x))
         x = torch.relu(self.deconv2(x))
         x = torch.sigmoid(self.deconv3(x))
+
+        # the decoder doubles the size each time, edges tend not to predict well anyway due to padding
+        # so we calculate the required dims (rx,ry) and the excess (ex,ry), then take a center crop
+        rx, ry = self.output_dims[-1], self.output_dims[-2]
+        ex, ey = x.shape[-1] - rx, x.shape[-2] - ry
+        x = x[:, :, ey//2:ey//2+ry, ex//2:ex//2+rx]
 
         return x
 
@@ -212,14 +220,7 @@ class BaseModel(nn.Module):
         self.encoder_features = self.encoder.out_features
         self.memory_units = memory_units
 
-        self._encoder = self.encoder # the encoder before and data_parallel was applied
-
-        if data_parallel:
-            # enable multi gpu :)
-            print(f" -enabling {utils.Color.OKGREEN}Multi-GPU{utils.Color.ENDC} support")
-            self.encoder = nn.DataParallel(self.encoder)
-
-        # note, agents are AI controlled, players maybe scripted, but an AI still needs to predict their behavour.
+        # note, agents are AI controlled, players maybe scripted, but an AI still needs to predict their behaviour.
         self.n_agents = env.total_agents
         self.n_players = env.max_players
 
@@ -230,6 +231,12 @@ class BaseModel(nn.Module):
         # memory units
         self.lstm = torch.nn.LSTM(input_size=self.encoder_features, hidden_size=self.memory_units, num_layers=1,
                                   batch_first=False, dropout=0)
+
+        self._encoder = self.encoder # the encoder before and data_parallel was applied
+        if data_parallel:
+            # enable multi gpu :)
+            print(f" -enabling {utils.Color.OKGREEN}Multi-GPU{utils.Color.ENDC} support")
+            self.encoder = DP(self.encoder)
 
     def forward_sequence(self, obs, rnn_states, terminals=None):
         raise NotImplemented()
@@ -354,7 +361,7 @@ class DeceptionModel(BaseModel):
                                                         self.memory_units)
 
         if data_parallel:
-            self.observation_prediction_head = torch.nn.DataParallel(self.observation_prediction_head)
+            self.observation_prediction_head = DP(self.observation_prediction_head)
 
         self.set_device_and_dtype(self.device, self.dtype)
 

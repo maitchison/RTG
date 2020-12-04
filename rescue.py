@@ -110,6 +110,22 @@ class RescueTheGeneralScenario():
             "team_shoot_timeout": (5, 5, 5)  # green is much slower at shooting
         },
 
+        "r2g2_hrp": {
+            "description": "Smaller version of r2g2 with randomized ids, used for testing role prediction with hidden roles",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (2, 2, 0),
+            "n_trees": 10,
+            "randomize_ids": True,
+            "reward_per_tree": 1,
+            "hidden_roles": "default",
+            "max_view_distance": 5,  # makes thins a bit faster
+            "team_view_distance": (5, 5, 5),  # no bonus vision for red
+            "team_shoot_range": (4, 4, 4),
+            "starting_locations": "random",  # random start locations
+            "team_shoot_timeout": (5, 5, 5)  # green is much slower at shooting
+        },
+
         "r2g3": {
             "description": "Two red players and three green players on a medium map",
             "map_width": 48,

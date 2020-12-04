@@ -258,13 +258,15 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             for i in range(n_players):
                 dx = 0
                 dy = orig_height + i * obs_size
-                frame[dy:dy + obs_size, dx:dx + obs_size] = obs_truth[i, :, :, :3]
+                frame[dy:dy + obs_size, dx:dx + obs_size] = obs_truth[i, :, :, :3].swapaxes(0, 1)
 
             for i in range(n_players):
                 for j in range(n_players):
                     dx = j * obs_size + obs_size
                     dy = orig_height + i * obs_size
-                    frame[dy:dy+obs_size, dx:dx+obs_size] = np.asarray(obs_predictions[i, j, :, :, :3]*255, dtype=np.uint8)
+                    # we transpose as rescue is x,y instead of y,x
+                    frame[dy:dy+obs_size, dx:dx+obs_size] = \
+                        np.asarray(obs_predictions[i, j, :, :, :3]*255, dtype=np.uint8).swapaxes(0, 1)
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
