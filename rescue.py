@@ -1083,7 +1083,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             health_bar = int(observer.health / self.scenario.player_initial_health * frame_width)
             obs[3:3 + health_bar, -2, :3] = (128, 255, 128)
 
-            if observer.shoot_range > 0:
+            # this isn't helpful right now and it might be difficult for agents to predict.
+            show_shooting_timeout = False
+            if show_shooting_timeout and observer.shoot_range > 0:
                 shooting_bar = int(observer.turns_until_we_can_shoot / observer.shooting_timeout * frame_width)
                 obs[3:3 + shooting_bar, -1, :3] = (128, 128, 255)
 
