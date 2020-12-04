@@ -44,15 +44,15 @@ class MarlAlgorithm():
 
     def __init__(self, N, A, model: nn.Module):
 
-        self.model = model
+        self.policy_model = model
 
         self.batch_size = int()
         self.n_steps = N
         self.n_agents = A
 
-        self.obs_shape = self.model.input_dims
-        self.rnn_state_shape = [2, self.model.memory_units]  # records h and c for LSTM units
-        self.policy_shape = [self.model.actions]
+        self.obs_shape = self.policy_model.input_dims
+        self.rnn_state_shape = [2, self.policy_model.memory_units]  # records h and c for LSTM units
+        self.policy_shape = [self.policy_model.actions]
 
     def learn(self, total_timesteps, reset_num_timesteps=True):
         raise NotImplemented()
@@ -63,7 +63,7 @@ class MarlAlgorithm():
 
     def get_initial_state(self, n_agents=None):
         n_agents = n_agents or self.n_agents
-        return torch.zeros([n_agents, *self.rnn_state_shape], dtype=torch.float32, device=self.model.device)
+        return torch.zeros([n_agents, *self.rnn_state_shape], dtype=torch.float32, device=self.policy_model.device)
 
     def forward(self, obs, rnn_state):
         raise NotImplemented()
@@ -161,7 +161,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.intrinsic_reward_scale = 1.0
         self.log_folder = "."
 
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, eps=adam_epsilon)
+        self.policy_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=learning_rate, eps=adam_epsilon)
         if self.deception_model is not None:
             self.deception_optimizer = torch.optim.Adam(self.deception_model.parameters(), lr=learning_rate,
                                                         eps=adam_epsilon)
@@ -179,7 +179,7 @@ class PMAlgorithm(MarlAlgorithm):
         # agents most previously seen observation
         self.agent_obs = np.zeros([A, *self.obs_shape], dtype=np.uint8)
         # agents current rnn state
-        self.agent_rnn_state = torch.zeros([A, *self.rnn_state_shape], dtype=torch.float32, device=self.model.device)
+        self.agent_rnn_state = torch.zeros([A, *self.rnn_state_shape], dtype=torch.float32, device=self.policy_model.device)
 
         # ------------------------------------
         # the rollout transitions (batch)
@@ -251,8 +251,8 @@ class PMAlgorithm(MarlAlgorithm):
 
         data = {
             'step': self.t,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict()
+            'model_state_dict': self.policy_model.state_dict(),
+            'optimizer_state_dict': self.policy_optimizer.state_dict()
         }
 
         if self.enable_deception:
@@ -274,12 +274,12 @@ class PMAlgorithm(MarlAlgorithm):
 
 
     def _eval(self):
-        self.model.eval()
+        self.policy_model.eval()
         if self.deception_model is not None:
             self.deception_model.eval()
 
     def _train(self):
-        self.model.train()
+        self.policy_model.train()
         if self.deception_model is not None:
             self.deception_model.train()
 
@@ -325,11 +325,11 @@ class PMAlgorithm(MarlAlgorithm):
 
         # working this out will be complex
         # maybe can assume that 12GB gives us 4096 with AMP and 2048 without
-        if type(self.model._encoder) is DefaultEncoder:
+        if type(self.policy_model._encoder) is DefaultEncoder:
             micro_batch_size = 4096
-        elif type(self.model._encoder) is FastEncoder:
+        elif type(self.policy_model._encoder) is FastEncoder:
             micro_batch_size = 8192
-        elif type(self.model._encoder) is GlobalPoolEncoder:
+        elif type(self.policy_model._encoder) is GlobalPoolEncoder:
             micro_batch_size = 2048 # just a guess
         else:
             micro_batch_size = 1024 # just a guess
@@ -561,7 +561,7 @@ class PMAlgorithm(MarlAlgorithm):
         """
 
         # make a sequence of length 1 and forward it through model
-        result, new_rnn_states = self.model.forward_sequence(
+        result, new_rnn_states = self.policy_model.forward_sequence(
             obs=obs[np.newaxis],
             rnn_states=rnn_states[:, 0:2, :]
         )
@@ -593,7 +593,7 @@ class PMAlgorithm(MarlAlgorithm):
         :param rnn_states: current rnn_states of dims [B, 2, memory_units]
         """
 
-        loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
+        loss = torch.tensor(0, dtype=torch.float32, device=self.policy_model.device)
 
         # -------------------------------------------------------------------------
         # Calculate loss_pg
@@ -612,7 +612,7 @@ class PMAlgorithm(MarlAlgorithm):
         N, B, *obs_shape = prev_obs.shape
 
         with profiler.record_function("fmb_forward_model"):
-            model_out, _ = self.model.forward_sequence(
+            model_out, _ = self.policy_model.forward_sequence(
                 obs=prev_obs,
                 rnn_states=rnn_states,
                 terminals=terminals
@@ -689,7 +689,7 @@ class PMAlgorithm(MarlAlgorithm):
 
     def forward_deception_mini_batch(self, data, deception_rnn_states):
 
-        loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
+        loss = torch.tensor(0, dtype=torch.float32, device=self.policy_model.device)
 
         prev_obs = data["prev_obs"]
         terminals = data["terminals"]
@@ -778,6 +778,67 @@ class PMAlgorithm(MarlAlgorithm):
             optimizer.step()
             optimizer.zero_grad()
 
+    def _train_model(self, batch_data, model, optimizer, rnn_states, forward_func, short_name="model"):
+        """
+        :param batch_data: a dictionary containing data required for training
+        :return:
+        """
+        for i in range(self.batch_epochs):
+
+            assert self.mini_batch_size % self.n_steps == 0, "mini batch size must be multiple of n_steps."
+            segments = list(range(self.n_agents))
+            np.random.shuffle(segments)
+
+            # figure out how many agents to run in parallel so that mini batch size is right
+            # this will be num_segments * rnn_block_length
+            assert self.mini_batch_size % self.micro_batches == 0
+            segments_per_micro_batch = self.batch_size // self.n_steps // \
+                                       (self.mini_batches * self.micro_batches)
+
+            optimizer.zero_grad()
+
+            micro_batch_counter = 0
+
+            for j in range(self.mini_batches):
+                with autocast(enabled=self.amp):
+                    for k in range(self.micro_batches):
+                        batch_start = micro_batch_counter * segments_per_micro_batch
+                        batch_end = (micro_batch_counter + 1) * segments_per_micro_batch
+                        sample = segments[batch_start:batch_end]
+
+                        # initialize states from state taken during rollout, then upload to gpu
+                        rnn_states = torch.tensor(rnn_states[sample], device=model.device)
+
+                        # put together a mini batch from all agents at this time step...
+                        mini_batch_data = {}
+                        for key, value in batch_data.items():
+                            mini_batch_data[key] = torch.tensor(value[:, sample], device=self.policy_model.device)
+
+                        forward_func(mini_batch_data, rnn_states)
+                        micro_batch_counter += 1
+                self.opt_step_minibatch(model, optimizer, short_name+"_grad")
+
+    @profiler.record_function("train_deception")
+    def train_deception(self):
+        """ trains agent on it's own experience, using the rnn training loop """
+
+        # put the required data into a dictionary
+        batch_data = {}
+
+        batch_data["prev_obs"] = self.batch_prev_obs
+        batch_data["player_obs"] = self.batch_player_obs
+        batch_data["terminals"] = self.batch_terminals
+        batch_data["roles"] = self.batch_roles
+
+        self._train_model(
+            batch_data,
+            self.deception_model,
+            self.deception_optimizer,
+            self.prev_rnn_states[:, 2:4],
+            self.forward_deception_mini_batch,
+            "dec"
+        )
+
     @profiler.record_function("train_policy")
     def train_policy(self):
         """ trains agent on it's own experience, using the rnn training loop """
@@ -795,96 +856,14 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["advantages"] = self.batch_advantage
         batch_data["terminals"] = self.batch_terminals
 
-        for i in range(self.batch_epochs):
-
-            assert self.mini_batch_size % self.n_steps == 0, "mini batch size must be multiple of n_steps."
-            assert self.n_agents == self.batch_prev_obs.shape[1]
-
-            segments = list(range(self.n_agents))
-            np.random.shuffle(segments)
-
-            # figure out how many agents to run in parallel so that mini batch size is right
-            # this will be num_segments * rnn_block_length
-            assert self.mini_batch_size % self.micro_batches == 0
-
-            segments_per_micro_batch = self.batch_size // self.n_steps // \
-                                       (self.mini_batches * self.micro_batches)
-
-            self.optimizer.zero_grad()
-
-            micro_batch_counter = 0
-
-            for j in range(self.mini_batches):
-                with autocast(enabled=self.amp):
-                    for k in range(self.micro_batches):
-                        batch_start = micro_batch_counter * segments_per_micro_batch
-                        batch_end = (micro_batch_counter + 1) * segments_per_micro_batch
-                        sample = segments[batch_start:batch_end]
-
-                        with profiler.record_function("tp_upload"):
-                            # initialize states from state taken during rollout, then upload to gpu
-                            rnn_states = torch.tensor(self.prev_rnn_states[sample, 0:2], device=self.model.device)
-
-                            # put together a mini batch from all agents at this time step...
-                            mini_batch_data = {}
-                            for key, value in batch_data.items():
-                                mini_batch_data[key] = torch.from_numpy(value[:, sample]).to(device=self.model.device)
-
-                        self.forward_policy_mini_batch(mini_batch_data, rnn_states=rnn_states)
-                        micro_batch_counter += 1
-
-                self.opt_step_minibatch(self.model, self.optimizer, "opt_grad")
-
-
-    def train_deception(self):
-        """ trains agent on it's own experience, using the rnn training loop """
-
-        # put the required data into a dictionary
-        batch_data = {}
-
-        batch_data["prev_obs"] = self.batch_prev_obs
-        batch_data["player_obs"] = self.batch_player_obs
-        batch_data["terminals"] = self.batch_terminals
-        batch_data["roles"] = self.batch_roles
-
-        for i in range(self.batch_epochs):
-
-            assert self.mini_batch_size % self.n_steps == 0, "mini batch size must be multiple of n_steps."
-
-            segments = list(range(self.n_agents))
-            np.random.shuffle(segments)
-
-            # figure out how many agents to run in parallel so that mini batch size is right
-            # this will be num_segments * rnn_block_length
-
-            assert self.mini_batch_size % self.micro_batches == 0
-
-            segments_per_micro_batch = self.batch_size // self.n_steps // \
-                                       (self.mini_batches * self.micro_batches)
-
-            self.deception_optimizer.zero_grad()
-
-            micro_batch_counter = 0
-
-            # todo: this is repeated, make it share code with train_policy
-            for j in range(self.mini_batches):
-                with autocast(enabled=self.amp):
-                    for k in range(self.micro_batches):
-                        batch_start = micro_batch_counter * segments_per_micro_batch
-                        batch_end = (micro_batch_counter + 1) * segments_per_micro_batch
-                        sample = segments[batch_start:batch_end]
-
-                        # initialize states from state taken during rollout, then upload to gpu
-                        deception_rnn_states = torch.tensor(self.prev_rnn_states[sample, 2:4], device=self.model.device)
-
-                        # put together a mini batch from all agents at this time step...
-                        mini_batch_data = {}
-                        for key, value in batch_data.items():
-                            mini_batch_data[key] = torch.tensor(value[:, sample], device=self.model.device)
-
-                        self.forward_deception_mini_batch(mini_batch_data, deception_rnn_states=deception_rnn_states)
-                        micro_batch_counter += 1
-                self.opt_step_minibatch(self.deception_model, self.deception_optimizer, "dec_grad")
+        self._train_model(
+            batch_data,
+            self.policy_model,
+            self.policy_optimizer,
+            self.prev_rnn_states[:, 0:2],
+            self.forward_policy_mini_batch,
+            "pol"
+        )
 
 # ------------------------------------------------------------------
 # Helper functions
