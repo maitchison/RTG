@@ -1,6 +1,5 @@
-tensorflow-gpu==1.15.0
 numpy
 torch
 torchvision
 gym
-stable-baselines
+stable-baselines3

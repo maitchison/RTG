@@ -19,6 +19,7 @@ import gc
 import strategies
 import rescue
 import utils
+from utils import Color as C
 
 from typing import Union, List
 from ast import literal_eval
@@ -85,6 +86,7 @@ class Config():
         self.micro_batch_size: Union[str, int] = str()
         self.n_steps = int()
         self.enable_deception = bool()
+        self.export_rollout = bool()
 
         self.verbose = int()
 
@@ -192,7 +194,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     env = vec_env.games[0]
     frame = env.render("rgb_array")
 
-    obs_size = 39 # stub, make this a shape and get from env
+    obs_size = env.observation_space.shape[1] # stub, make this a shape and get from env
     n_players = len(env.players)
 
     # work out our height
@@ -229,7 +231,6 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         # role predictions are in public_id order so that they change each round, we need to put them back
         # into index order.
         if config.enable_deception:
-
             # role prediction
             raw_predictions = model_output["role_prediction"].detach().cpu().numpy()
             role_predictions = np.zeros_like(raw_predictions)
@@ -451,10 +452,12 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
 
     algo_params["model_name"] = model_name or config.model
 
-    algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp,
+    algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, export_rollout=config.export_rollout,
                             micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
                             enable_deception=config.enable_deception,
                             verbose=config.verbose >= 2, **algo_params)
+
+    algorithm.log_folder = config.log_folder
 
     print(f" -model created using batch size of {algorithm.batch_size} and mini-batch size of"+
           f" {algorithm.mini_batch_size} with {algorithm.micro_batches} micro batch(es).")
@@ -495,8 +498,8 @@ def run_benchmarks(train=True, model=True, env=True):
         algo.learn(2 * algo.batch_size)
         torch.cuda.synchronize()
         time_taken = (time.time() - start_time)
-        print(f" -model {model_name} trains at {utils.Color.WARNING}{2 * algo.batch_size / time_taken / 1000:.1f}k"+
-              f"{utils.Color.ENDC} FPS.")
+        print(f" -model {model_name} trains at {C.WARNING}{2 * algo.batch_size / time_taken / 1000:.1f}k"+
+              f"{C.ENDC} FPS.")
 
     def bench_model(model_name):
         """
@@ -522,7 +525,7 @@ def run_benchmarks(train=True, model=True, env=True):
 
     if train:
         print("Benchmarking training...")
-        for model_name in ["default", "fast", "global"]:
+        for model_name in ["default", "fast"]:
             bench_training("red2", model_name)
 
     if env:
@@ -588,7 +591,7 @@ def learn(agent: MarlAlgorithm, step_counter, max_steps, verbose=True):
         # ignore first sub-epoch as FPS will be lower than normal
         if verbose:
             if sub_epoch == 1:
-                print(f" -FPS: {utils.Color.OKGREEN}{fps:.0f}{utils.Color.ENDC} .", end='', flush=True)
+                print(f" -FPS: {C.OKGREEN}{fps:.0f}{C.ENDC} .", end='', flush=True)
             elif sub_epoch > 1:
                 print(".", end='', flush=True)
 
@@ -628,7 +631,7 @@ def run_test(scenario_name, n_steps=int(2e6)):
     # return scores
     return load_results(log_file)
 
-def regression_test():
+def regression_test(tests: Union[str, tuple, list] = ("red2", "green2", "blue2")):
 
     print("Performing regression test, this could take some time.")
 
@@ -642,50 +645,26 @@ def regression_test():
     with open(f"{config.log_folder}/config.txt", "w") as f:
         f.write(str(config))
 
-    for scenario_name, team, required_score in [
-        ("red2", "red", 7.5),
-        ("green2", "green", 7.5),
-        ("blue2", "blue", 7.5),
+    for scenario_name, team, required_score, epochs in [
+        ("red2", "red", 7.5, 2),
+        ("green2", "green", 7.5, 2),
+        ("blue2", "blue", 7.5, 2),
     ]:
+        if scenario_name not in tests:
+            continue
 
-        results = run_test(scenario_name)
+        results = run_test(scenario_name, int(epochs*1e6))
         score = get_score(results, team)
         score_alt = get_score_alt(results, team)
 
-        result = "FAIL" if score < required_score else "PASS"
+        if score < required_score:
+            result = f"{C.FAIL}FAIL{C.ENDC}"
+        else:
+            result = f"{C.OKGREEN}PASS{C.ENDC}"
         print(f"  [{result:}] {scenario_name:<20} ({score:.1f}, {score_alt:.1f})")
 
     time_taken = time.time() - start_time
     print(f"Finished tests in {time_taken/60:.1f}m.")
-
-def quick_test():
-
-    print("Performing regression test, this could take some time.")
-
-    start_time = time.time()
-
-    # copy in files
-    # todo, this should be a function...
-    from shutil import copyfile
-    for filename in ["train.py", "rescue.py"]:
-        copyfile(filename, f"{config.log_folder}/{filename}")
-    with open(f"{config.log_folder}/config.txt", "w") as f:
-        f.write(str(config))
-
-    for scenario_name, team, required_score in [
-        ("red2", "red", 7.5)
-    ]:
-
-        results = run_test(scenario_name)
-        score = get_score(results, team)
-        score_alt = get_score_alt(results, team)
-
-        result = "FAIL" if score < required_score else "PASS"
-        print(f"  [{result:}] {scenario_name:<20} ({score:.1f}, {score_alt:.1f})")
-
-    time_taken = time.time() - start_time
-    print(f"Finished tests in {time_taken/60:.1f}m.")
-
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -742,21 +721,23 @@ def main():
     parser.add_argument('--algo_params', type=str, default="{}")
     parser.add_argument('--verbose', type=int, default=1, help="Level of logging output, 0=off, 1=normal, 2=full.")
 
-    parser.add_argument('--parallel_envs', type=int, default=128,
-                        help="The number of times to duplicate the environments. Note: when using mixed learning each"+
-                             "environment will be duplicated this number of times.")
-
-    parser.add_argument('--n_steps', type=int, default=128)
 
     parser.add_argument('--vary_team_player_counts', type=str2bool, nargs='?', const=True,  default=False, help="Use a random number of players turning training.")
 
+    parser.add_argument('--n_steps', type=int, default=32)
     parser.add_argument('--amp', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable Automatic Mixed Precision")
+    parser.add_argument('--parallel_envs', type=int, default=128,
+                        help="The number of times to duplicate the environments. Note: when using mixed learning each"+
+                             "environment will be duplicated this number of times.")
+    parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")
+
+    parser.add_argument('--export_rollout', type=str2bool, nargs='?', const=True, default=False,
+                        help="Exports rollout to disk, very large")
 
     parser.add_argument('--enable_deception', type=str2bool, nargs='?', const=True, default=False,
                         help="Enables the deception module during training")
 
-    parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")
     parser.add_argument('--data_parallel', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable data parallelism, can speed things up on multi-gpu machines.")
     parser.add_argument('--micro_batch_size', type=str, default="auto",
@@ -786,8 +767,12 @@ def main():
         regression_test()
     elif args.mode == "profile":
         profile()
-    elif args.mode == "quick_test":
-        quick_test()
+    elif args.mode == "red_test":
+        regression_test("red2")
+    elif args.mode == "green_test":
+        regression_test("green2")
+    elif args.mode == "blue_test":
+        regression_test("blue2")
     else:
         raise Exception(f"Invalid mode {args.mode}")
 

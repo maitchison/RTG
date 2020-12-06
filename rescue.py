@@ -163,6 +163,8 @@ class RescueTheGeneralScenario():
             "map_width": 24,
             "map_height": 24,
             "team_counts": (2, 0, 0),
+            "max_view_distance": 5,
+            "team_view_distance": (5, 5, 5),
             "n_trees": 10,
             "reward_per_tree": 1,
         },
@@ -172,15 +174,19 @@ class RescueTheGeneralScenario():
             "map_width": 24,
             "map_height": 24,
             "team_counts": (0, 2, 0),
+            "max_view_distance": 5,
+            "team_view_distance": (5, 5, 5),
             "n_trees": 10,
             "reward_per_tree": 1,
         },
 
         "blue2": {
             "description": "Two blue players must rescue the general on a small map.",
-            "map_width": 24,
-            "map_height": 24,
+            "map_width": 16,
+            "map_height": 16, # smaller to make it easier
             "team_counts": (0, 0, 2),
+            "max_view_distance": 5,
+            "team_view_distance": (5, 5, 5),
             "n_trees": 10,
             "reward_per_tree": 1,
             "timeout": 1000
@@ -365,7 +371,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     HIGHLIGHT_COLOR = np.asarray([180, 180, 50], dtype=np.uint8)
     GENERAL_COLOR = np.asarray([255, 255, 255], dtype=np.uint8)
     NEUTRAL_COLOR = np.asarray([96, 96, 96], dtype=np.uint8)
-    GRASS_COLOR = np.asarray([32, 32, 32], dtype=np.uint8)
+    GRASS_COLOR = np.asarray([24, 42, 16], dtype=np.uint8)
     TREE_COLOR = np.asarray([12, 174, 91], dtype=np.uint8)
     DEAD_COLOR = np.asarray([0, 0, 0], dtype=np.uint8)
 

@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+
 class Color:
     """
         Colors class for use with terminal.

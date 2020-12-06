@@ -13,7 +13,10 @@ def run_experiment(job):
     id, params = job
     device = multiprocessing.current_process()._identity[0] % 4
 
-    run_name = f"search/{id}"
+    # stub force device 3
+    device=3
+
+    run_name = f"search_2/{id}"
 
     if os.path.exists(run_name):
         return
@@ -32,7 +35,7 @@ def run_experiment(job):
 
 if __name__ == "__main__":
 
-    pool = multiprocessing.Pool(processes=4)
+    pool = multiprocessing.Pool(processes=1)
 
     jobs = []
     id = 0
@@ -42,7 +45,7 @@ if __name__ == "__main__":
         n_steps = random.choice([32, 64, 128])
         learning_rate = random.choice([1e-4, 2.5e-4, 1e-3])
         model = random.choice(["default", "fast"])
-        parallel_envs = random.choice([32, 64, 128, 256])
+        parallel_envs = random.choice([32, 64, 128, 256, 512])
         entropy_bonus = random.choice([0.003, 0.01, 0.03])
         mini_batches = random.choice([4, 8, 16])
         adam_epsilon = random.choice([1e-5, 1e-8])
@@ -50,9 +53,11 @@ if __name__ == "__main__":
         out_features = random.choice([32, 64, 128, 256, 512])
         max_grad_norm = random.choice([None, 0.5, 5.0])
         gamma = random.choice([0.9, 0.95, 0.99, 0.995])
+        amp = random.choice([True, False])
+
+        main_params = f"--amp={amp} --model={model} --n_steps={n_steps} --parallel_envs={parallel_envs}"
 
         algo_params = "{"+\
-                      f"'n_steps':{n_steps}, "+ \
                       f"'learning_rate':{learning_rate}, " + \
                       f"'adam_epsilon':{adam_epsilon}, " + \
                       f"'gamma':{gamma}, " + \
@@ -63,7 +68,7 @@ if __name__ == "__main__":
                       f"'max_grad_norm':{max_grad_norm}" + \
                 "}"
 
-        params = f"--model={model} --parallel_envs={parallel_envs} --algo_params=\"{algo_params}\""
+        params = f"{main_params} --algo_params=\"{algo_params}\""
 
         jobs.append([id, params])
         id += 1

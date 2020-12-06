@@ -28,6 +28,7 @@ extrinsic and intrinsic rewards are learned separately as value_int, and value_e
 
 import torch.nn.functional as F
 import pickle
+import gzip
 import time
 import os
 
@@ -39,6 +40,12 @@ from models import *
 
 from marl_env import MultiAgentVecEnv
 import torch.autograd.profiler as profiler
+
+import platform
+# this enable text colors on windows
+if platform.system() == "Windows":
+    import colorama
+    colorama.init()
 
 class MarlAlgorithm():
 
@@ -80,6 +87,7 @@ class PMAlgorithm(MarlAlgorithm):
             verbose=False,             # set to true to enable debug printing
 
             enable_deception=False,    # enables the deception model
+            export_rollout=False,      # writes rollouts to disk (very large!)
 
             # ------ model parameters ------------
 
@@ -91,12 +99,12 @@ class PMAlgorithm(MarlAlgorithm):
             micro_batch_size: Union[str, int] = "auto",
 
             # ------ long list of parameters to algorithm ------------
-            n_steps=128,
+            n_steps=32,
             learning_rate=2.5e-4,
             adam_epsilon=1e-5,
             normalize_advantages=True,
-            gamma=0.995,
-            gamma_int=0.995,
+            gamma=0.99,
+            gamma_int=0.99,
             gae_lambda=0.95,
             batch_epochs=4,
             entropy_bonus=0.01,
@@ -104,13 +112,14 @@ class PMAlgorithm(MarlAlgorithm):
             use_clipped_value_loss=False,  # shown to be not effective
             vf_coef=0.5,
             ppo_epsilon=0.2,
-            max_grad_norm=0.5,
+            max_grad_norm=5.0,
         ):
 
         A = vec_env.total_agents
         N = n_steps
 
         self.enable_deception = enable_deception
+        self.export_rollout = export_rollout
 
         if device == "data_parallel":
             device = "cuda"
@@ -283,6 +292,13 @@ class PMAlgorithm(MarlAlgorithm):
         if self.deception_model is not None:
             self.deception_model.train()
 
+    def _export_rollout(self, filename):
+        """
+        Write rollout to disk
+        """
+        with gzip.open(filename, "wb") as f:
+            pickle.dump(self.batch_prev_obs, f)
+
     @profiler.record_function("learn")
     def learn(self, total_timesteps, reset_num_timesteps=True):
 
@@ -310,6 +326,9 @@ class PMAlgorithm(MarlAlgorithm):
             self.log.watch_mean("ips", self.batch_size / step_time, history_length=4, display_width=8,
                                 display_priority=2, display_precision=0)
 
+            if self.export_rollout:
+                self._export_rollout(os.path.join(self.log_folder, f"rollout_{self.learn_steps}.dat"))
+
             if self.verbose:
                 if self.learn_steps % 10 == 0:
                     print(f"{self.learn_steps}, {self.t / 1000 / 1000:.1f}M")
@@ -329,8 +348,6 @@ class PMAlgorithm(MarlAlgorithm):
             micro_batch_size = 4096
         elif type(self.policy_model._encoder) is FastEncoder:
             micro_batch_size = 8192
-        elif type(self.policy_model._encoder) is GlobalPoolEncoder:
-            micro_batch_size = 2048 # just a guess
         else:
             micro_batch_size = 1024 # just a guess
 
@@ -395,11 +412,6 @@ class PMAlgorithm(MarlAlgorithm):
                         orderings.append(order)
 
                     # agent_obs is [n_games*n_players, *obs_shape]
-
-                    # stub: mark the order of observations go
-                    for i in range(len(self.agent_obs)):
-                        self.agent_obs[i,0,0,0] = i
-
                     # get batch_player_obs and reshape to [n_games, n_players, *obs_shape]
                     batch_player_obs = self.agent_obs.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *self.obs_shape)
 
@@ -410,6 +422,23 @@ class PMAlgorithm(MarlAlgorithm):
 
                     # make batch_player_obs [A, n_players, *obs_shape] by duplicating for each player
                     batch_player_obs = batch_player_obs.repeat(self.vec_env.max_players, axis=0)
+
+                    # stub: zero out other players observations
+                    n_players = self.vec_env.max_players
+                    for i in range(len(batch_player_obs)):
+                        for j in range(n_players):
+                            if (i % self.vec_env.max_players) != orderings[i // self.vec_env.max_players][j]:
+                                if j == 0:
+                                    c = (200,0,0,0,0)
+                                elif j == 1:
+                                    c = (0,200,0,0,0)
+                                elif j == 2:
+                                    c = (0,0,200,0,0)
+                                else:
+                                    c = (128,128,0,0,0)
+                                c = np.asarray(c).reshape([1,1,5])
+                                batch_player_obs[i, j] = c
+
                     self.batch_player_obs[t] = batch_player_obs
 
                 # forward state through model, then detach the result and convert to numpy.
@@ -563,18 +592,17 @@ class PMAlgorithm(MarlAlgorithm):
         # make a sequence of length 1 and forward it through model
         result, new_rnn_states = self.policy_model.forward_sequence(
             obs=obs[np.newaxis],
-            rnn_states=rnn_states[:, 0:2, :]
+            rnn_states=rnn_states[:, 0:2]
         )
 
         if self.enable_deception:
             deception_result, new_deception_rnn_states = self.deception_model.forward_sequence(
                 obs=obs[np.newaxis],
-                rnn_states=rnn_states[:, 2:4, :]
+                rnn_states=rnn_states[:, 2:4]
             )
             for k, v in deception_result.items():
                 result[k] = v
             new_rnn_states = torch.cat([new_rnn_states, new_deception_rnn_states], dim=1)
-
 
         # remove the sequence of length 1
         unsqueze_result = {}
@@ -623,6 +651,8 @@ class PMAlgorithm(MarlAlgorithm):
             model_out[k] = merge_down(v)
 
         logps = model_out["log_policy"]
+
+        actions = actions.to(dtype=torch.int64) # required for indexing
 
         ratio = torch.exp(logps[range(N*B), actions] - policy_log_probs[range(N*B), actions])
         clipped_ratio = torch.clamp(ratio, 1 - self.ppo_epsilon, 1 + self.ppo_epsilon)
@@ -707,7 +737,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         role_targets = merge_down(data["roles"]) # [N*B, n_players]
         # predictions come out as [N*B, n_players, n_roles], but we need them as [N*B, n_roles, n_players]
-        rp_coef = 1.0
+        rp_coef = 1.0 * 0.0 # stub no role prediction
         role_predictions = merge_down(model_out["role_prediction"]).transpose(1, 2)
         loss_role = rp_coef * torch.nn.functional.nll_loss(role_predictions, role_targets)
 
@@ -723,7 +753,11 @@ class PMAlgorithm(MarlAlgorithm):
         obs_predictions = model_out["obs_prediction"] # [N*B, n_players, *obs_shape]
         obs_truth = merge_down(data["player_obs"]) # [N*B, n_players, *obs_shape] (in public_id order)
         obs_truth = obs_truth.float()/255
-        loss_obs_prediction = ob_coef * F.mse_loss(obs_predictions.reshape(-1, *obs_shape), obs_truth.reshape(-1, *obs_shape))
+        # stub disable x,y prediction
+        loss_obs_prediction = ob_coef * F.mse_loss(
+            obs_predictions.reshape(-1, *obs_shape)[:, :, :, :3],
+            obs_truth.reshape(-1, *obs_shape)[:, :, :, :3]
+        )
         loss += loss_obs_prediction
         self.log.watch_mean("loss_obs", loss_obs_prediction)
 

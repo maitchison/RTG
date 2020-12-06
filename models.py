@@ -67,8 +67,10 @@ class DefaultEncoder(BaseEncoder):
 
         return x
 
-class GlobalPoolEncoder(BaseEncoder):
-    """ Uses global average pooling instead of a fully connected layer """
+class FastEncoder(BaseEncoder):
+    """ Encodes from observation to hidden representation.
+        Optimized to be efficient on CPU
+    """
 
     def __init__(self, input_dims, out_features=128):
         """
@@ -76,44 +78,9 @@ class GlobalPoolEncoder(BaseEncoder):
         """
         super().__init__(input_dims, out_features)
 
-        self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, out_features, kernel_size=3, padding=1)
+        self.final_dims = (64, self.input_dims[0]//6, self.input_dims[1]//6)
 
-        print(f" -created global encoder")
-
-    def forward(self, x):
-        """
-        input float32 tensor of dims [b, h, w, c]
-        return output tensor of dims [b, d], where d is the number of units in final layer.
-        """
-        assert x.shape[1:] == self.input_dims, f"Input dims {x.shape[1:]} must match {self.input_dims}"
-        assert x.dtype == torch.float32, f"Datatype should be torch.float32 not {x.dtype}"
-
-        # put in BCHW format for pytorch.
-        x = x.transpose(2, 3)
-        x = x.transpose(1, 2)
-
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = torch.max_pool2d(x, 2, 2)
-        x = torch.relu(self.conv3(x)) # [B, C, H, W]
-        x = torch.mean(x, dim=[-2, -1]) # [B, C]
-        return x
-
-
-class FastEncoder(BaseEncoder):
-    """ Encodes from observation to hidden representation.
-        Optimized to be efficient on CPU
-    """
-
-    def __init__(self, input_dims, out_features=64):
-        """
-        :param input_dims: intended dims of input, excluding batch size (height, width, channels)
-        """
-        super().__init__(input_dims, out_features)
-
-        self.final_dims = (64, self.input_dims[0]//3//2, self.input_dims[1]//3//2)
+        # based on nature
 
         self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3, stride=3)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
@@ -143,7 +110,6 @@ class FastEncoder(BaseEncoder):
         x = torch.max_pool2d(x, 2, 2)
         assert x.shape[1:] == self.final_dims, f"Expected final shape to be {self.final_dims} but found {x.shape[1:]}"
         x = x.reshape((b, -1))
-
         x = torch.relu(self.fc(x))
 
         return x
@@ -163,7 +129,6 @@ class BasicDecoder(nn.Module):
         self.deconv1 = nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2, padding=1)
         self.deconv2 = nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1)
         self.deconv3 = nn.ConvTranspose2d(32, self.output_dims[0], kernel_size=4, stride=2, padding=1)
-
 
     def forward(self, x):
         """
@@ -194,8 +159,8 @@ class BaseModel(nn.Module):
             env: MultiAgentVecEnv,
             device="cpu",
             dtype=torch.float32,
-            memory_units=128,
-            out_features=128,
+            memory_units=256,
+            out_features=256,
             model="default",
             data_parallel=False,
     ):
@@ -210,8 +175,6 @@ class BaseModel(nn.Module):
 
         if model.lower() == "default":
             self.encoder = DefaultEncoder(env.observation_space.shape, out_features=out_features)
-        elif model.lower() == "global":
-            self.encoder = GlobalPoolEncoder(env.observation_space.shape, out_features=out_features)
         elif model.lower() == "fast":
             self.encoder = FastEncoder(env.observation_space.shape, out_features=out_features)
         else:
@@ -241,7 +204,7 @@ class BaseModel(nn.Module):
     def forward_sequence(self, obs, rnn_states, terminals=None):
         raise NotImplemented()
 
-    def _forward_sequence(self, obs, rnn_states, terminals=None):
+    def _forward_sequence(self, obs, rnn_states, terminals=None, include_encoding=False):
         """
         Forward a sequence of observations through model, returns dictionary of outputs.
         :param obs: input observations, tensor of dims [N, B, observation_shape], which should be channels last. (BHWC)
@@ -294,7 +257,10 @@ class BaseModel(nn.Module):
         new_rnn_states[:, 0, :] = h
         new_rnn_states[:, 1, :] = c
 
-        return lstm_output, new_rnn_states
+        if include_encoding:
+            return lstm_output, new_rnn_states, encoding
+        else:
+            return lstm_output, new_rnn_states
 
     def prep_for_model(self, x, scale_int=True):
         """ Converts data to format for model (i.e. uploads to GPU, converts type).
@@ -347,8 +313,8 @@ class DeceptionModel(BaseModel):
             env: MultiAgentVecEnv,
             device="cpu",
             dtype=torch.float32,
-            memory_units=128,
-            out_features=128,
+            memory_units=512,
+            out_features=512,
             model="default",
             data_parallel=False
     ):
@@ -357,8 +323,11 @@ class DeceptionModel(BaseModel):
         # prediction of each role, in public_id order
         self.role_prediction_head = nn.Linear(self.memory_units, (self.n_players * self.n_roles))
         # prediction of each observation in public_id order
-        self.observation_prediction_head = BasicDecoder((self.obs_shape[2] * self.n_players, *self.obs_shape[0:2]),
-                                                        self.memory_units)
+        h, w, c = self.obs_shape
+        self.observation_prediction_head = BasicDecoder(
+            (c, h * self.n_players, w),
+            self.memory_units
+        )
 
         if data_parallel:
             self.observation_prediction_head = DP(self.observation_prediction_head)
@@ -368,8 +337,12 @@ class DeceptionModel(BaseModel):
     def forward_sequence(self, obs, rnn_states, terminals=None):
 
         N, B, *obs_shape = obs.shape
-        lstm_output, new_rnn_states = self._forward_sequence(obs, rnn_states, terminals)
-        lstm_output_reshaped = lstm_output.reshape(N * B, self.memory_units)
+        lstm_output, new_rnn_states, encodings = self._forward_sequence(
+            obs,
+            rnn_states,
+            terminals,
+            include_encoding=True
+        )
 
         # ------------------------------
         # role prediction
@@ -382,8 +355,17 @@ class DeceptionModel(BaseModel):
         # ------------------------------
         # obs prediction
         # ------------------------------
-        obs_prediction = self.observation_prediction_head(lstm_output_reshaped)
-        obs_prediction = obs_prediction.reshape(N, B, self.n_players, *self.obs_shape)
+        oph_input = (lstm_output + encodings).reshape(N*B, self.memory_units)
+        obs_prediction = self.observation_prediction_head(oph_input)
+
+        # predictions will come out as (N*B, c, h*n_players, w)
+        # but we need (N, B, n_players, h, w, c)
+        h, w, c = self.obs_shape
+        obs_prediction = obs_prediction.reshape(N, B, c, self.n_players * h, w)
+        obs_prediction = obs_prediction.split(h, dim=3)
+        obs_prediction = torch.stack(obs_prediction, dim=2)
+        obs_prediction = obs_prediction.transpose(-3, -1)
+        obs_prediction = obs_prediction.transpose(-3, -2)
 
         result = {}
         result['role_prediction'] = role_prediction
@@ -419,6 +401,7 @@ class PolicyModel(BaseModel):
 
         # output heads
         self.policy_head = nn.Linear(self.memory_units, env.action_space.n)
+        torch.nn.init.xavier_uniform_(self.policy_head.weight, 0.01) # helps with exploration
 
         self.local_int_value_head = nn.Linear(self.memory_units, 1)
         self.local_ext_value_head = nn.Linear(self.memory_units, 1)
