@@ -296,7 +296,9 @@ class PMAlgorithm(MarlAlgorithm):
         """
         Write rollout to disk
         """
-        with gzip.open(filename, "wb") as f:
+        # compression level 1 gives a lot of compression for our data, and is very fast.
+        # level 9 is only 10% better, but 20x slower.
+        with gzip.open(filename, "wb", compresslevel=1) as f:
             pickle.dump(self.batch_prev_obs, f)
 
     @profiler.record_function("learn")

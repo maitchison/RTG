@@ -46,6 +46,7 @@ class DefaultEncoder(BaseEncoder):
         input float32 tensor of dims [b, h, w, c]
         return output tensor of dims [b, d], where d is the number of units in final layer.
         """
+        assert type(x) == torch.Tensor, f"Input must be torch tensor not {type(x)}"
         assert x.shape[1:] == self.input_dims, f"Input dims {x.shape[1:]} must match {self.input_dims}"
         assert x.dtype == torch.float32, f"Datatype should be torch.float32 not {x.dtype}"
 
