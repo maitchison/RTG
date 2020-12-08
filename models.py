@@ -68,6 +68,54 @@ class DefaultEncoder(BaseEncoder):
 
         return x
 
+class LargeEncoder(BaseEncoder):
+    """ Encodes from observation to hidden representation. """
+
+    def __init__(self, input_dims, out_features=128):
+        """
+        :param input_dims: intended dims of input, excluding batch size (height, width, channels)
+        """
+        super().__init__(input_dims, out_features)
+
+        self.final_dims = (64, self.input_dims[0]//2//2, self.input_dims[1]//2//2)
+
+        self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.fc = nn.Linear(utils.prod(self.final_dims), self.out_features)
+
+        print(f" -created large encoder, final dims {self.final_dims}")
+
+    def forward(self, x):
+        """
+        input float32 tensor of dims [b, h, w, c]
+        return output tensor of dims [b, d], where d is the number of units in final layer.
+        """
+        assert type(x) == torch.Tensor, f"Input must be torch tensor not {type(x)}"
+        assert x.shape[1:] == self.input_dims, f"Input dims {x.shape[1:]} must match {self.input_dims}"
+        assert x.dtype == torch.float32, f"Datatype should be torch.float32 not {x.dtype}"
+
+        b = x.shape[0]
+
+        # put in BCHW format for pytorch.
+        x = x.transpose(2, 3)
+        x = x.transpose(1, 2)
+
+        x = torch.relu(self.conv1(x))
+        x = torch.max_pool2d(x, 2, 2)
+        x = torch.relu(self.conv2(x))
+        x = torch.max_pool2d(x, 2, 2)
+        x = torch.relu(self.conv3(x))
+        x = torch.relu(self.conv4(x))
+
+        assert x.shape[1:] == self.final_dims, f"Expected final shape to be {self.final_dims} but found {x.shape[1:]}"
+        x = x.reshape((b, -1))
+        x = torch.relu(self.fc(x))
+
+        return x
+
+
 class FastEncoder(BaseEncoder):
     """ Encodes from observation to hidden representation.
         Optimized to be efficient on CPU
@@ -115,21 +163,32 @@ class FastEncoder(BaseEncoder):
 
         return x
 
-class BasicDecoder(nn.Module):
+class BaseDecoder(nn.Module):
+
+    def __init__(self, output_dims, initial_dims, hidden_features):
+        super().__init__()
+        self.output_dims = output_dims  # (c, h, w)
+        self.initial_dims = initial_dims
+        self.hidden_features = hidden_features
+
+class DefaultDecoder(BaseDecoder):
     """ Decodes from hidden representation to observation. """
 
     def __init__(self, output_dims, hidden_features=128):
+        """
+        :param output_dims: (c,h,w)
+        :param hidden_features:
+        """
 
-        super().__init__()
-
-        self.output_dims = output_dims # (c, h, w)
-        self.initial_dims = (64, math.ceil((self.output_dims[1]+2)/8), math.ceil((self.output_dims[2]+2)/8))
-        self.hidden_features = hidden_features
+        initial_dims = (64, math.ceil((output_dims[1] + 2) / 8), math.ceil((output_dims[2] + 2) / 8))
+        super().__init__(output_dims, initial_dims, hidden_features)
 
         self.fc = nn.Linear(self.hidden_features, utils.prod(self.initial_dims))
         self.deconv1 = nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2, padding=1)
         self.deconv2 = nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1)
         self.deconv3 = nn.ConvTranspose2d(32, self.output_dims[0], kernel_size=4, stride=2, padding=1)
+
+        print(f" -created default decoder, initial dims {self.initial_dims}")
 
     def forward(self, x):
         """
@@ -152,6 +211,51 @@ class BasicDecoder(nn.Module):
         x = x[:, :, ey//2:ey//2+ry, ex//2:ex//2+rx]
 
         return x
+
+
+class LargeDecoder(BaseDecoder):
+    """ Decodes from hidden representation to observation. """
+
+    def __init__(self, output_dims, hidden_features=128):
+        """
+        :param output_dims: (c,h,w)
+        :param hidden_features:
+        """
+
+        initial_dims = (128, math.ceil((output_dims[1] + 2) / 4), math.ceil((output_dims[2] + 2) / 4))
+        super().__init__(output_dims, initial_dims, hidden_features)
+
+        self.fc = nn.Linear(self.hidden_features, utils.prod(self.initial_dims))
+        self.deconv1 = nn.ConvTranspose2d(128, 128, kernel_size=4, padding=2)
+        self.deconv2 = nn.ConvTranspose2d(128, 64, kernel_size=4, padding=2)
+        self.deconv3 = nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=2)
+        self.deconv4 = nn.ConvTranspose2d(32, self.output_dims[0], kernel_size=4, stride=2, padding=1)
+
+        print(f" -created large decoder, initial dims {self.initial_dims}")
+
+    def forward(self, x):
+        """
+        input tensor of dims [b, d], where d is the number of hidden features.
+        return tensor of dims [b, c, h, w]
+        """
+
+        b = x.shape[0]
+
+        x = torch.relu(self.fc(x))
+        x = x.view((b, *self.initial_dims))
+        x = torch.relu(self.deconv1(x))
+        x = torch.relu(self.deconv2(x))
+        x = torch.relu(self.deconv3(x))
+        x = torch.sigmoid(self.deconv4(x))
+
+        # the decoder doubles the size each time, edges tend not to predict well anyway due to padding
+        # so we calculate the required dims (rx,ry) and the excess (ex,ry), then take a center crop
+        rx, ry = self.output_dims[-1], self.output_dims[-2]
+        ex, ey = x.shape[-1] - rx, x.shape[-2] - ry
+        x = x[:, :, ey//2:ey//2+ry, ex//2:ex//2+rx]
+
+        return x
+
 
 class BaseModel(nn.Module):
 
@@ -178,6 +282,8 @@ class BaseModel(nn.Module):
             self.encoder = DefaultEncoder(env.observation_space.shape, out_features=out_features)
         elif model.lower() == "fast":
             self.encoder = FastEncoder(env.observation_space.shape, out_features=out_features)
+        elif model.lower() == "large":
+            self.encoder = LargeEncoder(env.observation_space.shape, out_features=out_features)
         else:
             raise Exception(f"Invalid model {model}, expected [default|fast|global]")
 
@@ -317,18 +423,36 @@ class DeceptionModel(BaseModel):
             memory_units=512,
             out_features=512,
             model="default",
-            data_parallel=False
+            data_parallel=False,
+            residual_connections=True,
+            use_mlp_layer=False,
     ):
         super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel)
+
+        self.residual_connections = residual_connections
+        self.use_mlp_layer = use_mlp_layer
+
+        self.mlp = nn.Linear(self.memory_units, self.memory_units)
 
         # prediction of each role, in public_id order
         self.role_prediction_head = nn.Linear(self.memory_units, (self.n_players * self.n_roles))
         # prediction of each observation in public_id order
         h, w, c = self.obs_shape
-        self.observation_prediction_head = BasicDecoder(
-            (c, h * self.n_players, w),
-            self.memory_units
-        )
+
+        if model.lower() in ["default", "fast"]:
+            if model.lower() == "fast":
+                print("warning: fast decoder is not implemented, using default.")
+            self.observation_prediction_head = DefaultDecoder(
+                (c, h * self.n_players, w),
+                self.memory_units
+            )
+        elif model.lower() == "large":
+            self.observation_prediction_head = LargeDecoder(
+                (c, h * self.n_players, w),
+                self.memory_units
+            )
+        else:
+            raise ValueError(f"Invalid model name {model}")
 
         if data_parallel:
             self.observation_prediction_head = DP(self.observation_prediction_head)
@@ -345,19 +469,31 @@ class DeceptionModel(BaseModel):
             include_encoding=True
         )
 
+        if self.residual_connections:
+            encoder_output = lstm_output + encodings
+        else:
+            encoder_output = lstm_output
+
+        # optional mlp layer
+        if self.use_mlp_layer:
+            if self.residual_connections:
+                encoder_output = encoder_output + self.mlp(encoder_output)
+            else:
+                encoder_output = self.mlp(encoder_output)
+
         # ------------------------------
         # role prediction
         # ------------------------------
         # these will come out as [N, B, n_players * n_roles] but we need [N, B, n_players, n_roles] for normalization
-        unnormalized_role_predictions = self.role_prediction_head(lstm_output).reshape(
+        unnormalized_role_predictions = self.role_prediction_head(encoder_output).reshape(
             [N, B, self.n_players, self.n_roles])
         role_prediction = torch.log_softmax(unnormalized_role_predictions, dim=-1)
 
         # ------------------------------
         # obs prediction
         # ------------------------------
-        oph_input = (lstm_output + encodings).reshape(N*B, self.memory_units)
-        obs_prediction = self.observation_prediction_head(oph_input)
+
+        obs_prediction = self.observation_prediction_head(encoder_output.reshape(N * B, self.memory_units))
 
         # predictions will come out as (N*B, c, h*n_players, w)
         # but we need (N, B, n_players, h, w, c)

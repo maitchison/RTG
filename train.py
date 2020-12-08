@@ -525,7 +525,7 @@ def run_benchmarks(train=True, model=True, env=True):
 
     if train:
         print("Benchmarking training...")
-        for model_name in ["default", "fast"]:
+        for model_name in ["default", "fast", "large"]:
             bench_training("red2", model_name)
 
     if env:
@@ -535,7 +535,7 @@ def run_benchmarks(train=True, model=True, env=True):
 
     if model:
         print("Benchmarking models (inference)...")
-        for model_name in ["default", "fast"]:
+        for model_name in ["default", "fast", "large"]:
             bench_model(model_name)
 
 def print_scores(epoch=None):
