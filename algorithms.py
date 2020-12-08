@@ -131,8 +131,9 @@ class PMAlgorithm(MarlAlgorithm):
                         data_parallel=data_parallel, out_features=out_features)
 
         if self.enable_deception:
-            self.deception_model = DeceptionModel(vec_env, device=device, memory_units=memory_units, model=model_name,
-                        data_parallel=data_parallel, out_features=out_features)
+            # note: we don't use the policy model hyperparameters here, but use tuned ones instead
+            self.deception_model = DeceptionModel(vec_env, device=device, memory_units=512, out_features=512,
+                                                  model=model_name, data_parallel=data_parallel)
         else:
             self.deception_model = None
 
@@ -172,8 +173,9 @@ class PMAlgorithm(MarlAlgorithm):
 
         self.policy_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=learning_rate, eps=adam_epsilon)
         if self.deception_model is not None:
-            self.deception_optimizer = torch.optim.Adam(self.deception_model.parameters(), lr=learning_rate,
-                                                        eps=adam_epsilon)
+            # optimal settings for deception optimizer are different than the policy optimizer
+            self.deception_optimizer = torch.optim.Adam(self.deception_model.parameters(), lr=1e-3,
+                                                        eps=1e-8)
 
         self.t = 0
         self.learn_steps = 0
