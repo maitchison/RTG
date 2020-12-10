@@ -77,12 +77,12 @@ class LargeEncoder(BaseEncoder):
         """
         super().__init__(input_dims, out_features)
 
-        self.final_dims = (64, self.input_dims[0]//2//2, self.input_dims[1]//2//2)
+        self.final_dims = (128, self.input_dims[0]//2//2, self.input_dims[1]//2//2)
 
         self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
         self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
         self.fc = nn.Linear(utils.prod(self.final_dims), self.out_features)
 
         print(f" -created large encoder, final dims {self.final_dims}")

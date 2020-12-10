@@ -92,23 +92,23 @@ class PMAlgorithm(MarlAlgorithm):
             # ------ model parameters ------------
 
             amp=False,  # automatic mixed precision
-            device="cpu",
-            memory_units=128,
-            out_features=128,
+            device="cuda",
+            memory_units=256,
+            out_features=256,
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
 
             # ------ long list of parameters to algorithm ------------
-            n_steps=32,
+            n_steps=16,
             learning_rate=2.5e-4,
-            adam_epsilon=1e-5,
+            adam_epsilon=1e-8,
             normalize_advantages=True,
             gamma=0.99,
             gamma_int=0.99,
             gae_lambda=0.95,
             batch_epochs=4,
             entropy_bonus=0.01,
-            mini_batches=4,
+            mini_batches=16,
             use_clipped_value_loss=False,  # shown to be not effective
             vf_coef=0.5,
             ppo_epsilon=0.2,
@@ -132,7 +132,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         if self.enable_deception:
             # note: we don't use the policy model hyperparameters here, but use tuned ones instead
-            self.deception_model = DeceptionModel(vec_env, device=device, memory_units=512, out_features=512,
+            self.deception_model = DeceptionModel(vec_env, device=device, memory_units=1024, out_features=1024,
                                                   model=model_name, data_parallel=data_parallel)
         else:
             self.deception_model = None
@@ -349,6 +349,8 @@ class PMAlgorithm(MarlAlgorithm):
         # working this out will be complex
         # maybe can assume that 12GB gives us 4096 with AMP and 2048 without
         if type(self.policy_model._encoder) is DefaultEncoder:
+            micro_batch_size = 4096
+        elif type(self.policy_model._encoder) is LargeEncoder:
             micro_batch_size = 4096
         elif type(self.policy_model._encoder) is FastEncoder:
             micro_batch_size = 8192

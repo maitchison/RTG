@@ -724,10 +724,10 @@ def main():
 
     parser.add_argument('--vary_team_player_counts', type=str2bool, nargs='?', const=True,  default=False, help="Use a random number of players turning training.")
 
-    parser.add_argument('--n_steps', type=int, default=32)
+    parser.add_argument('--n_steps', type=int, default=16)
     parser.add_argument('--amp', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable Automatic Mixed Precision")
-    parser.add_argument('--parallel_envs', type=int, default=128,
+    parser.add_argument('--parallel_envs', type=int, default=256,
                         help="The number of times to duplicate the environments. Note: when using mixed learning each"+
                              "environment will be duplicated this number of times.")
     parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")
