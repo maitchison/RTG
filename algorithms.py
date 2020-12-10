@@ -93,8 +93,8 @@ class PMAlgorithm(MarlAlgorithm):
 
             amp=False,  # automatic mixed precision
             device="cuda",
-            memory_units=256,
-            out_features=256,
+            memory_units=512,
+            out_features=512,
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
 
@@ -108,7 +108,7 @@ class PMAlgorithm(MarlAlgorithm):
             gae_lambda=0.95,
             batch_epochs=4,
             entropy_bonus=0.01,
-            mini_batches=16,
+            mini_batches=8,
             use_clipped_value_loss=False,  # shown to be not effective
             vf_coef=0.5,
             ppo_epsilon=0.2,
@@ -367,8 +367,6 @@ class PMAlgorithm(MarlAlgorithm):
         if self.data_parallel:
             micro_batch_size *= 4 # should be number of GPUs
 
-        print(f" -using max micro-batch size of {micro_batch_size}")
-
         return micro_batch_size
 
     def reset(self):
@@ -595,6 +593,23 @@ class PMAlgorithm(MarlAlgorithm):
 
         """
 
+        # handle very large forwards by splitting batch into smaller parts
+        batch_size = obs.shape[0]
+        max_mini_batch_size = 8192
+        if batch_size > max_mini_batch_size:
+            out_parts, state_parts = [], []
+            for i in range(math.ceil(batch_size/max_mini_batch_size)):
+                portion = list(range(i*max_mini_batch_size, min((i+1) * max_mini_batch_size, batch_size)))
+                out, state = self.forward(obs[portion], rnn_states[portion])
+                out_parts.append(out)
+                state_parts.append(state)
+            # put them together
+            rnn_states = torch.cat(state_parts, dim=0)
+            output = {}
+            for k in out_parts[0].keys():
+                output[k] = torch.cat([out[k] for out in out_parts], dim=0)
+            return output, rnn_states
+
         # make a sequence of length 1 and forward it through model
         result, new_rnn_states = self.policy_model.forward_sequence(
             obs=obs[np.newaxis],
@@ -709,11 +724,6 @@ class PMAlgorithm(MarlAlgorithm):
         # -------------------------------------------------------------------------
 
         self.log.watch_mean("loss", loss)
-        loss = loss / self.micro_batches
-
-        # -------------------------------------------------------------------------
-        # Run optimizer
-        # -------------------------------------------------------------------------
 
         # calculate gradients, and log grad_norm
         if self.amp:
@@ -776,11 +786,6 @@ class PMAlgorithm(MarlAlgorithm):
         # -------------------------------------------------------------------------
 
         self.log.watch_mean("dec_loss", loss)
-        loss = loss / self.micro_batches
-
-        # -------------------------------------------------------------------------
-        # Run optimizer
-        # -------------------------------------------------------------------------
 
         # calculate gradients, and log grad_norm
         if self.amp:

@@ -1,6 +1,8 @@
 import gym
 import numpy as np
 
+import multiprocessing
+
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
 
 class MultiAgentEnv(gym.Env):
@@ -96,6 +98,8 @@ class MultiAgentVecEnv(VecEnv):
         self.run_once = False # if true environment will pause after first reset
 
         self.env_completed = [False] * self.num_envs
+
+        
 
     @property
     def total_players(self):

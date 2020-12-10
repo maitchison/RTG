@@ -23,7 +23,7 @@ def run_experiment(job):
     # stub, should be train, not test with --train_scenarios='red2'
 
     script = \
-        f"python train.py test --run=\"{run_name}\" --device={device} " + params
+        f"python ./run/{RUN_NAME}/train.py test --run=\"{run_name}\" --device={device} " + params
 
     print()
     print(script)
@@ -49,6 +49,9 @@ if __name__ == "__main__":
     jobs = []
     id = 0
 
+    os.system(f'mkdir ./run/{args.run}')
+    os.system(f'cp *.py ./run/{args.run}')
+
     for i in range(256):
 
         # search 3
@@ -66,10 +69,14 @@ if __name__ == "__main__":
         # amp = random.choice([False])
 
         # search 4
+        # the idea here is to see if we can do very large parallel envs, and at the same time
+        # increase the test length to 4 epochs (as I suspect they will train slower but better)
+        # I'm also interested in finding out how mini_batches works now that I removed loss
+        # attenuation during microbatches
         n_steps = random.choice([32]) # shortest one that works
         learning_rate = random.choice([2.5e-4])
         model = random.choice(["default"])
-        parallel_envs = random.choice([128, 256, 512, 1024, 2048, 4096, 8096, 16192, 32384])
+        parallel_envs = random.choice([2**x for x in [7, 8, 9, 10, 11, 12, 13, 14, 15]])
         entropy_bonus = random.choice([0.01])
         mini_batches = random.choice([4, 8, 16])
         adam_epsilon = random.choice([1e-8])

@@ -87,6 +87,7 @@ class Config():
         self.n_steps = int()
         self.enable_deception = bool()
         self.export_rollout = bool()
+        self.test_epochs = int()
 
         self.verbose = int()
 
@@ -633,7 +634,7 @@ def run_test(scenario_name, n_steps=int(2e6)):
 
 def regression_test(tests: Union[str, tuple, list] = ("red2", "green2", "blue2")):
 
-    print("Performing regression test, this could take some time.")
+    print(f"Performing regression tests on {config.test_epochs} epochs, this could take some time.")
 
     start_time = time.time()
 
@@ -645,15 +646,15 @@ def regression_test(tests: Union[str, tuple, list] = ("red2", "green2", "blue2")
     with open(f"{config.log_folder}/config.txt", "w") as f:
         f.write(str(config))
 
-    for scenario_name, team, required_score, epochs in [
-        ("red2", "red", 7.5, 2),
-        ("green2", "green", 7.5, 2),
-        ("blue2", "blue", 7.5, 2),
+    for scenario_name, team, required_score in [
+        ("red2", "red", 7.5),
+        ("green2", "green", 7.5),
+        ("blue2", "blue", 7.5),
     ]:
         if scenario_name not in tests:
             continue
 
-        results = run_test(scenario_name, int(epochs*1e6))
+        results = run_test(scenario_name, int(config.test_epochs*1e6))
         score = get_score(results, team)
         score_alt = get_score_alt(results, team)
 
@@ -716,6 +717,8 @@ def main():
         help="Scenario settings used to evaluate (defaults to same as train_scenario)", default=None)
 
     parser.add_argument('--epochs', type=int, help="number of epochs to train for (each 1M agent steps)", default=500)
+    parser.add_argument('--test_epochs', type=int, help="number of epochs to test for during test mode (each 1M agent steps)", default=2)
+
     parser.add_argument('--script_blue_team', type=str, default=None)
     parser.add_argument('--export_video', type=str2bool, nargs='?', const=True, default=True)
     parser.add_argument('--algo_params', type=str, default="{}")
@@ -724,10 +727,10 @@ def main():
 
     parser.add_argument('--vary_team_player_counts', type=str2bool, nargs='?', const=True,  default=False, help="Use a random number of players turning training.")
 
-    parser.add_argument('--n_steps', type=int, default=16)
+    parser.add_argument('--n_steps', type=int, default=32)
     parser.add_argument('--amp', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable Automatic Mixed Precision")
-    parser.add_argument('--parallel_envs', type=int, default=256,
+    parser.add_argument('--parallel_envs', type=int, default=2048,
                         help="The number of times to duplicate the environments. Note: when using mixed learning each"+
                              "environment will be duplicated this number of times.")
     parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")
