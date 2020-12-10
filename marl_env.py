@@ -1,18 +1,16 @@
 import gym
 import numpy as np
 
-import multiprocessing
-
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv
+
 
 class MultiAgentEnv(gym.Env):
     """
     Multi-Agent extension for OpenAI Gym
-
     Credit:
     Largely based on OpenAI's multi-agent environment
     https://github.com/openai/multiagent-particle-envs/blob/master/multiagent/environment.py
-
     """
     metadata = {
         'render.modes': ['human', 'rgb_array']
@@ -36,6 +34,7 @@ class MultiAgentEnv(gym.Env):
     def n_players(self):
         return self._n_players
 
+
 class DummyMARLEnv(MultiAgentEnv):
     """
     Dummy environment with given number of actors.
@@ -50,7 +49,7 @@ class DummyMARLEnv(MultiAgentEnv):
         obs = np.zeros((self.n_players, *self.observation_space.shape), dtype=self.observation_space.dtype)
         rewards = np.zeros([self.n_players], dtype=np.float)
         dones = np.zeros([self.n_players], dtype=np.bool)
-        infos = [{"train_mask":0} for _ in range(self.n_players)]
+        infos = [{"train_mask": 0} for _ in range(self.n_players)]
         return obs, rewards, dones, infos
 
     def reset(self):
@@ -58,30 +57,21 @@ class DummyMARLEnv(MultiAgentEnv):
         return obs
 
 
-class MultiAgentVecEnv(VecEnv):
+class MultiAgentVecEnv(SubprocVecEnv):
     """
     Vectorized Adapter for multi-agent environments.
-
     This allows multi-agent environments to be played by single-agent algorithms.
     All players are played by the same model, but using different instances (if LSTM is used).
-
     Definitions
-
     n_players: The total number of players in the environment
     n_agents: The total number of (non scripted) players in the environment
-
     The Vector Environment surfaces observations only for the agents, for example the environment
-
     | Game 1     | Game 2            | Game 3 |
     | p1,     p2 | p1,    p2,     p3 | p1, p2 |
     | AI,     AI | AI,    script, AI | AI, AI |
-
     Would surface as a vector environment of length 6 (the scripted player masked out)
-
     This environment has 3 games, total_agents=7 and total_agents=6
-
     For compatibility num_envs is set to total_agents
-
     """
 
     def __init__(self, make_marl_envs):
@@ -98,8 +88,6 @@ class MultiAgentVecEnv(VecEnv):
         self.run_once = False # if true environment will pause after first reset
 
         self.env_completed = [False] * self.num_envs
-
-        
 
     @property
     def total_players(self):
@@ -134,7 +122,6 @@ class MultiAgentVecEnv(VecEnv):
                 roles.append(player.team)
         return np.asarray(roles, dtype=np.int64)
 
-
     def get_roles_expanded(self):
         """
         Returns numpy array containing roles for each player in game for each agent in environment ordered by
@@ -167,7 +154,7 @@ class MultiAgentVecEnv(VecEnv):
 
     def step_async(self, actions):
         actions = list(actions)
-        assert len(actions) == self.num_envs,\
+        assert len(actions) == self.num_envs, \
             f"Wrong number of actions, expected {self.num_envs} but found {len(actions)}."
         self.actions = actions
 
@@ -187,10 +174,10 @@ class MultiAgentVecEnv(VecEnv):
                 for _ in range(game.n_players):
                     reversed_actions.pop()
                 blank_obs = np.zeros(game.observation_space.shape, dtype=game.observation_space.dtype)
-                obs.extend([blank_obs]*game.n_players)
-                rewards.extend([0]*game.n_players)
-                dones.extend([True]*game.n_players)
-                infos.extend([{}]*game.n_players)
+                obs.extend([blank_obs] * game.n_players)
+                rewards.extend([0] * game.n_players)
+                dones.extend([True] * game.n_players)
+                infos.extend([{}] * game.n_players)
                 continue
 
             env_actions = []
@@ -220,7 +207,6 @@ class MultiAgentVecEnv(VecEnv):
         dones = np.asarray(dones)
 
         return obs, rewards, dones, infos
-
 
     def seed(self, seed=None):
         seeds = list()
