@@ -225,7 +225,12 @@ class PMAlgorithm(MarlAlgorithm):
         # this is so when we take a random sample we always have the information we need.
         # It's a bit wasteful with memory though, especially with high player counts.
         if self.enable_deception:
+            # all player observations at time t for given game recorded for all agents, in public_id order
             self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
+            # all policies at time t for given game recorded for all agents, in public_id order
+            self.batch_player_policy = np.zeros([N, A, vec_env.max_players, *self.policy_shape], dtype=np.float32)
+            # all terminals at time t for given game recorded for all agents, in public_id order
+            self.batch_player_terminals = np.zeros([N, A, vec_env.max_players], dtype=np.float32)
 
         # advantage used during policy gradient (combination of intrinsic and extrinsic reward)
         self.batch_advantage = np.zeros([N, A], dtype=np.float32)
@@ -397,6 +402,14 @@ class PMAlgorithm(MarlAlgorithm):
                 prev_obs = self.agent_obs.copy() #[A, *obs_shape]
                 prev_terminals = self.terminals.copy()
 
+                # forward state through model, then detach the result and convert to numpy.
+                with profiler.record_function("gr_model_step"):
+                    model_out, new_agent_rnn_state = self.forward(self.agent_obs, self.agent_rnn_state)
+                self.agent_rnn_state[:] = new_agent_rnn_state
+
+                log_policy = model_out["log_policy"].detach().cpu().numpy()
+                ext_value = model_out["ext_value"].detach().cpu().numpy()
+
                 if self.enable_deception:
 
                     # ------------------------------------
@@ -408,6 +421,8 @@ class PMAlgorithm(MarlAlgorithm):
                     # observations
 
                     # get order for observations
+                    # we must predict these in public_id order, otherwise team is known
+                    # however ground truth observations will be in index order, so we need to reorder them
                     orderings = []
                     for game in self.vec_env.games:
                         game_players = [(player.public_id, player.index) for player in game.players]
@@ -415,43 +430,22 @@ class PMAlgorithm(MarlAlgorithm):
                         order = [index for public_id, index in game_players]
                         orderings.append(order)
 
-                    # agent_obs is [n_games*n_players, *obs_shape]
-                    # get batch_player_obs and reshape to [n_games, n_players, *obs_shape]
-                    batch_player_obs = self.agent_obs.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *self.obs_shape)
+                    def duplicate_to_public_order(x):
+                        """ returns a copy of data in public id order
+                            x: [n_games*n_players, *data_shape]
+                            returns [n_games*n_players, n_players, *data_shape]
+                        """
+                        data_shape = x.shape[1:]
+                        x = x.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *data_shape)
+                        # todo: find a faster way of doing this...
+                        for i in range(len(x)):
+                            x[i, :] = x[i, orderings[i]]
+                        x = x.repeat(self.vec_env.max_players, axis=0)
+                        return x
 
-                    # put observations into public_id order
-                    # todo: find a tensor operation to do this
-                    for i in range(len(batch_player_obs)):
-                        batch_player_obs[i, :] = batch_player_obs[i, orderings[i]]
-
-                    # make batch_player_obs [A, n_players, *obs_shape] by duplicating for each player
-                    batch_player_obs = batch_player_obs.repeat(self.vec_env.max_players, axis=0)
-
-                    # stub: zero out other players observations
-                    n_players = self.vec_env.max_players
-                    for i in range(len(batch_player_obs)):
-                        for j in range(n_players):
-                            if (i % self.vec_env.max_players) != orderings[i // self.vec_env.max_players][j]:
-                                if j == 0:
-                                    c = (200,0,0,0,0)
-                                elif j == 1:
-                                    c = (0,200,0,0,0)
-                                elif j == 2:
-                                    c = (0,0,200,0,0)
-                                else:
-                                    c = (128,128,0,0,0)
-                                c = np.asarray(c).reshape([1,1,5])
-                                batch_player_obs[i, j] = c
-
-                    self.batch_player_obs[t] = batch_player_obs
-
-                # forward state through model, then detach the result and convert to numpy.
-                with profiler.record_function("gr_model_step"):
-                    model_out, new_agent_rnn_state = self.forward(self.agent_obs, self.agent_rnn_state)
-                self.agent_rnn_state[:] = new_agent_rnn_state
-
-                log_policy = model_out["log_policy"].detach().cpu().numpy()
-                ext_value = model_out["ext_value"].detach().cpu().numpy()
+                    self.batch_player_obs[t] = duplicate_to_public_order(prev_obs)
+                    self.batch_player_policy[t] = duplicate_to_public_order(log_policy)
+                    self.batch_player_terminals[t] = duplicate_to_public_order(prev_terminals)
 
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
@@ -795,18 +789,27 @@ class PMAlgorithm(MarlAlgorithm):
         # in the future it might be good to predicct the initial rnn state, for the moment just start with zero
         # we should ignore the first half of the rnn_window as the states will be simply warming up at this point
         with torch.no_grad():
-            predicted_initial_policy_rnn_states = self.get_policy_rnn_states(self.get_initial_rnn_state(self.n_agents))
-            pred_policy_out = self.policy_model.forward_sequence(obs_predictions, rnn_states=predicted_initial_policy_rnn_states, terminals=terminals)
-            pred_obs_log_policy = pred_policy_out['log_policy']
-            true_obs_log_policy = data['log_policy']
+            n_players = self.vec_env.max_players
+            predicted_initial_policy_rnn_states = self.get_policy_rnn_states(self.get_initial_rnn_state(B*n_players))
+            # obs predictions are [N, B, n_players, *obs_shape], so map down
+            pred_policy_out,_ = self.policy_model.forward_sequence(
+                obs_predictions.reshape(N, B*n_players, *self.obs_shape),
+                rnn_states=predicted_initial_policy_rnn_states,
+                terminals=data["player_terminals"].reshape(N, B*n_players))
+
+            true_obs_log_policy = data["player_policy"].reshape(-1, self.policy_shape)
+            pred_obs_log_policy = pred_policy_out['log_policy'].reshape(-1, self.policy_shape)
+
             true_obs_policy = torch.exp(true_obs_log_policy)
 
-        # check the KL between these two
-        kl = true_obs_policy * (true_obs_log_policy - pred_obs_log_policy)
-        kl = kl.sum(dim=-1)
-        kl = kl.mean()
+            # check the KL between these two
+            # kl = [B*n_players*N, *policy_shape
+            # also... not sure this is right...
+            kl = true_obs_policy * (true_obs_log_policy - pred_obs_log_policy)
+            kl = kl.sum(dim=-1)
+            kl = kl.mean()
 
-        self.log.watch_mean("pred_kl", kl)
+            self.log.watch_mean("pred_kl", kl)
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
         for k, v in model_out.items():
@@ -903,6 +906,8 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data = {}
         batch_data["prev_obs"] = self.batch_prev_obs
         batch_data["player_obs"] = self.batch_player_obs
+        batch_data["player_policy"] = self.batch_player_policy
+        batch_data["player_terminals"] = self.batch_player_terminals
         batch_data["terminals"] = self.batch_terminals
         batch_data["roles"] = self.batch_roles
         batch_data["log_policy"] = self.batch_log_policy

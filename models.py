@@ -329,7 +329,7 @@ class BaseModel(nn.Module):
         N, B, *obs_shape = obs.shape
 
         # merge first two dims into a batch, run it through encoder, then reshape it back into the correct form.
-        assert tuple(obs_shape) == self.obs_shape
+        assert tuple(obs_shape) == self.obs_shape, f"Expected obs_input to be in the form [N, B, {self.obs_shape}] but found {obs.shape}"
         assert tuple(rnn_states.shape) == (B, 2, self.memory_units), f"Expected {(B, 2, self.memory_units)} found {rnn_states.shape}."
         if terminals is not None:
             assert tuple(terminals.shape) == (N, B)
