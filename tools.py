@@ -157,7 +157,8 @@ def load_results(path):
 
     return data
 
-def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "score_blue"), hold=False):
+def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "score_blue"), hold=False, label=None,
+               color=None):
 
     marking_map = {
         "GvG": "--",
@@ -270,9 +271,9 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
         plt.plot(
             _X,
             _Y,
-            label=label_map.get(y_name, y_name),
+            label=label or label_map.get(y_name, y_name),
             linestyle=line_style,
-            c=col
+            c=color or col
         )
 
     if xlim is not None:
