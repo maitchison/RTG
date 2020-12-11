@@ -73,12 +73,28 @@ if __name__ == "__main__":
         # increase the test length to 4 epochs (as I suspect they will train slower but better)
         # I'm also interested in finding out how mini_batches works now that I removed loss
         # attenuation during microbatches
-        n_steps = random.choice([32]) # shortest one that works
+        # n_steps = random.choice([32]) # shortest one that works
+        # learning_rate = random.choice([2.5e-4])
+        # model = random.choice(["default"])
+        # parallel_envs = random.choice([2**x for x in [7, 8, 9, 10, 11, 12, 13, 14]])
+        # entropy_bonus = random.choice([0.01])
+        # mini_batches = random.choice([4, 8, 16])
+        # adam_epsilon = random.choice([1e-8])
+        # memory_units = random.choice([256])
+        # out_features = random.choice([256])
+        # max_grad_norm = random.choice([5.0])
+        # gamma = random.choice([0.99])
+        # amp = random.choice([False])
+        #
+        # search 5
+        # / n_minibatches is back
+        # trying really hard to get parallel envs higher
+        n_steps = random.choice([32])  # shortest one that works
         learning_rate = random.choice([2.5e-4])
         model = random.choice(["default"])
-        parallel_envs = random.choice([2**x for x in [7, 8, 9, 10, 11, 12, 13, 14, 15]])
+        parallel_envs = random.choice([2 ** x for x in [13, 14, 15, 16]])
         entropy_bonus = random.choice([0.01])
-        mini_batches = random.choice([4, 8, 16])
+        mini_batches = random.choice([8])
         adam_epsilon = random.choice([1e-8])
         memory_units = random.choice([256])
         out_features = random.choice([256])

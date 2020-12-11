@@ -723,6 +723,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Apply loss
         # -------------------------------------------------------------------------
 
+        loss = loss / self.micro_batches
         self.log.watch_mean("loss", loss)
 
         # calculate gradients, and log grad_norm
@@ -785,6 +786,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Apply loss
         # -------------------------------------------------------------------------
 
+        loss = loss / self.micro_batches
         self.log.watch_mean("dec_loss", loss)
 
         # calculate gradients, and log grad_norm
