@@ -794,11 +794,12 @@ class PMAlgorithm(MarlAlgorithm):
 
         # in the future it might be good to predicct the initial rnn state, for the moment just start with zero
         # we should ignore the first half of the rnn_window as the states will be simply warming up at this point
-        predicted_initial_policy_rnn_states = self.get_policy_rnn_states(self.get_initial_rnn_state(self.n_agents))
-        pred_policy_out = self.policy_model.forward(obs_predictions, rnn_states=predicted_initial_policy_rnn_states, terminals=terminals)
-        pred_obs_log_policy = pred_policy_out['log_policy']
-        true_obs_log_policy = data['log_policy']
-        true_obs_policy = torch.exp(true_obs_log_policy)
+        with torch.no_grad():
+            predicted_initial_policy_rnn_states = self.get_policy_rnn_states(self.get_initial_rnn_state(self.n_agents))
+            pred_policy_out = self.policy_model.forward_sequence(obs_predictions, rnn_states=predicted_initial_policy_rnn_states, terminals=terminals)
+            pred_obs_log_policy = pred_policy_out['log_policy']
+            true_obs_log_policy = data['log_policy']
+            true_obs_policy = torch.exp(true_obs_log_policy)
 
         # check the KL between these two
         kl = true_obs_policy * (true_obs_log_policy - pred_obs_log_policy)

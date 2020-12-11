@@ -370,9 +370,9 @@ class BaseModel(nn.Module):
         new_rnn_states[:, 1, :] = c
 
         if self.residual_connection:
-            return lstm_output + encoding
+            return lstm_output + encoding, new_rnn_states
         else:
-            return lstm_output
+            return lstm_output, new_rnn_states
 
     def prep_for_model(self, x, scale_int=True):
         """ Converts data to format for model (i.e. uploads to GPU, converts type).
@@ -461,7 +461,7 @@ class DeceptionModel(BaseModel):
     def forward_sequence(self, obs, rnn_states, terminals=None):
 
         N, B, *obs_shape = obs.shape
-        encoder_output, new_rnn_states, encodings = self._forward_sequence(
+        encoder_output, new_rnn_states = self._forward_sequence(
             obs,
             rnn_states,
             terminals
