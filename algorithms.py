@@ -199,8 +199,6 @@ class PMAlgorithm(MarlAlgorithm):
         self.prev_rnn_states = np.zeros([A, *self.rnn_state_shape], dtype=np.float32)
         # observation of the agent before taking action
         self.batch_prev_obs = np.zeros([N, A, *self.obs_shape], dtype=np.uint8)
-        # observation of the agent after taking action
-        self.next_obs = np.zeros([N, A, *self.obs_shape], dtype=np.uint8) # note, do I need these?
         # action taken by agent to generate the transition
         self.batch_actions = np.zeros([N, A], dtype=np.int64)
         # log_policy that generated the action
@@ -484,7 +482,6 @@ class PMAlgorithm(MarlAlgorithm):
 
                 with profiler.record_function("gr_copy"):
                     self.batch_prev_obs[t] = prev_obs
-                    self.next_obs[t] = self.agent_obs
                     self.batch_actions[t] = actions
                     self.batch_ext_rewards[t] = ext_rewards
                     self.batch_log_policy[t] = log_policy
