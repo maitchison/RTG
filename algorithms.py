@@ -113,6 +113,7 @@ class PMAlgorithm(MarlAlgorithm):
             vf_coef=0.5,
             ppo_epsilon=0.2,
             max_grad_norm=5.0,
+            deception_replay_buffer_multiplier=4,
         ):
 
         A = vec_env.total_agents
@@ -120,6 +121,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         self.enable_deception = enable_deception
         self.export_rollout = export_rollout
+        self.deception_replay_buffer_multiplier = deception_replay_buffer_multiplier
 
         if device == "data_parallel":
             device = "cuda"
@@ -231,6 +233,8 @@ class PMAlgorithm(MarlAlgorithm):
             self.batch_player_policy = np.zeros([N, A, vec_env.max_players, *self.policy_shape], dtype=np.float32)
             # all terminals at time t for given game recorded for all agents, in public_id order
             self.batch_player_terminals = np.zeros([N, A, vec_env.max_players], dtype=np.float32)
+
+            self.replay_buffer = []
 
         # advantage used during policy gradient (combination of intrinsic and extrinsic reward)
         self.batch_advantage = np.zeros([N, A], dtype=np.float32)
@@ -741,6 +745,8 @@ class PMAlgorithm(MarlAlgorithm):
         terminals = data["terminals"]
         N, B, *obs_shape = prev_obs.shape
 
+        # calculate
+
         model_out, _ = self.deception_model.forward_sequence(
             obs=prev_obs,
             rnn_states=deception_rnn_states,
@@ -780,37 +786,6 @@ class PMAlgorithm(MarlAlgorithm):
         self.log.watch_mean("loss_obs", loss_obs_prediction)
         self.log.watch_mean("pred_obs_mse", obs_mse, display_width=0)
 
-        # calculate the policy difference just for debugging
-        # note: right now we actually have one policy, conditioned on the team, but later I will have 3 seperate
-        # policies and remove team information from observation. This means all we can do for now is look at the
-        # kl between pi(obs) and pi(pred_obs)
-        # an interesting idea would be to minimize the policy error loss... hmmm... I wonder what that would generate?
-
-        # in the future it might be good to predicct the initial rnn state, for the moment just start with zero
-        # we should ignore the first half of the rnn_window as the states will be simply warming up at this point
-        with torch.no_grad():
-            n_players = self.vec_env.max_players
-            predicted_initial_policy_rnn_states = self.get_policy_rnn_states(self.get_initial_rnn_state(B*n_players))
-            # obs predictions are [N, B, n_players, *obs_shape], so map down
-            pred_policy_out,_ = self.policy_model.forward_sequence(
-                obs_predictions.reshape(N, B*n_players, *self.obs_shape),
-                rnn_states=predicted_initial_policy_rnn_states,
-                terminals=data["player_terminals"].reshape(N, B*n_players))
-
-            true_obs_log_policy = data["player_policy"].reshape(-1, self.policy_shape)
-            pred_obs_log_policy = pred_policy_out['log_policy'].reshape(-1, self.policy_shape)
-
-            true_obs_policy = torch.exp(true_obs_log_policy)
-
-            # check the KL between these two
-            # kl = [B*n_players*N, *policy_shape
-            # also... not sure this is right...
-            kl = true_obs_policy * (true_obs_log_policy - pred_obs_log_policy)
-            kl = kl.sum(dim=-1)
-            kl = kl.mean()
-
-            self.log.watch_mean("pred_kl", kl)
-
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
         for k, v in model_out.items():
             model_out[k] = merge_down(v)
@@ -827,6 +802,45 @@ class PMAlgorithm(MarlAlgorithm):
             self.scaler.scale(loss).backward()
         else:
             loss.backward()
+
+        # -------------------------------------------------------------------------
+        # KL prediction error
+        # -------------------------------------------------------------------------
+
+        # note: we do this here as the loss.backward will have freed up the memory required to perform this operation
+
+        # calculate the policy difference just for debugging
+        # note: right now we actually have one policy, conditioned on the team, but later I will have 3 seperate
+        # policies and remove team information from observation. This means all we can do for now is look at the
+        # kl between pi(obs) and pi(pred_obs)
+        # an interesting idea would be to minimize the policy error loss... hmmm... I wonder what that would generate?
+
+        # in the future it might be good to predicct the initial rnn state, for the moment just start with zero
+        # we should ignore the first half of the rnn_window as the states will be simply warming up at this point
+        if self.enable_deception:
+            with torch.no_grad():
+                n_players = self.vec_env.max_players
+                predicted_initial_policy_rnn_states = self.get_policy_rnn_states(self.get_initial_rnn_state(B*n_players))
+                # obs predictions are [N, B, n_players, *obs_shape], so map down
+                pred_policy_out,_ = self.policy_model.forward_sequence(
+                    obs_predictions.reshape(N, B*n_players, *self.obs_shape),
+                    rnn_states=predicted_initial_policy_rnn_states,
+                    terminals=data["player_terminals"].reshape(N, B*n_players))
+
+                true_obs_log_policy = data["player_policy"].reshape(-1, *self.policy_shape)
+                pred_obs_log_policy = pred_policy_out['log_policy'].reshape(-1, *self.policy_shape)
+
+                true_obs_policy = torch.exp(true_obs_log_policy)
+
+                # check the KL between these two
+                # kl = [B*n_players*N, *policy_shape
+                # also... not sure this is right...
+                kl = true_obs_policy * (true_obs_log_policy - pred_obs_log_policy)
+                kl = kl.sum(dim=-1)
+                kl = kl.mean()
+
+                self.log.watch_mean("pred_kl", kl)
+
 
     @profiler.record_function("grad_clip")
     def _log_and_clip_grad_norm(self, model, log_var_name="opt_grad"):
@@ -858,12 +872,15 @@ class PMAlgorithm(MarlAlgorithm):
             optimizer.step()
             optimizer.zero_grad()
 
-    def _train_model(self, batch_data, model, optimizer, rnn_states, forward_func, short_name="model"):
+    def _train_model(self, batch_data, model, optimizer, rnn_states, forward_func, epochs:float, short_name="model"):
         """
         :param batch_data: a dictionary containing data required for training
         :return:
         """
-        for i in range(self.batch_epochs):
+
+        last_epoch = math.ceil(epochs)
+
+        for i in range(last_epoch):
 
             assert self.mini_batch_size % self.n_steps == 0, "mini batch size must be multiple of n_steps."
             segments = list(range(self.n_agents))
@@ -879,7 +896,13 @@ class PMAlgorithm(MarlAlgorithm):
 
             micro_batch_counter = 0
 
-            for j in range(self.mini_batches):
+            # this allows a fraction of an 'epoch' to be processed.
+            if i == last_epoch-1:
+                mini_batches_to_process = math.ceil((epochs - int(epochs)) * self.mini_batches)
+            else:
+                mini_batches_to_process = self.mini_batches
+
+            for j in range(mini_batches_to_process):
                 with autocast(enabled=self.amp):
                     for k in range(self.micro_batches):
                         batch_start = micro_batch_counter * segments_per_micro_batch
@@ -903,21 +926,34 @@ class PMAlgorithm(MarlAlgorithm):
         """ trains agent on it's own experience, using the rnn training loop """
 
         # put the required data into a dictionary
-        batch_data = {}
-        batch_data["prev_obs"] = self.batch_prev_obs
-        batch_data["player_obs"] = self.batch_player_obs
-        batch_data["player_policy"] = self.batch_player_policy
-        batch_data["player_terminals"] = self.batch_player_terminals
-        batch_data["terminals"] = self.batch_terminals
-        batch_data["roles"] = self.batch_roles
-        batch_data["log_policy"] = self.batch_log_policy
+        this_batch_data = {}
+        this_batch_data["prev_obs"] = self.batch_prev_obs
+        this_batch_data["player_obs"] = self.batch_player_obs
+        this_batch_data["player_policy"] = self.batch_player_policy
+        this_batch_data["player_terminals"] = self.batch_player_terminals
+        this_batch_data["terminals"] = self.batch_terminals
+        this_batch_data["roles"] = self.batch_roles
+        this_batch_data["log_policy"] = self.batch_log_policy
+
+        # handle the replay buffer
+        self.replay_buffer.append(this_batch_data)
+        if len(self.replay_buffer) > self.deception_replay_buffer_multiplier:
+            self.replay_buffer = self.replay_buffer[-self.deception_replay_buffer_multiplier:]
+
+        # collate batch data together
+        replay_batch_data = {}
+        for k in self.replay_buffer[0].keys():
+            replay_batch_data[k] = np.concatinate(
+                [buffer[k] for buffer in self.replay_buffer]
+            )
 
         self._train_model(
-            batch_data,
+            replay_batch_data,
             self.deception_model,
             self.deception_optimizer,
             self.get_deception_rnn_states(self.prev_rnn_states),
             self.forward_deception_mini_batch,
+            self.batch_epochs / len(self.replay_buffer),
             "dec"
         )
 
@@ -943,6 +979,7 @@ class PMAlgorithm(MarlAlgorithm):
             self.policy_optimizer,
             self.get_policy_rnn_states(self.prev_rnn_states),
             self.forward_policy_mini_batch,
+            self.batch_epochs,
             "pol"
         )
 
