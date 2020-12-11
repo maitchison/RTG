@@ -15,6 +15,7 @@ import argparse
 import time
 import shutil
 import gc
+import os
 
 import strategies
 import rescue
@@ -148,6 +149,7 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     """
 
     # run them all in parallel at once to make sure we get exactly 'trials' number of environments
+    os.makedirs(sub_folder, exist_ok=True)
     vec_env = make_env(eval_scenario, name="eval", log_path=sub_folder, vary_players=False, parallel_envs=trials)
     env_obs = vec_env.reset()
     rnn_states = algorithm.get_initial_state(vec_env.num_envs)
@@ -176,6 +178,9 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     red_score = np.mean([r for r, g, b in results])
     green_score = np.mean([g for r, g, b in results])
     blue_score = np.mean([b for r, g, b in results])
+
+    # make sure results have be written to env log
+    rescue.flush_logs()
 
     return red_score, green_score, blue_score
 
@@ -603,34 +608,43 @@ def learn(agent: MarlAlgorithm, step_counter, max_steps, verbose=True):
 
     return step_counter
 
-def run_test(scenario_name, n_steps=int(2e6)):
+def run_test(scenario_name, epochs=2):
 
     destination_folder = os.path.join(config.log_folder, scenario_name)
     os.makedirs(destination_folder, exist_ok=True)
     log_file = os.path.join(destination_folder, "env_0.csv")
+    eval_log_file = os.path.join(destination_folder+"/eval", "env_0.csv")
 
     # our MARL environments are handled like vectorized environments
     make_env = lambda: RescueTheGeneralEnv(scenario_name=scenario_name, name="test", log_file=log_file)
     vec_env = MultiAgentVecEnv([make_env for _ in range(config.parallel_envs)])
 
-    model = make_algo(vec_env)
+    algorithm = make_algo(vec_env)
 
-    learn(model, 0, n_steps, verbose=config.verbose == 1)
+    step_counter = 0
+    for epoch in range(epochs):
+        scores = evaluate_model(algorithm, scenario_name, f"{destination_folder}/eval", trials=100)
+        if epoch != 0:
+            print()
+        print(f" -eval_{epoch}: {scores}", end='')
+        step_counter = learn(algorithm, step_counter, (epoch + 1) * 1e6, verbose=config.verbose == 1)
     print()
+    scores = evaluate_model(algorithm, scenario_name, f"{destination_folder}/eval", trials=100)
+    print(f" -final_eval: {scores}")
 
-    export_video(f"{destination_folder}/{scenario_name}.mp4", model, scenario_name)
+    export_video(f"{destination_folder}/{scenario_name}.mp4", algorithm, scenario_name)
 
     # flush the log buffer
     rescue.flush_logs()
 
     try:
-        export_graph(log_file, epoch=2, png_base_name="results")
+        export_graph(eval_log_file, epoch=epochs, png_base_name="results")
     except Exception as e:
         # not worried about this not working...
         print(e)
 
     # return scores
-    return load_results(log_file)
+    return load_results(eval_log_file)
 
 def regression_test(tests: Union[str, tuple, list] = ("red2", "green2", "blue2")):
 
@@ -654,7 +668,7 @@ def regression_test(tests: Union[str, tuple, list] = ("red2", "green2", "blue2")
         if scenario_name not in tests:
             continue
 
-        results = run_test(scenario_name, int(config.test_epochs*1e6))
+        results = run_test(scenario_name, config.test_epochs)
         score = get_score(results, team)
         score_alt = get_score_alt(results, team)
 
