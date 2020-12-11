@@ -152,7 +152,7 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     os.makedirs(sub_folder, exist_ok=True)
     vec_env = make_env(eval_scenario, name="eval", log_path=sub_folder, vary_players=False, parallel_envs=trials)
     env_obs = vec_env.reset()
-    rnn_states = algorithm.get_initial_state(vec_env.num_envs)
+    rnn_states = algorithm.get_initial_rnn_state(vec_env.num_envs)
     env_terminals = np.zeros([len(rnn_states)], dtype=np.bool)
     vec_env.run_once = True
 
@@ -218,7 +218,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     # this is required to make sure the last frame is visible
     vec_env.auto_reset = False
 
-    rnn_state = algorithm.get_initial_state(len(env.players))
+    rnn_state = algorithm.get_initial_rnn_state(len(env.players))
 
     # play the game...
     while env.outcome == "":
@@ -608,7 +608,7 @@ def learn(agent: MarlAlgorithm, step_counter, max_steps, verbose=True):
 
     return step_counter
 
-def run_test(scenario_name, epochs=2):
+def run_test(scenario_name, team, epochs=2):
 
     destination_folder = os.path.join(config.log_folder, scenario_name)
     os.makedirs(destination_folder, exist_ok=True)
@@ -626,16 +626,23 @@ def run_test(scenario_name, epochs=2):
         scores = evaluate_model(algorithm, scenario_name, f"{destination_folder}/eval", trials=100)
         if epoch != 0:
             print()
-        print(f" -eval_{epoch}: {scores}", end='')
+
+        # flush the log buffer
+        rescue.flush_logs()
+        results = load_results(eval_log_file)
+        epoch_score = get_score(results, team)
+
+        print(f" -eval_{epoch}: [{epoch_score:.1f}]", end='')
         step_counter = learn(algorithm, step_counter, (epoch + 1) * 1e6, verbose=config.verbose == 1)
+
     print()
     scores = evaluate_model(algorithm, scenario_name, f"{destination_folder}/eval", trials=100)
-    print(f" -final_eval: {scores}")
+    rescue.flush_logs()
+    results = load_results(eval_log_file)
+    final_score = get_score(results, team)
+    print(f" -final_eval: {final_score}")
 
     export_video(f"{destination_folder}/{scenario_name}.mp4", algorithm, scenario_name)
-
-    # flush the log buffer
-    rescue.flush_logs()
 
     try:
         export_graph(eval_log_file, epoch=epochs, png_base_name="results")
@@ -644,7 +651,7 @@ def run_test(scenario_name, epochs=2):
         print(e)
 
     # return scores
-    return load_results(eval_log_file)
+    return results
 
 def regression_test(tests: Union[str, tuple, list] = ("red2", "green2", "blue2")):
 
@@ -668,7 +675,7 @@ def regression_test(tests: Union[str, tuple, list] = ("red2", "green2", "blue2")
         if scenario_name not in tests:
             continue
 
-        results = run_test(scenario_name, config.test_epochs)
+        results = run_test(scenario_name, team, config.test_epochs)
         score = get_score(results, team)
         score_alt = get_score_alt(results, team)
 

@@ -68,7 +68,7 @@ class MarlAlgorithm():
     def load(filename, env):
         raise NotImplemented()
 
-    def get_initial_state(self, n_agents=None):
+    def get_initial_rnn_state(self, n_agents=None):
         n_agents = n_agents or self.n_agents
         return torch.zeros([n_agents, *self.rnn_state_shape], dtype=torch.float32, device=self.policy_model.device)
 
@@ -93,13 +93,15 @@ class PMAlgorithm(MarlAlgorithm):
 
             amp=False,  # automatic mixed precision
             device="cuda",
-            memory_units=512,
-            out_features=512,
+            policy_memory_units=256,
+            policy_out_features=128,
+            deception_memory_units=1024,
+            deception_out_features=1024,
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
 
             # ------ long list of parameters to algorithm ------------
-            n_steps=16,
+            n_steps=32,
             learning_rate=2.5e-4,
             adam_epsilon=1e-8,
             normalize_advantages=True,
@@ -127,13 +129,14 @@ class PMAlgorithm(MarlAlgorithm):
         else:
             data_parallel = False
 
-        model = PolicyModel(vec_env, device=device, memory_units=memory_units, model=model_name,
-                        data_parallel=data_parallel, out_features=out_features)
+        model = PolicyModel(vec_env, device=device, memory_units=policy_memory_units, model=model_name,
+                            data_parallel=data_parallel, out_features=policy_out_features)
 
         if self.enable_deception:
-            # note: we don't use the policy model hyperparameters here, but use tuned ones instead
-            self.deception_model = DeceptionModel(vec_env, device=device, memory_units=1024, out_features=1024,
-                                                  model=model_name, data_parallel=data_parallel)
+            self.deception_model = DeceptionModel(vec_env, device=device, memory_units=deception_memory_units,
+                                                  out_features=deception_memory_units,
+                                                  model=model_name, data_parallel=data_parallel
+                                                  )
         else:
             self.deception_model = None
 
@@ -141,9 +144,8 @@ class PMAlgorithm(MarlAlgorithm):
         super().__init__(n_steps, A, model)
 
         if self.enable_deception:
-            # normally the rnn_states are h,c, but with the deception model we use h, c, h_deception, c_deception
-            # this means both models must have the same number of memory units but that's fine.
-            self.rnn_state_shape[0] *= 2
+            # to handle the deception rnn states just concatinate the h,c states together
+            self.rnn_state_shape = [2, policy_memory_units+deception_memory_units]
 
         self.name = name
         self.amp = amp
@@ -151,6 +153,8 @@ class PMAlgorithm(MarlAlgorithm):
         self.verbose = verbose
         self.log = Logger()
         self.vec_env = vec_env
+        self.policy_memory_units = policy_memory_units
+        self.deception_memory_units = deception_memory_units if self.enable_deception else 0
 
         self.normalize_advantages = normalize_advantages
         self.gamma = gamma
@@ -572,6 +576,12 @@ class PMAlgorithm(MarlAlgorithm):
         #     if self.normalize_intrinsic_rewards:
         #         self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
 
+    def get_policy_rnn_states(self, rnn_states):
+        return rnn_states[:, :, :self.policy_memory_units]
+
+    def get_deception_rnn_states(self, rnn_states):
+        return rnn_states[:, :, self.policy_memory_units:]
+
     @profiler.record_function("model_forward")
     def forward(self, obs, rnn_states):
         """
@@ -610,17 +620,17 @@ class PMAlgorithm(MarlAlgorithm):
         # make a sequence of length 1 and forward it through model
         result, new_rnn_states = self.policy_model.forward_sequence(
             obs=obs[np.newaxis],
-            rnn_states=rnn_states[:, 0:2]
+            rnn_states=self.get_policy_rnn_states(rnn_states)
         )
 
         if self.enable_deception:
             deception_result, new_deception_rnn_states = self.deception_model.forward_sequence(
                 obs=obs[np.newaxis],
-                rnn_states=rnn_states[:, 2:4]
+                rnn_states=self.get_deception_rnn_states(rnn_states)
             )
             for k, v in deception_result.items():
                 result[k] = v
-            new_rnn_states = torch.cat([new_rnn_states, new_deception_rnn_states], dim=1)
+            new_rnn_states = torch.cat([new_rnn_states, new_deception_rnn_states], dim=-1)
 
         # remove the sequence of length 1
         unsqueze_result = {}
@@ -636,7 +646,7 @@ class PMAlgorithm(MarlAlgorithm):
         mini batch should have the structure [N, B, *] where N is the sequence length, and is the batch length
 
         :param data: dictionary containing data for
-        :param rnn_states: current rnn_states of dims [B, 2, memory_units]
+        :param rnn_states: current rnn_states of dims [B, 2, policy_memory_units]
         """
 
         loss = torch.tensor(0, dtype=torch.float32, device=self.policy_model.device)
@@ -733,7 +743,7 @@ class PMAlgorithm(MarlAlgorithm):
 
     def forward_deception_mini_batch(self, data, deception_rnn_states):
 
-        loss = torch.tensor(0, dtype=torch.float32, device=self.policy_model.device)
+        loss = torch.tensor(0, dtype=torch.float32, device=self.deception_model.device)
 
         prev_obs = data["prev_obs"]
         terminals = data["terminals"]
@@ -767,13 +777,37 @@ class PMAlgorithm(MarlAlgorithm):
         obs_predictions = model_out["obs_prediction"] # [N*B, n_players, *obs_shape]
         obs_truth = merge_down(data["player_obs"]) # [N*B, n_players, *obs_shape] (in public_id order)
         obs_truth = obs_truth.float()/255
-        # stub disable x,y prediction
-        loss_obs_prediction = ob_coef * F.mse_loss(
-            obs_predictions.reshape(-1, *obs_shape)[:, :, :, :3],
-            obs_truth.reshape(-1, *obs_shape)[:, :, :, :3]
+
+        obs_mse = F.mse_loss(
+            obs_predictions.reshape(-1, *obs_shape),
+            obs_truth.reshape(-1, *obs_shape)
         )
+        loss_obs_prediction = ob_coef * obs_mse
+
         loss += loss_obs_prediction
         self.log.watch_mean("loss_obs", loss_obs_prediction)
+        self.log.watch_mean("pred_obs_mse", obs_mse, display_width=0)
+
+        # calculate the policy difference just for debugging
+        # note: right now we actually have one policy, conditioned on the team, but later I will have 3 seperate
+        # policies and remove team information from observation. This means all we can do for now is look at the
+        # kl between pi(obs) and pi(pred_obs)
+        # an interesting idea would be to minimize the policy error loss... hmmm... I wonder what that would generate?
+
+        # in the future it might be good to predicct the initial rnn state, for the moment just start with zero
+        # we should ignore the first half of the rnn_window as the states will be simply warming up at this point
+        predicted_initial_policy_rnn_states = self.get_policy_rnn_states(self.get_initial_rnn_state(self.n_agents))
+        pred_policy_out = self.policy_model.forward(obs_predictions, rnn_states=predicted_initial_policy_rnn_states, terminals=terminals)
+        pred_obs_log_policy = pred_policy_out['log_policy']
+        true_obs_log_policy = data['log_policy']
+        true_obs_policy = torch.exp(true_obs_log_policy)
+
+        # check the KL between these two
+        kl = true_obs_policy * (true_obs_log_policy - pred_obs_log_policy)
+        kl = kl.sum(dim=-1)
+        kl = kl.mean()
+
+        self.log.watch_mean("pred_kl", kl)
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
         for k, v in model_out.items():
@@ -872,12 +906,13 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["player_obs"] = self.batch_player_obs
         batch_data["terminals"] = self.batch_terminals
         batch_data["roles"] = self.batch_roles
+        batch_data["log_policy"] = self.batch_log_policy
 
         self._train_model(
             batch_data,
             self.deception_model,
             self.deception_optimizer,
-            self.prev_rnn_states[:, 2:4],
+            self.get_deception_rnn_states(self.prev_rnn_states),
             self.forward_deception_mini_batch,
             "dec"
         )
@@ -902,7 +937,7 @@ class PMAlgorithm(MarlAlgorithm):
             batch_data,
             self.policy_model,
             self.policy_optimizer,
-            self.prev_rnn_states[:, 0:2],
+            self.get_policy_rnn_states(self.prev_rnn_states),
             self.forward_policy_mini_batch,
             "pol"
         )
