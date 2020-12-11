@@ -268,8 +268,12 @@ class BaseModel(nn.Module):
             out_features=256,
             model="default",
             data_parallel=False,
+            residual_connection=True
     ):
         assert env.observation_space.dtype == np.uint8, "Observation space should be 8bit integer"
+
+        if residual_connection:
+            assert memory_units == out_features
 
         super().__init__()
 
@@ -277,6 +281,7 @@ class BaseModel(nn.Module):
         self.actions = env.action_space.n
         self.device = device
         self.dtype = dtype
+        self.residual_connection = residual_connection
 
         if model.lower() == "default":
             self.encoder = DefaultEncoder(env.observation_space.shape, out_features=out_features)
@@ -311,7 +316,7 @@ class BaseModel(nn.Module):
     def forward_sequence(self, obs, rnn_states, terminals=None):
         raise NotImplemented()
 
-    def _forward_sequence(self, obs, rnn_states, terminals=None, include_encoding=False):
+    def _forward_sequence(self, obs, rnn_states, terminals=None):
         """
         Forward a sequence of observations through model, returns dictionary of outputs.
         :param obs: input observations, tensor of dims [N, B, observation_shape], which should be channels last. (BHWC)
@@ -357,17 +362,17 @@ class BaseModel(nn.Module):
                 c = c * (1.0 - terminals_t)
                 output, (h, c) = self.lstm(encoding[t:t+1], (h, c))
                 outputs.append(output)
-            lstm_output = torch.cat(outputs, dim=0) # do we loose gradients this way?
+            lstm_output = torch.cat(outputs, dim=0)
 
         # copy new rnn states into a new tensor
         new_rnn_states = torch.zeros_like(rnn_states)
         new_rnn_states[:, 0, :] = h
         new_rnn_states[:, 1, :] = c
 
-        if include_encoding:
-            return lstm_output, new_rnn_states, encoding
+        if self.residual_connection:
+            return lstm_output + encoding
         else:
-            return lstm_output, new_rnn_states
+            return lstm_output
 
     def prep_for_model(self, x, scale_int=True):
         """ Converts data to format for model (i.e. uploads to GPU, converts type).
@@ -424,15 +429,9 @@ class DeceptionModel(BaseModel):
             out_features=512,
             model="default",
             data_parallel=False,
-            residual_connections=True,
-            use_mlp_layer=False,
+            residual_connection=True
     ):
-        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel)
-
-        self.residual_connections = residual_connections
-        self.use_mlp_layer = use_mlp_layer
-
-        self.mlp = nn.Linear(self.memory_units, self.memory_units)
+        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, residual_connection)
 
         # prediction of each role, in public_id order
         self.role_prediction_head = nn.Linear(self.memory_units, (self.n_players * self.n_roles))
@@ -462,24 +461,11 @@ class DeceptionModel(BaseModel):
     def forward_sequence(self, obs, rnn_states, terminals=None):
 
         N, B, *obs_shape = obs.shape
-        lstm_output, new_rnn_states, encodings = self._forward_sequence(
+        encoder_output, new_rnn_states, encodings = self._forward_sequence(
             obs,
             rnn_states,
-            terminals,
-            include_encoding=True
+            terminals
         )
-
-        if self.residual_connections:
-            encoder_output = lstm_output + encodings
-        else:
-            encoder_output = lstm_output
-
-        # optional mlp layer
-        if self.use_mlp_layer:
-            if self.residual_connections:
-                encoder_output = encoder_output + self.mlp(encoder_output)
-            else:
-                encoder_output = self.mlp(encoder_output)
 
         # ------------------------------
         # role prediction
@@ -532,9 +518,10 @@ class PolicyModel(BaseModel):
             memory_units=128,
             out_features=128,
             model="default",
-            data_parallel=False
+            data_parallel=False,
+            residual_connection=True
     ):
-        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel)
+        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, residual_connection)
 
         # output heads
         self.policy_head = nn.Linear(self.memory_units, env.action_space.n)

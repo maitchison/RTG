@@ -93,10 +93,8 @@ class PMAlgorithm(MarlAlgorithm):
 
             amp=False,  # automatic mixed precision
             device="cuda",
-            policy_memory_units=256,
-            policy_out_features=128,
+            policy_memory_units=128,
             deception_memory_units=1024,
-            deception_out_features=1024,
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
 
@@ -130,7 +128,7 @@ class PMAlgorithm(MarlAlgorithm):
             data_parallel = False
 
         model = PolicyModel(vec_env, device=device, memory_units=policy_memory_units, model=model_name,
-                            data_parallel=data_parallel, out_features=policy_out_features)
+                            data_parallel=data_parallel, out_features=policy_memory_units)
 
         if self.enable_deception:
             self.deception_model = DeceptionModel(vec_env, device=device, memory_units=deception_memory_units,
