@@ -218,8 +218,8 @@ class PMAlgorithm(MarlAlgorithm):
         # ------------------------------------
         # the rollout transitions (batch)
 
-        # rnn_state of the agent before rollout begins
-        self.prev_rnn_states = np.zeros([A, *self.rnn_state_shape], dtype=np.float32)
+        # rnn_state of the agent at each timestep
+        self.batch_rnn_states = np.zeros([N, A, *self.rnn_state_shape], dtype=np.float32)
         # observation of the agent before taking action
         self.batch_prev_obs = np.zeros([N, A, *self.obs_shape], dtype=np.uint8)
         # action taken by agent to generate the transition
@@ -405,10 +405,9 @@ class PMAlgorithm(MarlAlgorithm):
         """
         with torch.no_grad():
 
-            # make a copy of rnn_states at beginning of rollout, which we will use to initialize the rnn state.
-            self.prev_rnn_states[:] = self.agent_rnn_state.cpu()[:]
-
             for t in range(self.n_steps):
+
+                self.batch_rnn_states[t,:] = self.agent_rnn_state.cpu()[:]
 
                 # performance:
                 # around 10ms to forward the model on GPU, and 30ms to step the environment
@@ -584,10 +583,11 @@ class PMAlgorithm(MarlAlgorithm):
         #         self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
 
     def extract_policy_rnn_states(self, rnn_states):
-        return rnn_states[:, :, :self.policy_memory_units]
+        # input can be either [A, 2, memory_units], or [N, 2, memory_units]
+        return rnn_states[..., :self.policy_memory_units]
 
     def extract_deception_rnn_states(self, rnn_states):
-        return rnn_states[:, :, self.policy_memory_units:]
+        return rnn_states[..., self.policy_memory_units:]
 
     @profiler.record_function("model_forward")
     def forward(self, obs, rnn_states):
@@ -663,7 +663,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         prev_obs = data["prev_obs"]
         terminals = data["terminals"]
-        rnn_states = data["rnn_states"][0] # we created an empty N dim, remove it here.
+        rnn_states = data["rnn_states"][0] # get states at start of window
 
         # these were provided in N, B format but we want them just as one large batch.
         actions = merge_down(data["actions"])
@@ -754,7 +754,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         prev_obs = data["prev_obs"]
         terminals = data["terminals"]
-        rnn_states = data["rnn_states"][0] # we created an empty N dim, remove it here.
+        rnn_states = data["rnn_states"][0] # get states at start of window
         N, B, *obs_shape = prev_obs.shape
 
         # calculate
@@ -977,8 +977,7 @@ class PMAlgorithm(MarlAlgorithm):
         this_batch_data["terminals"] = self.batch_terminals
         this_batch_data["roles"] = self.batch_roles
         this_batch_data["log_policy"] = self.batch_log_policy
-        # batch data is supposed to be in format [N, B, *] so we need to create an empty first dim
-        this_batch_data["rnn_states"] = self.extract_deception_rnn_states(self.prev_rnn_states)[np.newaxis]
+        this_batch_data["rnn_states"] = self.extract_deception_rnn_states(self.batch_rnn_states)
 
         # handle the replay buffer
         self.replay_buffer.append(this_batch_data)
@@ -1002,7 +1001,7 @@ class PMAlgorithm(MarlAlgorithm):
             mini_batches=self.dm_mini_batches * len(self.replay_buffer),
             short_name="dec",
             max_window_size=self.dm_max_window_size,
-            enable_window_offsets=True,
+            enable_window_offsets=True
         )
 
     @profiler.record_function("train_policy")
@@ -1020,7 +1019,7 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["log_policy"] = self.batch_log_policy
         batch_data["advantages"] = self.batch_advantage
         batch_data["terminals"] = self.batch_terminals
-        batch_data["rnn_states"] = self.extract_policy_rnn_states(self.prev_rnn_states)[np.newaxis]
+        batch_data["rnn_states"] = self.extract_policy_rnn_states(self.batch_rnn_states)
 
         self._train_model(
             batch_data,
