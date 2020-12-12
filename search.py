@@ -126,19 +126,19 @@ if __name__ == "__main__":
         dm_loss_fn = random.choice(["mse", "l1", "l2"])
         dm_loss_scale = random.choice([1, 10, 100])
 
-        main_params = "--train_scenario='r2g2_hrp' --enable_deception=True"
+        main_params = "--train_scenario='r2g2_hrp' --enable_deception=True "
 
         algo_params = "{" +\
-                      f"'dm_window_size':{dm_max_window_size}," + \
-                      f"'dm_replay_buffer_multipler':{dm_replay_buffer_multiplier}," + \
+                      f"'dm_max_window_size':{dm_max_window_size}," + \
+                      f"'dm_replay_buffer_multiplier':{dm_replay_buffer_multiplier}," + \
                       f"'dm_mini_batches':{dm_mini_batches}," + \
                       f"'dm_memory_units':{dm_memory_units}," + \
                       f"'dm_out_features':{dm_out_features}," + \
-                      f"'dm_lstm_mode':{dm_lstm_mode}," + \
+                      f"'dm_lstm_mode':'{dm_lstm_mode}'," + \
                       f"'dm_xy_factor':{dm_xy_factor}," + \
-                      f"'dm_loss_fn':{dm_loss_fn}," + \
+                      f"'dm_loss_fn':'{dm_loss_fn}'," + \
                       f"'dm_loss_scale':{dm_loss_scale}," + \
-                      f"'dm_learning_rate':{dm_xy_factor}" + \
+                      f"'dm_learning_rate':{dm_xy_factor}," + \
                       "}"
 
         params = f"{main_params} --algo_params=\"{algo_params}\""
