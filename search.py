@@ -138,7 +138,7 @@ if __name__ == "__main__":
                       f"'dm_xy_factor':{dm_xy_factor}," + \
                       f"'dm_loss_fn':'{dm_loss_fn}'," + \
                       f"'dm_loss_scale':{dm_loss_scale}," + \
-                      f"'dm_learning_rate':{dm_xy_factor}," + \
+                      f"'dm_learning_rate':{dm_learning_rate}," + \
                       "}"
 
         params = f"{main_params} --algo_params=\"{algo_params}\""

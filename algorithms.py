@@ -417,7 +417,7 @@ class PMAlgorithm(MarlAlgorithm):
 
             for t in range(self.n_steps):
 
-                self.batch_rnn_states[t,:] = self.agent_rnn_state.cpu()[:]
+                self.batch_rnn_states[t, :] = self.agent_rnn_state.cpu()[:]
 
                 # performance:
                 # around 10ms to forward the model on GPU, and 30ms to step the environment
@@ -814,7 +814,7 @@ class PMAlgorithm(MarlAlgorithm):
             self.log.watch_mean("pred_obs_rgb", obs_mse_rgb, display_width=0)
             self.log.watch_mean("pred_obs_xy", obs_mse_xy, display_width=0)
 
-        # calculate the actuall loss and optimize
+        # calculate the actual loss and optimize
 
         obs_loss_rgb = self.dm_loss_fn(
             obs_predictions.reshape(-1, *obs_shape)[:, :, :, :3],
@@ -925,14 +925,20 @@ class PMAlgorithm(MarlAlgorithm):
         B = batch_data["prev_obs"].shape[1]
 
         assert B % mini_batches == 0
-        mini_batch_size = B // mini_batches
+        mini_batch_segments = B // mini_batches
+
+        window_size = min(max_window_size or float('inf'), self.n_steps)
+        windows_per_segment = self.n_steps // window_size
+
+        assert self.micro_batch_size % window_size == 0
+        max_micro_batch_segments = (self.micro_batch_size // window_size)
 
         # calculate number of micro_batches
-        if mini_batch_size <= self.micro_batch_size:
+        if mini_batch_segments <= max_micro_batch_segments:
             micro_batches = 1
         else:
-            assert mini_batch_size % self.micro_batch_size == 0
-            micro_batches = mini_batch_size // self.micro_batch_size
+            assert mini_batch_segments % max_micro_batch_segments == 0
+            micro_batches = mini_batch_segments // max_micro_batch_segments
 
         for i in range(last_epoch):
 
@@ -969,7 +975,7 @@ class PMAlgorithm(MarlAlgorithm):
                             value = value[:, sample]
 
                             # select random sub-windows, useful if n_steps if high, but we want small segments
-                            if max_window_size:
+                            if max_window_size is not None:
                                 if enable_window_offsets:
                                     gap = len(value)-max_window_size
                                     if gap > 0:
@@ -978,6 +984,10 @@ class PMAlgorithm(MarlAlgorithm):
                                         value = value[:max_window_size]
                                 else:
                                     value = value[:max_window_size]
+
+                            if key == "rnn_states":
+                                # only need first rnn_state for minibatch, saves a bit of GPU memory
+                                value = value[0:1]
 
                             mini_batch_data[key] = torch.from_numpy(value).to(device=model.device)
 
@@ -1013,12 +1023,16 @@ class PMAlgorithm(MarlAlgorithm):
                 axis=1
             )
 
+        # when we use shorter windows it makes sense to run additional epochs as we are only using a portion of the data
+        # each time
+        windows_per_segment = self.n_steps // self.dm_max_window_size
+
         self._train_model(
             replay_batch_data,
             self.deception_model,
             self.deception_optimizer,
             self.forward_deception_mini_batch,
-            epochs=self.batch_epochs / len(self.replay_buffer),
+            epochs=self.batch_epochs / len(self.replay_buffer) * windows_per_segment,
             mini_batches=self.dm_mini_batches * len(self.replay_buffer),
             short_name="dec",
             max_window_size=self.dm_max_window_size,
