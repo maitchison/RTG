@@ -94,7 +94,6 @@ class PMAlgorithm(MarlAlgorithm):
             amp=False,  # automatic mixed precision
             device="cuda",
             policy_memory_units=128,
-            deception_memory_units=1024,
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
 
@@ -113,7 +112,18 @@ class PMAlgorithm(MarlAlgorithm):
             vf_coef=0.5,
             ppo_epsilon=0.2,
             max_grad_norm=5.0,
-            deception_replay_buffer_multiplier=4,
+
+            # ------ deception module settings ----------------
+
+            dm_replay_buffer_multiplier=4,
+            dm_max_window_size=16,
+            dm_segments_per_batch=128,
+            dm_memory_units=1024,
+            dm_out_features=1024,
+            dm_xy_factor=0.1,
+            dm_learning_rate=1e-3,
+            dm_lstm_mode="residual"
+
         ):
 
         A = vec_env.total_agents
@@ -121,7 +131,16 @@ class PMAlgorithm(MarlAlgorithm):
 
         self.enable_deception = enable_deception
         self.export_rollout = export_rollout
-        self.deception_replay_buffer_multiplier = deception_replay_buffer_multiplier
+
+        # deception module settings
+        self.dm_replay_buffer_multiplier = dm_replay_buffer_multiplier
+        self.dm_max_window_size = dm_max_window_size
+        self.dm_segments_per_batch = dm_segments_per_batch
+        self.dm_memory_units = dm_memory_units
+        self.dm_out_features = dm_out_features
+        self.dm_lstm_mode = dm_lstm_mode
+        self.dm_xy_factor = dm_xy_factor
+        self.dm_learning_rate = dm_learning_rate
 
         if device == "data_parallel":
             device = "cuda"
@@ -133,8 +152,8 @@ class PMAlgorithm(MarlAlgorithm):
                             data_parallel=data_parallel, out_features=policy_memory_units)
 
         if self.enable_deception:
-            self.deception_model = DeceptionModel(vec_env, device=device, memory_units=deception_memory_units,
-                                                  out_features=deception_memory_units,
+            self.deception_model = DeceptionModel(vec_env, device=device, memory_units=dm_memory_units,
+                                                  out_features=dm_out_features,
                                                   model=model_name, data_parallel=data_parallel
                                                   )
         else:
@@ -145,7 +164,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         if self.enable_deception:
             # to handle the deception rnn states just concatenate the h,c states together
-            self.rnn_state_shape = [2, policy_memory_units+deception_memory_units]
+            self.rnn_state_shape = [2, policy_memory_units+dm_memory_units]
 
         self.name = name
         self.amp = amp
@@ -154,7 +173,6 @@ class PMAlgorithm(MarlAlgorithm):
         self.log = Logger()
         self.vec_env = vec_env
         self.policy_memory_units = policy_memory_units
-        self.deception_memory_units = deception_memory_units if self.enable_deception else 0
 
         self.normalize_advantages = normalize_advantages
         self.gamma = gamma
@@ -178,7 +196,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.policy_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=learning_rate, eps=adam_epsilon)
         if self.deception_model is not None:
             # optimal settings for deception optimizer are different than the policy optimizer
-            self.deception_optimizer = torch.optim.Adam(self.deception_model.parameters(), lr=1e-3,
+            self.deception_optimizer = torch.optim.Adam(self.deception_model.parameters(), lr=self.dm_learning_rate,
                                                         eps=1e-8)
 
         self.t = 0
@@ -882,7 +900,7 @@ class PMAlgorithm(MarlAlgorithm):
             optimizer.zero_grad()
 
     def _train_model(self, batch_data, model, optimizer, forward_func,
-                     epochs:float, mini_batches, short_name="model"):
+                     epochs:float, mini_batches, short_name="model",max_window_size=None, enable_window_offsets=False):
         """
         :param batch_data: a dictionary containing data required for training
         :return:
@@ -922,7 +940,23 @@ class PMAlgorithm(MarlAlgorithm):
                         # put together a mini batch from all agents at this time step...
                         mini_batch_data = {}
                         for key, value in batch_data.items():
-                            mini_batch_data[key] = torch.from_numpy(value[:, sample]).to(device=model.device)
+
+                            # sampling
+                            value = value[:, sample]
+
+                            # select random sub-windows, useful if n_steps if high, but we want small segments
+                            if max_window_size:
+                                if enable_window_offsets:
+                                    gap = len(value)-max_window_size
+                                    if gap > 0:
+                                        offsets = np.random.randint(0, gap, size=[len(value)])
+                                        slices = [range(offset, offset+max_window_size) for offset in offsets]
+                                        slices = np.asarray(slices).swapaxes(0, 1)
+                                        value = value[slices]
+                                else:
+                                    value = value[:max_window_size]
+
+                            mini_batch_data[key] = torch.from_numpy(value).to(device=model.device)
 
                         forward_func(mini_batch_data)
                         micro_batch_counter += 1
@@ -946,8 +980,8 @@ class PMAlgorithm(MarlAlgorithm):
 
         # handle the replay buffer
         self.replay_buffer.append(this_batch_data)
-        if len(self.replay_buffer) > self.deception_replay_buffer_multiplier:
-            self.replay_buffer = self.replay_buffer[-self.deception_replay_buffer_multiplier:]
+        if len(self.replay_buffer) > self.dm_replay_buffer_multiplier:
+            self.replay_buffer = self.replay_buffer[-self.dm_replay_buffer_multiplier:]
 
         # collate batch data together
         replay_batch_data = {}
@@ -964,7 +998,9 @@ class PMAlgorithm(MarlAlgorithm):
             self.forward_deception_mini_batch,
             epochs=self.batch_epochs / len(self.replay_buffer),
             mini_batches=self.mini_batches * len(self.replay_buffer),
-            short_name="dec"
+            short_name="dec",
+            max_window_size=self.dm_max_window_size,
+            enable_window_offsets=True
         )
 
     @profiler.record_function("train_policy")

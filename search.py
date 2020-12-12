@@ -89,31 +89,56 @@ if __name__ == "__main__":
         # search 5
         # / n_minibatches is back
         # trying really hard to get parallel envs higher
-        n_steps = random.choice([32])  # shortest one that works
-        learning_rate = random.choice([2.5e-4])
-        model = random.choice(["default"])
-        parallel_envs = random.choice([2 ** x for x in [13, 14, 15, 16]])
-        entropy_bonus = random.choice([0.01])
-        mini_batches = random.choice([8])
-        adam_epsilon = random.choice([1e-8])
-        memory_units = random.choice([256])
-        out_features = random.choice([256])
-        max_grad_norm = random.choice([5.0])
-        gamma = random.choice([0.99])
-        amp = random.choice([False])
+        # n_steps = random.choice([32])  # shortest one that works
+        # learning_rate = random.choice([2.5e-4])
+        # model = random.choice(["default"])
+        # parallel_envs = random.choice([2 ** x for x in [13, 14, 15, 16]])
+        # entropy_bonus = random.choice([0.01])
+        # mini_batches = random.choice([8])
+        # adam_epsilon = random.choice([1e-8])
+        # memory_units = random.choice([256])
+        # out_features = random.choice([256])
+        # max_grad_norm = random.choice([5.0])
+        # gamma = random.choice([0.99])
+        # amp = random.choice([False])
 
-        main_params = f"--amp={amp} --model={model} --n_steps={n_steps} --parallel_envs={parallel_envs} --test_epochs=4"
+        # main_params = f"--amp={amp} --model={model} --n_steps={n_steps} --parallel_envs={parallel_envs} --test_epochs=4"
+        #
+        # algo_params = "{"+\
+        #               f"'learning_rate':{learning_rate}, " + \
+        #               f"'adam_epsilon':{adam_epsilon}, " + \
+        #               f"'gamma':{gamma}, " + \
+        #               f"'entropy_bonus':{entropy_bonus}, " + \
+        #               f"'mini_batches':{mini_batches}, " + \
+        #               f"'memory_units':{memory_units}, " + \
+        #               f"'out_features':{out_features}, " + \
+        #               f"'max_grad_norm':{max_grad_norm}" + \
+        #         "}"
 
-        algo_params = "{"+\
-                      f"'learning_rate':{learning_rate}, " + \
-                      f"'adam_epsilon':{adam_epsilon}, " + \
-                      f"'gamma':{gamma}, " + \
-                      f"'entropy_bonus':{entropy_bonus}, " + \
-                      f"'mini_batches':{mini_batches}, " + \
-                      f"'memory_units':{memory_units}, " + \
-                      f"'out_features':{out_features}, " + \
-                      f"'max_grad_norm':{max_grad_norm}" + \
-                "}"
+        # prediction_search_1
+
+        dm_max_window_size = random.choice([8, 16, 32])
+        dm_replay_buffer_multiplier = random.choice([1, 4, 8])
+        dm_segments_per_batch = random.choice([32, 64, 128, 256, 512])
+        dm_out_features = random.choice([512, 1024, 2048])
+        dm_memory_units = random.choice([512, 1024, 2048])
+        dm_lstm_mode = random.choice(['off', 'on', 'residual', 'cat'])
+        dm_xy_factor = random.choice([1, 0.1, 0.01, 0])
+        dm_learning_rate = random.choice([3e-3, 1e-3, 2.5e-4])
+
+
+        main_params = f"..."
+
+        algo_params = "{" +\
+                      f"'dm_window_size':{dm_max_window_size}," + \
+                      f"'dm_replay_buffer_multipler':{dm_replay_buffer_multiplier}," + \
+                      f"'dm_segments_per_batch':{dm_segments_per_batch}," + \
+                      f"'dm_memory_units':{dm_memory_units}," + \
+                      f"'dm_out_features':{dm_out_features}," + \
+                      f"'dm_lstm_mode':{dm_lstm_mode}," + \
+                      f"'dm_xy_factor':{dm_xy_factor}," + \
+                      f"'dm_learning_rate':{dm_xy_factor}" + \
+                      "}"
 
         params = f"{main_params} --algo_params=\"{algo_params}\""
 
