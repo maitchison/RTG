@@ -469,6 +469,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
 
     return algorithm
 
+
 def run_benchmarks(train=True, model=True, env=True):
 
     def bench_scenario(scenario_name):

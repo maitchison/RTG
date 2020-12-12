@@ -489,7 +489,8 @@ class DeceptionModel(BaseModel):
         # role prediction
         # ------------------------------
         # these will come out as [N, B, n_players * n_roles] but we need [N, B, n_players, n_roles] for normalization
-        unnormalized_role_predictions = self.role_prediction_head(encoder_output).reshape(
+        detached_encoder_output = encoder_output.detach() # use use probing to see if the encoder has learned roles
+        unnormalized_role_predictions = self.role_prediction_head(detached_encoder_output).reshape(
             [N, B, self.n_players, self.n_roles])
         role_prediction = torch.log_softmax(unnormalized_role_predictions, dim=-1)
 

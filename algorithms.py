@@ -122,7 +122,9 @@ class PMAlgorithm(MarlAlgorithm):
             dm_out_features=1024,
             dm_xy_factor=0.1,
             dm_learning_rate=1e-3,
-            dm_lstm_mode="cat"
+            dm_lstm_mode="cat",
+            dm_loss_fn="mse",
+            dm_loss_scale=4.0
 
         ):
 
@@ -141,6 +143,14 @@ class PMAlgorithm(MarlAlgorithm):
         self.dm_lstm_mode = dm_lstm_mode
         self.dm_xy_factor = dm_xy_factor
         self.dm_learning_rate = dm_learning_rate
+        self.dm_loss_scale = dm_loss_scale
+
+        if dm_loss_fn == "mse":
+            self.dm_loss_fn = F.mse_loss
+        elif dm_loss_fn == "l1":
+            self.dm_loss_fn = F.l1_loss
+        elif dm_loss_fn == "l2":
+            self.dm_loss_fn = lambda a, b: F.mse_loss(a, b)**0.5
 
         if device == "data_parallel":
             device = "cuda"
@@ -758,7 +768,6 @@ class PMAlgorithm(MarlAlgorithm):
         N, B, *obs_shape = prev_obs.shape
 
         # calculate
-
         model_out, _ = self.deception_model.forward_sequence(
             obs=prev_obs,
             rnn_states=rnn_states,
@@ -771,7 +780,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         role_targets = merge_down(data["roles"]) # [N*B, n_players]
         # predictions come out as [N*B, n_players, n_roles], but we need them as [N*B, n_roles, n_players]
-        rp_coef = 1.0 * 0.0 # stub no role prediction
+        rp_coef = 1.0
         role_predictions = merge_down(model_out["role_prediction"]).transpose(1, 2)
         loss_role = rp_coef * torch.nn.functional.nll_loss(role_predictions, role_targets)
 
@@ -783,30 +792,42 @@ class PMAlgorithm(MarlAlgorithm):
         # -------------------------------------------------------------------------
 
         # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
-        ob_coef = 4.0
         obs_predictions = model_out["obs_prediction"] # [N*B, n_players, *obs_shape]
         obs_truth = merge_down(data["player_obs"]) # [N*B, n_players, *obs_shape] (in public_id order)
         obs_truth = obs_truth.float()/255
 
-        obs_mse_rgb = F.mse_loss(
+
+        # calculate mse loss for logging purposes
+        with torch.no_grad():
+            obs_mse_rgb = F.mse_loss(
+                obs_predictions.reshape(-1, *obs_shape)[:, :, :, :3],
+                obs_truth.reshape(-1, *obs_shape)[:, :, :, :3]
+            )
+            obs_mse_xy = F.mse_loss(
+                obs_predictions.reshape(-1, *obs_shape)[:, :, :, 3:],
+                obs_truth.reshape(-1, *obs_shape)[:, :, :, 3:]
+            )
+
+            obs_mse = obs_mse_rgb + obs_mse_xy
+
+            self.log.watch_mean("pred_obs_mse", obs_mse, display_width=0)
+            self.log.watch_mean("pred_obs_rgb", obs_mse_rgb, display_width=0)
+            self.log.watch_mean("pred_obs_xy", obs_mse_xy, display_width=0)
+
+        # calculate the actuall loss and optimize
+
+        obs_loss_rgb = self.dm_loss_fn(
             obs_predictions.reshape(-1, *obs_shape)[:, :, :, :3],
             obs_truth.reshape(-1, *obs_shape)[:, :, :, :3]
         )
-        obs_mse_xy = F.mse_loss(
+        obs_loss_xy = self.dm_loss_fn(
             obs_predictions.reshape(-1, *obs_shape)[:, :, :, 3:],
             obs_truth.reshape(-1, *obs_shape)[:, :, :, 3:]
         )
+        obs_loss = (obs_loss_rgb + obs_loss_xy * self.dm_xy_factor) * self.dm_loss_scale
 
-        obs_mse = obs_mse_rgb + obs_mse_xy * self.dm_xy_factor # xy is less important, and I don't want being wrong on this to
-                    # dominate the learning
-
-        loss_obs_prediction = ob_coef * obs_mse
-
-        loss += loss_obs_prediction
-        self.log.watch_mean("loss_obs", loss_obs_prediction)
-        self.log.watch_mean("pred_obs_mse", obs_mse, display_width=0)
-        self.log.watch_mean("pred_obs_rgb", obs_mse_rgb, display_width=0)
-        self.log.watch_mean("pred_obs_xy", obs_mse_xy, display_width=0)
+        loss += obs_loss
+        self.log.watch_mean("loss_obs", obs_loss)
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
         for k, v in model_out.items():

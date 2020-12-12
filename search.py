@@ -123,6 +123,8 @@ if __name__ == "__main__":
         dm_lstm_mode = random.choice(['off', 'on', 'residual', 'cat'])
         dm_xy_factor = random.choice([1, 0.1, 0.01, 0])
         dm_learning_rate = random.choice([3e-3, 1e-3, 2.5e-4])
+        dm_loss_fn = random.choice(["mse", "l1", "l2"])
+        dm_loss_scale = random.choice([1, 10, 100])
 
         main_params = "--train_scenario='r2g2_hrp' --enable_deception=True"
 
@@ -134,6 +136,8 @@ if __name__ == "__main__":
                       f"'dm_out_features':{dm_out_features}," + \
                       f"'dm_lstm_mode':{dm_lstm_mode}," + \
                       f"'dm_xy_factor':{dm_xy_factor}," + \
+                      f"'dm_loss_fn':{dm_loss_fn}," + \
+                      f"'dm_loss_scale':{dm_loss_scale}," + \
                       f"'dm_learning_rate':{dm_xy_factor}" + \
                       "}"
 
