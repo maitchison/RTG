@@ -20,10 +20,8 @@ def run_experiment(job):
         print(f"skipping {run_name} as it exists.")
         return
 
-    # stub, should be train, not test with --train_scenarios='red2'
-
     script = \
-        f"python ./run/{RUN_NAME}/train.py test --run=\"{run_name}\" --device={device} " + params
+        f"python ./run/{RUN_NAME}/train.py train --run=\"{run_name}\" --device={device} --epochs=20 " + params
 
     print()
     print(script)
@@ -119,20 +117,19 @@ if __name__ == "__main__":
 
         dm_max_window_size = random.choice([8, 16, 32])
         dm_replay_buffer_multiplier = random.choice([1, 4, 8])
-        dm_segments_per_batch = random.choice([32, 64, 128, 256, 512])
+        dm_mini_batches = random.choice([4, 8, 16, 32, 64])
         dm_out_features = random.choice([512, 1024, 2048])
         dm_memory_units = random.choice([512, 1024, 2048])
         dm_lstm_mode = random.choice(['off', 'on', 'residual', 'cat'])
         dm_xy_factor = random.choice([1, 0.1, 0.01, 0])
         dm_learning_rate = random.choice([3e-3, 1e-3, 2.5e-4])
 
-
-        main_params = f"..."
+        main_params = "--train_scenario='r2g2_hrp' --enable_deception=True"
 
         algo_params = "{" +\
                       f"'dm_window_size':{dm_max_window_size}," + \
                       f"'dm_replay_buffer_multipler':{dm_replay_buffer_multiplier}," + \
-                      f"'dm_segments_per_batch':{dm_segments_per_batch}," + \
+                      f"'dm_mini_batches':{dm_mini_batches}," + \
                       f"'dm_memory_units':{dm_memory_units}," + \
                       f"'dm_out_features':{dm_out_features}," + \
                       f"'dm_lstm_mode':{dm_lstm_mode}," + \

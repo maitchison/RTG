@@ -117,12 +117,12 @@ class PMAlgorithm(MarlAlgorithm):
 
             dm_replay_buffer_multiplier=4,
             dm_max_window_size=16,
-            dm_segments_per_batch=128,
+            dm_mini_batches=128,
             dm_memory_units=1024,
             dm_out_features=1024,
             dm_xy_factor=0.1,
             dm_learning_rate=1e-3,
-            dm_lstm_mode="residual"
+            dm_lstm_mode="cat"
 
         ):
 
@@ -135,7 +135,7 @@ class PMAlgorithm(MarlAlgorithm):
         # deception module settings
         self.dm_replay_buffer_multiplier = dm_replay_buffer_multiplier
         self.dm_max_window_size = dm_max_window_size
-        self.dm_segments_per_batch = dm_segments_per_batch
+        self.dm_mini_batches = dm_mini_batches
         self.dm_memory_units = dm_memory_units
         self.dm_out_features = dm_out_features
         self.dm_lstm_mode = dm_lstm_mode
@@ -154,7 +154,8 @@ class PMAlgorithm(MarlAlgorithm):
         if self.enable_deception:
             self.deception_model = DeceptionModel(vec_env, device=device, memory_units=dm_memory_units,
                                                   out_features=dm_out_features,
-                                                  model=model_name, data_parallel=data_parallel
+                                                  model=model_name, data_parallel=data_parallel,
+                                                  lstm_mode=self.dm_lstm_mode
                                                   )
         else:
             self.deception_model = None
@@ -262,22 +263,14 @@ class PMAlgorithm(MarlAlgorithm):
 
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
 
-        # get micro batch size
-        self.micro_batches = 0
-
         if utils.try_cast_to_int(micro_batch_size) is not None:
-            micro_batch_size = utils.try_cast_to_int(micro_batch_size)
+            self.micro_batch_size = utils.try_cast_to_int(micro_batch_size)
         elif micro_batch_size.lower() == "auto":
-            micro_batch_size = self._get_auto_micro_batch_size()
+            self.micro_batch_size = self._get_auto_micro_batch_size()
         elif micro_batch_size.lower() == "off":
-            micro_batch_size = self.mini_batch_size
+            self.micro_batch_size = float('inf')
         else:
             raise ValueError(f"Invalid micro batch size {micro_batch_size}")
-
-        self.micro_batches = max(1, self.mini_batch_size // micro_batch_size)
-
-        if self.micro_batches != 1:
-            print(f" -using {self.micro_batches} micro_batches of size {micro_batch_size}")
 
         self.scaler = GradScaler() if self.amp else None
 
@@ -654,13 +647,12 @@ class PMAlgorithm(MarlAlgorithm):
         return unsqueze_result, new_rnn_states
 
     @profiler.record_function("minibatch_forward")
-    def forward_policy_mini_batch(self, data):
+    def forward_policy_mini_batch(self, data, loss_scale=1):
         """
         Run mini batch through model generating loss, call opt_step_mini_batch to apply the update.
         mini batch should have the structure [N, B, *] where N is the sequence length, and is the batch length
 
         :param data: dictionary containing data for
-        :param rnn_states: current rnn_states of dims [B, 2, policy_memory_units]
         """
 
         loss = torch.tensor(0, dtype=torch.float32, device=self.policy_model.device)
@@ -745,7 +737,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Apply loss
         # -------------------------------------------------------------------------
 
-        loss = loss / self.micro_batches
+        loss = loss * loss_scale
         self.log.watch_mean("loss", loss)
 
         # calculate gradients, and log grad_norm
@@ -756,7 +748,7 @@ class PMAlgorithm(MarlAlgorithm):
         else:
             (-loss).backward()
 
-    def forward_deception_mini_batch(self, data):
+    def forward_deception_mini_batch(self, data, loss_scale=1):
 
         loss = torch.tensor(0, dtype=torch.float32, device=self.deception_model.device)
 
@@ -805,7 +797,7 @@ class PMAlgorithm(MarlAlgorithm):
             obs_truth.reshape(-1, *obs_shape)[:, :, :, 3:]
         )
 
-        obs_mse = obs_mse_rgb + obs_mse_xy * 0.01 # xy is less important, and I don't want being wrong on this to
+        obs_mse = obs_mse_rgb + obs_mse_xy * self.dm_xy_factor # xy is less important, and I don't want being wrong on this to
                     # dominate the learning
 
         loss_obs_prediction = ob_coef * obs_mse
@@ -860,7 +852,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Apply loss
         # -------------------------------------------------------------------------
 
-        loss = loss / self.micro_batches
+        loss = loss * loss_scale
         self.log.watch_mean("dec_loss", loss)
 
         # calculate gradients, and log grad_norm
@@ -900,7 +892,8 @@ class PMAlgorithm(MarlAlgorithm):
             optimizer.zero_grad()
 
     def _train_model(self, batch_data, model, optimizer, forward_func,
-                     epochs:float, mini_batches, short_name="model",max_window_size=None, enable_window_offsets=False):
+                     epochs:float, mini_batches, short_name="model",
+                     max_window_size=None, enable_window_offsets=False):
         """
         :param batch_data: a dictionary containing data required for training
         :return:
@@ -910,13 +903,23 @@ class PMAlgorithm(MarlAlgorithm):
 
         B = batch_data["prev_obs"].shape[1]
 
+        assert B % mini_batches == 0
+        mini_batch_size = B // mini_batches
+
+        # calculate number of micro_batches
+        if mini_batch_size <= self.micro_batch_size:
+            micro_batches = 1
+        else:
+            assert mini_batch_size % self.micro_batch_size == 0
+            micro_batches = mini_batch_size // self.micro_batch_size
+
         for i in range(last_epoch):
 
             segments = list(range(B))
             np.random.shuffle(segments)
 
-            assert B % (mini_batches * self.micro_batches) == 0
-            segments_per_micro_batch = B // (mini_batches * self.micro_batches)
+            assert B % (mini_batches * micro_batches) == 0
+            segments_per_micro_batch = B // (mini_batches * micro_batches)
 
             optimizer.zero_grad()
 
@@ -932,7 +935,7 @@ class PMAlgorithm(MarlAlgorithm):
 
             for j in range(mini_batches_to_process):
                 with autocast(enabled=self.amp):
-                    for k in range(self.micro_batches):
+                    for k in range(micro_batches):
                         batch_start = micro_batch_counter * segments_per_micro_batch
                         batch_end = (micro_batch_counter + 1) * segments_per_micro_batch
                         sample = segments[batch_start:batch_end]
@@ -950,9 +953,8 @@ class PMAlgorithm(MarlAlgorithm):
                                     gap = len(value)-max_window_size
                                     if gap > 0:
                                         offsets = np.random.randint(0, gap, size=[len(value)])
-                                        slices = [range(offset, offset+max_window_size) for offset in offsets]
-                                        slices = np.asarray(slices).swapaxes(0, 1)
-                                        value = value[slices]
+                                        value = np.roll(value, -offsets, axis=0)
+                                        value = value[:max_window_size]
                                 else:
                                     value = value[:max_window_size]
 
@@ -997,10 +999,10 @@ class PMAlgorithm(MarlAlgorithm):
             self.deception_optimizer,
             self.forward_deception_mini_batch,
             epochs=self.batch_epochs / len(self.replay_buffer),
-            mini_batches=self.mini_batches * len(self.replay_buffer),
+            mini_batches=self.dm_mini_batches * len(self.replay_buffer),
             short_name="dec",
             max_window_size=self.dm_max_window_size,
-            enable_window_offsets=True
+            enable_window_offsets=True,
         )
 
     @profiler.record_function("train_policy")

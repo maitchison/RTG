@@ -268,12 +268,22 @@ class BaseModel(nn.Module):
             out_features=256,
             model="default",
             data_parallel=False,
-            residual_connection=True
+            lstm_mode='cat'
     ):
         assert env.observation_space.dtype == np.uint8, "Observation space should be 8bit integer"
 
-        if residual_connection:
+        self.lstm_mode = lstm_mode
+        if self.lstm_mode == 'residual':
             assert memory_units == out_features
+            self.encoder_output_features = out_features
+        elif self.lstm_mode == 'off':
+            self.encoder_output_features = out_features
+        elif self.lstm_mode == 'on':
+            self.encoder_output_features = memory_units
+        elif self.lstm_mode == 'cat':
+            self.encoder_output_features = memory_units + out_features
+        else:
+            raise ValueError(f"invalid lstm mode {self.lstm_mode}.")
 
         super().__init__()
 
@@ -281,7 +291,7 @@ class BaseModel(nn.Module):
         self.actions = env.action_space.n
         self.device = device
         self.dtype = dtype
-        self.residual_connection = residual_connection
+        self.lstm_mode = lstm_mode
 
         if model.lower() == "default":
             self.encoder = DefaultEncoder(env.observation_space.shape, out_features=out_features)
@@ -369,10 +379,18 @@ class BaseModel(nn.Module):
         new_rnn_states[:, 0, :] = h
         new_rnn_states[:, 1, :] = c
 
-        if self.residual_connection:
-            return lstm_output + encoding, new_rnn_states
+        if self.lstm_mode == 'residual':
+            output = lstm_output + encoding
+        elif self.lstm_mode == 'off':
+            output = encoding
+        elif self.lstm_mode == 'on':
+            output = lstm_output
+        elif self.lstm_mode == 'cat':
+            output = torch.cat([lstm_output, encoding], dim=2)
         else:
-            return lstm_output, new_rnn_states
+            raise ValueError(f"invalid lstm mode {self.lstm_mode}.")
+
+        return output, new_rnn_states
 
     def prep_for_model(self, x, scale_int=True):
         """ Converts data to format for model (i.e. uploads to GPU, converts type).
@@ -429,12 +447,12 @@ class DeceptionModel(BaseModel):
             out_features=512,
             model="default",
             data_parallel=False,
-            residual_connection=True
+            lstm_mode='cat'
     ):
-        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, residual_connection)
+        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode)
 
         # prediction of each role, in public_id order
-        self.role_prediction_head = nn.Linear(self.memory_units, (self.n_players * self.n_roles))
+        self.role_prediction_head = nn.Linear(self.encoder_output_features, (self.n_players * self.n_roles))
         # prediction of each observation in public_id order
         h, w, c = self.obs_shape
 
@@ -443,12 +461,12 @@ class DeceptionModel(BaseModel):
                 print("warning: fast decoder is not implemented, using default.")
             self.observation_prediction_head = DefaultDecoder(
                 (c, h * self.n_players, w),
-                self.memory_units
+                self.encoder_output_features
             )
         elif model.lower() == "large":
             self.observation_prediction_head = LargeDecoder(
                 (c, h * self.n_players, w),
-                self.memory_units
+                self.encoder_output_features
             )
         else:
             raise ValueError(f"Invalid model name {model}")
@@ -479,7 +497,7 @@ class DeceptionModel(BaseModel):
         # obs prediction
         # ------------------------------
 
-        obs_prediction = self.observation_prediction_head(encoder_output.reshape(N * B, self.memory_units))
+        obs_prediction = self.observation_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
 
         # predictions will come out as (N*B, c, h*n_players, w)
         # but we need (N, B, n_players, h, w, c)
@@ -518,28 +536,27 @@ class PolicyModel(BaseModel):
             memory_units=128,
             out_features=128,
             model="default",
-            data_parallel=False,
-            residual_connection=True
+            data_parallel=False
     ):
-        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, residual_connection)
+        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode='cat')
 
         # output heads
-        self.policy_head = nn.Linear(self.memory_units, env.action_space.n)
+        self.policy_head = nn.Linear(self.encoder_output_features, env.action_space.n)
         torch.nn.init.xavier_uniform_(self.policy_head.weight, 0.01) # helps with exploration
 
-        self.local_int_value_head = nn.Linear(self.memory_units, 1)
-        self.local_ext_value_head = nn.Linear(self.memory_units, 1)
+        self.local_int_value_head = nn.Linear(self.encoder_output_features, 1)
+        self.local_ext_value_head = nn.Linear(self.encoder_output_features, 1)
 
         self.set_device_and_dtype(self.device, self.dtype)
 
     def forward_sequence(self, obs, rnn_states, terminals=None):
 
         N, B, *obs_shape = obs.shape
-        lstm_output, new_rnn_states = self._forward_sequence(obs, rnn_states, terminals)
+        encoder_output, new_rnn_states = self._forward_sequence(obs, rnn_states, terminals)
 
-        log_policy = torch.log_softmax(self.policy_head(lstm_output), dim=-1)
-        ext_value = self.local_ext_value_head(lstm_output).squeeze(dim=-1)
-        int_value = self.local_int_value_head(lstm_output).squeeze(dim=-1)
+        log_policy = torch.log_softmax(self.policy_head(encoder_output), dim=-1)
+        ext_value = self.local_ext_value_head(encoder_output).squeeze(dim=-1)
+        int_value = self.local_int_value_head(encoder_output).squeeze(dim=-1)
 
         result = {
             'log_policy': log_policy,
