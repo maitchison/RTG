@@ -107,7 +107,7 @@ class PMAlgorithm(MarlAlgorithm):
             gae_lambda=0.95,
             batch_epochs=4,
             entropy_bonus=0.01,
-            mini_batches=8,
+            mini_batch_size=2048,
             use_clipped_value_loss=False,  # shown to be not effective
             vf_coef=0.5,
             ppo_epsilon=0.2,
@@ -116,15 +116,16 @@ class PMAlgorithm(MarlAlgorithm):
             # ------ deception module settings ----------------
 
             dm_replay_buffer_multiplier=4,
-            dm_max_window_size=16,
-            dm_mini_batches=128,
+            dm_max_window_size=8,
+            dm_mini_batch_size=512,
             dm_memory_units=1024,
             dm_out_features=1024,
-            dm_xy_factor=0.1,
+            dm_xy_factor=1,
             dm_learning_rate=1e-3,
             dm_lstm_mode="cat",
             dm_loss_fn="mse",
-            dm_loss_scale=4.0
+            dm_kl_factor=0.5, # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
+            dm_loss_scale=1.0
 
         ):
 
@@ -137,13 +138,14 @@ class PMAlgorithm(MarlAlgorithm):
         # deception module settings
         self.dm_replay_buffer_multiplier = dm_replay_buffer_multiplier
         self.dm_max_window_size = dm_max_window_size
-        self.dm_mini_batches = dm_mini_batches
+        self.dm_mini_batch_size = dm_mini_batch_size
         self.dm_memory_units = dm_memory_units
         self.dm_out_features = dm_out_features
         self.dm_lstm_mode = dm_lstm_mode
         self.dm_xy_factor = dm_xy_factor
         self.dm_learning_rate = dm_learning_rate
         self.dm_loss_scale = dm_loss_scale
+        self.dm_kl_factor = dm_kl_factor
         self.deception_batch_counter = 0
 
         if dm_loss_fn == "mse":
@@ -192,7 +194,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.gae_lambda = gae_lambda
         self.batch_epochs = batch_epochs
         self.entropy_bonus = entropy_bonus
-        self.mini_batches = mini_batches
+        self.mini_batch_size = mini_batch_size
         self.use_clipped_value_loss = use_clipped_value_loss
         self.vf_coef = vf_coef
         self.ppo_epsilon = ppo_epsilon
@@ -263,6 +265,8 @@ class PMAlgorithm(MarlAlgorithm):
             self.batch_player_policy = np.zeros([N, A, vec_env.max_players, *self.policy_shape], dtype=np.float32)
             # all terminals at time t for given game recorded for all agents, in public_id order
             self.batch_player_terminals = np.zeros([N, A, vec_env.max_players], dtype=np.float32)
+            # which players this player can see, all in public_id order
+            self.batch_player_visible = np.zeros([N, A, vec_env.max_players], dtype=np.bool)
 
             self.replay_buffer = []
 
@@ -286,8 +290,8 @@ class PMAlgorithm(MarlAlgorithm):
         self.scaler = GradScaler() if self.amp else None
 
     @property
-    def mini_batch_size(self):
-        return self.batch_size // self.mini_batches
+    def mini_batches(self):
+        return self.batch_size // self.mini_batch_size
 
     def save(self, filename):
 
@@ -449,11 +453,15 @@ class PMAlgorithm(MarlAlgorithm):
                     # we must predict these in public_id order, otherwise team is known
                     # however ground truth observations will be in index order, so we need to reorder them
                     orderings = []
+                    players_visible = []
                     for game in self.vec_env.games:
                         game_players = [(player.public_id, player.index) for player in game.players]
                         game_players.sort()
                         order = [index for public_id, index in game_players]
                         orderings.append(order)
+                        for player in game.players:
+                            vision = [player.in_vision(game.players[index].x, game.players[index].y) for index in order]
+                            players_visible.append(vision)
 
                     def duplicate_to_public_order(x):
                         """ returns a copy of data in public id order
@@ -471,6 +479,7 @@ class PMAlgorithm(MarlAlgorithm):
                     self.batch_player_obs[t] = duplicate_to_public_order(prev_obs)
                     self.batch_player_policy[t] = duplicate_to_public_order(log_policy)
                     self.batch_player_terminals[t] = duplicate_to_public_order(prev_terminals)
+                    self.batch_player_visible[t] = players_visible
 
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
@@ -794,40 +803,110 @@ class PMAlgorithm(MarlAlgorithm):
         # Calculate observation prediction loss
         # -------------------------------------------------------------------------
 
+        def calculate_kl(obs_predictions):
+            """
+            Calculates KL between policy of true observation and policy of predicted observation
+            # obs predictions are [N, B, n_players, *obs_shape]
+            :return:
+            """
+
+            n_players = self.vec_env.max_players
+            predicted_initial_policy_rnn_states = self.extract_policy_rnn_states(
+                self.get_initial_rnn_state(B * n_players))
+            # obs predictions are [N, B, n_players, *obs_shape], so map down
+            pred_policy_out, _ = self.policy_model.forward_sequence(
+                obs_predictions.reshape(N, B * n_players, *self.obs_shape),
+                rnn_states=predicted_initial_policy_rnn_states,
+                terminals=data["player_terminals"].reshape(N, B * n_players))
+
+            # put back into [N, B, n_players, *] for processing, and remove first half of window
+            # (this allows LSTM to warm up)
+            true_obs_log_policy = data["player_policy"].reshape(N, B, n_players, *self.policy_shape)[N // 2:]
+            pred_obs_log_policy = pred_policy_out['log_policy'].reshape(N, B, n_players, *self.policy_shape)[N // 2:]
+
+            # filter out players that are not visible
+            true = filter_visible(true_obs_log_policy, player_visible[N // 2])
+            pred = filter_visible(pred_obs_log_policy, player_visible[N // 2])
+
+            # check the KL between these two
+            # kl = [N*B*n_players, *policy_shape]
+            kl = torch.exp(true) * (true - pred)
+            kl = kl.sum(dim=-1)
+            kl = kl.mean()
+
+            return kl
+
+
+        player_visible = data["player_visible"]
+
         # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
-        obs_predictions = model_out["obs_prediction"] # [N*B, n_players, *obs_shape]
-        obs_truth = merge_down(data["player_obs"]) # [N*B, n_players, *obs_shape] (in public_id order)
+        obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape] (in public_id order)
+        obs_truth = data["player_obs"] # [N, B, n_players, *obs_shape] (in public_id order)
+
+        # remove from prediction other players we are not visible
+        obs_predictions = filter_visible(obs_predictions, player_visible)
+        obs_truth = filter_visible(obs_truth, player_visible)
         obs_truth = obs_truth.float()/255
 
+        # calculate mse loss for logging
+        if self.deception_batch_counter % 10 == 0:
+            with torch.no_grad():
+                obs_mse_rgb = F.mse_loss(
+                    obs_predictions[..., :3],
+                    obs_truth[..., :3]
+                )
+                obs_mse_xy = F.mse_loss(
+                    obs_predictions[..., 3:],
+                    obs_truth[..., 3:]
+                )
 
-        # calculate mse loss for logging purposes
-        with torch.no_grad():
-            obs_mse_rgb = F.mse_loss(
-                obs_predictions.reshape(-1, *obs_shape)[:, :, :, :3],
-                obs_truth.reshape(-1, *obs_shape)[:, :, :, :3]
-            )
-            obs_mse_xy = F.mse_loss(
-                obs_predictions.reshape(-1, *obs_shape)[:, :, :, 3:],
-                obs_truth.reshape(-1, *obs_shape)[:, :, :, 3:]
-            )
+                obs_mse = obs_mse_rgb + obs_mse_xy
 
-            obs_mse = obs_mse_rgb + obs_mse_xy
+                self.log.watch_mean("pred_obs_mse", obs_mse, display_width=0)
+                self.log.watch_mean("pred_obs_rgb", obs_mse_rgb, display_width=0)
+                self.log.watch_mean("pred_obs_xy", obs_mse_xy, display_width=0)
 
-            self.log.watch_mean("pred_obs_mse", obs_mse, display_width=0)
-            self.log.watch_mean("pred_obs_rgb", obs_mse_rgb, display_width=0)
-            self.log.watch_mean("pred_obs_xy", obs_mse_xy, display_width=0)
+                # repeat but with non-visible players
+                pred = filter_visible(obs_predictions, ~player_visible)
+                true = filter_visible(obs_truth, ~player_visible).float()/255
+
+                if len(pred) > 0:
+
+                    # it's possible there are no non visible agents,
+                    # there will always be visible agents though as agents can always see themselves
+
+                    obs_mse_rgb_nv = F.mse_loss(
+                        pred[..., :3],
+                        true[..., :3]
+                    )
+                    obs_mse_xy_nv = F.mse_loss(
+                        pred[..., 3:],
+                        true[..., 3:]
+                    )
+
+                    obs_mse_nv = obs_mse_rgb_nv + obs_mse_xy_nv
+
+                    self.log.watch_mean("pred_obs_mse_nv", obs_mse_nv, display_width=0)
+                    self.log.watch_mean("pred_obs_rgb_nv", obs_mse_rgb_nv, display_width=0)
+                    self.log.watch_mean("pred_obs_xy_nv", obs_mse_xy_nv, display_width=0)
+
 
         # calculate the actual loss and optimize
-
         obs_loss_rgb = self.dm_loss_fn(
-            obs_predictions.reshape(-1, *obs_shape)[:, :, :, :3],
-            obs_truth.reshape(-1, *obs_shape)[:, :, :, :3]
+            obs_predictions[..., :3],
+            obs_truth[..., :3]
         )
         obs_loss_xy = self.dm_loss_fn(
-            obs_predictions.reshape(-1, *obs_shape)[:, :, :, 3:],
-            obs_truth.reshape(-1, *obs_shape)[:, :, :, 3:]
+            obs_predictions[..., 3:],
+            obs_truth[..., 3:]
         )
+
         obs_loss = (obs_loss_rgb + obs_loss_xy * self.dm_xy_factor) * self.dm_loss_scale
+
+        # use KL if needed
+        if self.dm_kl_factor > 0:
+            kl = calculate_kl(obs_predictions)/100 # get kl on roughly the same scale as mse
+            obs_loss = (1-self.dm_kl_factor)*obs_loss + self.dm_kl_factor*kl
 
         loss += obs_loss
         self.log.watch_mean("loss_obs", obs_loss)
@@ -851,30 +930,8 @@ class PMAlgorithm(MarlAlgorithm):
 
         if self.deception_batch_counter % 10 == 0:
             with torch.no_grad():
-
-                n_players = self.vec_env.max_players
-                predicted_initial_policy_rnn_states = self.extract_policy_rnn_states(self.get_initial_rnn_state(B * n_players))
-                # obs predictions are [N, B, n_players, *obs_shape], so map down
-                pred_policy_out,_ = self.policy_model.forward_sequence(
-                    obs_predictions.reshape(N, B*n_players, *self.obs_shape),
-                    rnn_states=predicted_initial_policy_rnn_states,
-                    terminals=data["player_terminals"].reshape(N, B*n_players))
-
-
-                # output will be [N, B*n_players, *], also we want only the later half, as this will give time
-                # for the lstm state to warm up
-                true_obs_log_policy = data["player_policy"][N//2:]
-                pred_obs_log_policy = pred_policy_out['log_policy'][N//2:]
-                true_obs_policy = torch.exp(true_obs_log_policy)[N//2:]
-
-                # check the KL between these two
-                # kl = [B*n_players*N, *policy_shape]
-                kl = true_obs_policy * (true_obs_log_policy - pred_obs_log_policy)
-                kl = kl.sum(dim=-1)
-                kl = kl.mean()
-
+                kl = calculate_kl(obs_predictions)
                 self.log.watch_mean("pred_kl", kl, display_precision=4)
-
         # -------------------------------------------------------------------------
         # Apply loss
         # -------------------------------------------------------------------------
@@ -919,7 +976,7 @@ class PMAlgorithm(MarlAlgorithm):
             optimizer.zero_grad()
 
     def _train_model(self, batch_data, model, optimizer, forward_func,
-                     epochs:float, mini_batches, short_name="model",
+                     epochs:float, mini_batch_size, short_name="model",
                      max_window_size=None, enable_window_offsets=False):
         """
         :param batch_data: a dictionary containing data required for training
@@ -929,12 +986,12 @@ class PMAlgorithm(MarlAlgorithm):
         last_epoch = math.ceil(epochs)
 
         B = batch_data["prev_obs"].shape[1]
-
-        assert B % mini_batches == 0
-        mini_batch_segments = B // mini_batches
-
         window_size = min(max_window_size or float('inf'), self.n_steps)
-        windows_per_segment = self.n_steps // window_size
+
+        assert mini_batch_size % window_size == 0
+        mini_batch_segments = mini_batch_size // window_size
+
+        mini_batches = B // mini_batch_segments
 
         assert self.micro_batch_size % window_size == 0
         max_micro_batch_segments = (self.micro_batch_size // window_size)
@@ -951,8 +1008,8 @@ class PMAlgorithm(MarlAlgorithm):
             segments = list(range(B))
             np.random.shuffle(segments)
 
-            assert B % (mini_batches * micro_batches) == 0
-            segments_per_micro_batch = B // (mini_batches * micro_batches)
+            assert mini_batch_segments % micro_batches == 0
+            segments_per_micro_batch = mini_batch_segments // micro_batches
 
             optimizer.zero_grad()
 
@@ -1011,6 +1068,7 @@ class PMAlgorithm(MarlAlgorithm):
         this_batch_data["player_obs"] = self.batch_player_obs
         this_batch_data["player_policy"] = self.batch_player_policy
         this_batch_data["player_terminals"] = self.batch_player_terminals
+        this_batch_data["player_visible"] = self.batch_player_visible
         this_batch_data["terminals"] = self.batch_terminals
         this_batch_data["roles"] = self.batch_roles
         this_batch_data["log_policy"] = self.batch_log_policy
@@ -1039,7 +1097,7 @@ class PMAlgorithm(MarlAlgorithm):
             self.deception_optimizer,
             self.forward_deception_mini_batch,
             epochs=(self.batch_epochs / self.dm_replay_buffer_multiplier) * windows_per_segment,
-            mini_batches=self.dm_mini_batches * len(self.replay_buffer),
+            mini_batch_size=self.dm_mini_batch_size,
             short_name="dec",
             max_window_size=self.dm_max_window_size,
             enable_window_offsets=True
@@ -1062,13 +1120,16 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["terminals"] = self.batch_terminals
         batch_data["rnn_states"] = self.extract_policy_rnn_states(self.batch_rnn_states)
 
+        assert self.batch_size % self.mini_batches == 0
+        mini_batch_size = self.batch_size // self.mini_batches
+
         self._train_model(
             batch_data,
             self.policy_model,
             self.policy_optimizer,
             self.forward_policy_mini_batch,
             epochs=self.batch_epochs,
-            mini_batches=self.mini_batches,
+            mini_batch_size=mini_batch_size,
             short_name="pol"
         )
 
@@ -1128,4 +1189,43 @@ def test_calculate_returns():
     assert list(calculate_returns(rewards, dones, final_value_estimate=6, gamma=1.0).ravel()) == [7, 7, 5, 4, 7]
 
 
+def filter_visible(x, visible):
+    """
+    Note: once filtered reshaping back to [N, B] is no longer viable (as different N's have different B's)
+    :param x: Input is in form [N, B, n_players, *] with players in public order
+    :param visible: [N, B, n_players] indicating if player is visible
+    :return: flatened filtered results (N*B*n_players <filtered>, *]
+    """
+    N, B, n_players, *x_shape = x.shape
+    assert visible.shape == (N, B, n_players), f"Expected visible to be {N, B, n_players} but found {visible.shape}"
+    mask = visible.reshape(-1)
+    return x.reshape(N * B * n_players, *x_shape)[mask].reshape(-1, *x_shape)
+
+def test_filter_visible():
+    data = torch.zeros([2,4,3,1])
+    for n in range(2):
+        for b in range(4):
+            for p in range(3):
+                data[n,b,p] = n*100+b*10+p
+    visible = torch.tensor([
+        [[True, True, True],
+        [True, True, True],
+        [True, True, True],
+        [True, True, True]],
+
+        [[True, True, True],
+         [True, True, True],
+         [True, True, True],
+         [True, True, True]]
+    ])
+
+    test_1 = filter_visible(data, visible)
+    assert test_1.shape == (2*4*3, 1)
+
+    visible[0,1,2] = False
+    test_2 = filter_visible(data, visible)
+    assert test_2.shape == (2*4*3-1, 1)
+    assert 12 not in test_2
+
 test_calculate_returns()
+test_filter_visible()

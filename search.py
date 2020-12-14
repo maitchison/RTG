@@ -21,7 +21,7 @@ def run_experiment(job):
         return
 
     script = \
-        f"python ./run/{RUN_NAME}/train.py train --run=\"{run_name}\" --device={device} --epochs=20 " + params
+        f"python ./run/{RUN_NAME}/train.py train --run=\"{run_name}\" --device={device} " + params
 
     print()
     print(script)
@@ -115,32 +115,47 @@ if __name__ == "__main__":
 
         # prediction_search_1
 
-        dm_max_window_size = random.choice([8, 16, 32])
-        dm_replay_buffer_multiplier = random.choice([1, 4, 8])
-        dm_mini_batches = random.choice([4, 8, 16, 32, 64])
-        dm_out_features = random.choice([512, 1024, 2048])
-        dm_memory_units = random.choice([512, 1024, 2048])
-        dm_lstm_mode = random.choice(['off', 'on', 'residual', 'cat'])
-        dm_xy_factor = random.choice([1, 0.1, 0.01, 0])
-        dm_learning_rate = random.choice([3e-3, 1e-3, 2.5e-4])
-        dm_loss_fn = random.choice(["mse", "l1", "l2"])
-        dm_loss_scale = random.choice([1, 3, 10])
+        # dm_max_window_size = random.choice([8, 16, 32])
+        # dm_replay_buffer_multiplier = random.choice([1, 4, 8])
+        # dm_mini_batches = random.choice([4, 8, 16, 32, 64])
+        # dm_out_features = random.choice([512, 1024, 2048])
+        # dm_memory_units = random.choice([512, 1024, 2048])
+        # dm_lstm_mode = random.choice(['off', 'on', 'residual', 'cat'])
+        # dm_xy_factor = random.choice([1, 0.1, 0.01, 0])
+        # dm_learning_rate = random.choice([3e-3, 1e-3, 2.5e-4])
+        # dm_loss_fn = random.choice(["mse", "l1", "l2"])
+        # dm_loss_scale = random.choice([1, 3, 10])
+
+        # prediction_search_2
+        dm_max_window_size = random.choice([4, 8, 16])
+        dm_replay_buffer_multiplier = random.choice([4, 8])
+        dm_mini_batch_size = random.choice([256, 512, 1024])
+        dm_out_features = random.choice([1024])
+        dm_memory_units = random.choice([1024])
+        dm_lstm_mode = random.choice(['residual'])
+        dm_xy_factor = random.choice([1])
+        dm_learning_rate = random.choice([2.5e-4])
+        dm_loss_fn = random.choice(["l2"])
+        dm_kl_factor = random.choice([0, 0.5, 1])
+        dm_loss_scale = random.choice([1])
 
         if dm_lstm_mode == 'residual':
             # residual requires these to be the same..
             dm_out_features = dm_memory_units
 
-        main_params = "--train_scenarios='r2g2_hrp' --eval_scenarios='[]' --enable_deception=True --save_model=recent "
+        main_params = "--train_scenarios='r2g2_hrp' --eval_scenarios='[]' --enable_deception=True --save_model=recent "\
+            "--epochs=50"
 
         algo_params = "{" +\
                       f"'dm_max_window_size':{dm_max_window_size}," + \
                       f"'dm_replay_buffer_multiplier':{dm_replay_buffer_multiplier}," + \
-                      f"'dm_mini_batches':{dm_mini_batches}," + \
+                      f"'dm_mini_batch_size':{dm_mini_batch_size}," + \
                       f"'dm_memory_units':{dm_memory_units}," + \
                       f"'dm_out_features':{dm_out_features}," + \
                       f"'dm_lstm_mode':'{dm_lstm_mode}'," + \
                       f"'dm_xy_factor':{dm_xy_factor}," + \
                       f"'dm_loss_fn':'{dm_loss_fn}'," + \
+                      f"'dm_kl_factor':'{dm_kl_factor}'," + \
                       f"'dm_loss_scale':{dm_loss_scale}," + \
                       f"'dm_learning_rate':{dm_learning_rate}," + \
                       "}"

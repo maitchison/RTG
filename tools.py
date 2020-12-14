@@ -268,10 +268,15 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
 
         line_style = marking_map.get(y_name,"-")
 
+        if label == '':
+            plot_label = None
+        else:
+            plot_label = label or label_map.get(y_name, y_name),
+
         plt.plot(
             _X,
             _Y,
-            label=label or label_map.get(y_name, y_name),
+            label=plot_label,
             linestyle=line_style,
             c=color or col
         )
@@ -279,7 +284,8 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
     if xlim is not None:
         plt.xlim(0, xlim)
 
-    plt.legend(loc="upper center", bbox_to_anchor=(0.5, 0.99))
+    if label != '':
+        plt.legend(loc="upper center", bbox_to_anchor=(0.5, 0.99))
     plt.grid()
     plt.xlabel("agent epoch (Million steps)")
     plt.ylabel(y_units_map.get(y_axis[0], ""))
