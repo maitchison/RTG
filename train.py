@@ -89,13 +89,13 @@ class Config():
         self.enable_deception = bool()
         self.export_rollout = bool()
         self.test_epochs = int()
+        self.save_model = str()
 
         self.verbose = int()
 
     def __str__(self):
 
         # custom one looks better and will evaluate ok using literal_eval
-
         lines = []
         for k,v in vars(self).items():
             key_string = f"'{k}':"
@@ -120,6 +120,9 @@ class Config():
         for arg_k,arg_v in vars(args).items():
             # check if this matches a config variable
             if arg_k in config_vars:
+                if type(arg_v) is str:
+                    # map all strings to lower_case
+                    arg_v = arg_v.lower()
                 vars(self)[arg_k] = arg_v
 
         self.uuid = uuid.uuid4().hex[-8:]
@@ -131,7 +134,7 @@ class Config():
         self.algo_params = literal_eval(args.algo_params)
 
         # work out the device
-        if config.device.lower() == "auto":
+        if config.device == "auto":
             config.device = "cuda" if torch.has_cuda else "cpu"
 
         # setup the scenarios... these are a bit complex now due to the scripted players
@@ -434,9 +437,14 @@ def train_model():
         # export training video
         if config.export_video:
             export_video(f"{config.log_folder}/training_{epoch:03}_M.mp4", model, config.train_scenarios[0])
-        model.save(f"{config.log_folder}/model_{epoch:03}_M.pt")
-
-        sub_epoch = 0
+        if config.save_model == "all":
+            model.save(f"{config.log_folder}/model_{epoch:03}_M.pt")
+        elif config.save_model == "none":
+            pass
+        elif config.save_model == "recent":
+            model.save(f"{config.log_folder}/model_M.pt")
+        else:
+            raise ValueError("Invalid save model parameter, use [none|recent|all].")
 
         step_counter = learn(model, step_counter, (epoch+1)*1e6, verbose=config.verbose == 1)
         print()
@@ -744,7 +752,7 @@ def main():
     parser.add_argument('--export_video', type=str2bool, nargs='?', const=True, default=True)
     parser.add_argument('--algo_params', type=str, default="{}")
     parser.add_argument('--verbose', type=int, default=1, help="Level of logging output, 0=off, 1=normal, 2=full.")
-
+    parser.add_argument('--save_model', type=str, default="all", help="Enables model saving, [all|recent|none].")
 
     parser.add_argument('--vary_team_player_counts', type=str2bool, nargs='?', const=True,  default=False, help="Use a random number of players turning training.")
 

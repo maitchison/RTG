@@ -124,9 +124,13 @@ if __name__ == "__main__":
         dm_xy_factor = random.choice([1, 0.1, 0.01, 0])
         dm_learning_rate = random.choice([3e-3, 1e-3, 2.5e-4])
         dm_loss_fn = random.choice(["mse", "l1", "l2"])
-        dm_loss_scale = random.choice([1, 10, 100])
+        dm_loss_scale = random.choice([1, 3, 10])
 
-        main_params = "--train_scenario='r2g2_hrp' --enable_deception=True "
+        if dm_lstm_mode == 'residual':
+            # residual requires these to be the same..
+            dm_out_features = dm_memory_units
+
+        main_params = "--train_scenarios='r2g2_hrp' --eval_scenarios='[]' --enable_deception=True --save_model=recent "
 
         algo_params = "{" +\
                       f"'dm_max_window_size':{dm_max_window_size}," + \

@@ -1032,7 +1032,7 @@ class PMAlgorithm(MarlAlgorithm):
             self.deception_model,
             self.deception_optimizer,
             self.forward_deception_mini_batch,
-            epochs=self.batch_epochs / len(self.replay_buffer) * windows_per_segment,
+            epochs=(self.batch_epochs / self.dm_replay_buffer_multiplier) * windows_per_segment,
             mini_batches=self.dm_mini_batches * len(self.replay_buffer),
             short_name="dec",
             max_window_size=self.dm_max_window_size,
