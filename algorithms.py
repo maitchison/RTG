@@ -836,11 +836,11 @@ class PMAlgorithm(MarlAlgorithm):
 
             return kl
 
-
         player_visible = data["player_visible"]
 
         # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
         obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape] (in public_id order)
+        obs_pp = model_out["obs_predictions_prediction"]  # [N, B, n_players, *obs_shape] (in public_id order)
         obs_truth = data["player_obs"].float()/255 # [N, B, n_players, *obs_shape] (in public_id order)
 
         # remove from prediction other players we are not visible
@@ -913,6 +913,13 @@ class PMAlgorithm(MarlAlgorithm):
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
         for k, v in model_out.items():
             model_out[k] = merge_down(v)
+
+        # -------------------------------------------------------------------------
+        # Prediction prediction error
+        # -------------------------------------------------------------------------
+
+        # todo:... this requires all players within a game to be in the batch
+        # so I need to reorganise things a bit...
 
         # -------------------------------------------------------------------------
         # KL prediction error

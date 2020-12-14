@@ -211,7 +211,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     orig_height = height
     if algorithm.enable_deception:
         height = height + n_players * obs_size
-        width = max(width, (n_players + 1) * obs_size)
+        width = max(width, (n_players*2 + 1) * obs_size)
     scaled_width = (width * scale) // 4 * 4 # make sure these are multiples of 4
     scaled_height = (height * scale) // 4 * 4
 
@@ -262,6 +262,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
             # observation frames are [n_players, n_players, h, w, c]
             obs_predictions = model_output["obs_prediction"].detach().cpu().numpy()
+            obs_pp = model_output["obs_predictions_prediction"].detach().cpu().numpy()
             obs_truth = env_obs.copy()
 
             # ground truth
@@ -270,6 +271,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                 dy = orig_height + i * obs_size
                 frame[dy:dy + obs_size, dx:dx + obs_size] = obs_truth[i, :, :, :3].swapaxes(0, 1)
 
+            # predictions
             for i in range(n_players):
                 for j in range(n_players):
                     dx = j * obs_size + obs_size
@@ -277,6 +279,15 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                     # we transpose as rescue is x,y instead of y,x
                     frame[dy:dy+obs_size, dx:dx+obs_size] = \
                         np.asarray(obs_predictions[i, j, :, :, :3]*255, dtype=np.uint8).swapaxes(0, 1)
+
+            # prediction predictions
+            for i in range(n_players):
+                for j in range(n_players):
+                    dx = j * obs_size + (obs_size*(n_players+1))
+                    dy = orig_height + i * obs_size
+                    # we transpose as rescue is x,y instead of y,x
+                    frame[dy:dy+obs_size, dx:dx+obs_size] = \
+                        np.asarray(obs_pp[i, j, :, :, :3]*255, dtype=np.uint8).swapaxes(0, 1)
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]

@@ -459,20 +459,26 @@ class DeceptionModel(BaseModel):
         if model.lower() in ["default", "fast"]:
             if model.lower() == "fast":
                 print("warning: fast decoder is not implemented, using default.")
-            self.observation_prediction_head = DefaultDecoder(
-                (c, h * self.n_players, w),
-                self.encoder_output_features
-            )
+
+            decoder_fn = DefaultDecoder
         elif model.lower() == "large":
-            self.observation_prediction_head = LargeDecoder(
-                (c, h * self.n_players, w),
-                self.encoder_output_features
-            )
+            decoder_fn = LargeDecoder
         else:
             raise ValueError(f"Invalid model name {model}")
 
+        self.observation_prediction_head = decoder_fn(
+            (c, h * self.n_players, w),
+            self.encoder_output_features
+        )
+
+        self.observation_predictions_prediction_head = decoder_fn(
+            (c, h * self.n_players, w),
+            self.encoder_output_features
+        )
+
         if data_parallel:
             self.observation_prediction_head = DP(self.observation_prediction_head)
+            self.observation_predictions_prediction_head = DP(self.observation_predictions_prediction_head)
 
         self.set_device_and_dtype(self.device, self.dtype)
 
@@ -509,9 +515,22 @@ class DeceptionModel(BaseModel):
         obs_prediction = obs_prediction.transpose(-3, -1)
         obs_prediction = obs_prediction.transpose(-3, -2)
 
+        # ------------------------------
+        # obs predictions prediction
+        # ------------------------------
+
+        obs_pp = self.observation_predictions_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
+        h, w, c = self.obs_shape
+        obs_pp = obs_pp.reshape(N, B, c, self.n_players * h, w)
+        obs_pp = obs_pp.split(h, dim=3)
+        obs_pp = torch.stack(obs_pp, dim=2)
+        obs_pp = obs_pp.transpose(-3, -1)
+        obs_pp = obs_pp.transpose(-3, -2)
+
         result = {}
         result['role_prediction'] = role_prediction
         result['obs_prediction'] = obs_prediction
+        result['obs_predictions_prediction'] = obs_pp
         return result, new_rnn_states
 
 
