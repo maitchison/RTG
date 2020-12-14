@@ -144,6 +144,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.dm_xy_factor = dm_xy_factor
         self.dm_learning_rate = dm_learning_rate
         self.dm_loss_scale = dm_loss_scale
+        self.deception_batch_counter = 0
 
         if dm_loss_fn == "mse":
             self.dm_loss_fn = F.mse_loss
@@ -762,6 +763,8 @@ class PMAlgorithm(MarlAlgorithm):
 
         loss = torch.tensor(0, dtype=torch.float32, device=self.deception_model.device)
 
+        self.deception_batch_counter += 1
+
         prev_obs = data["prev_obs"]
         terminals = data["terminals"]
         rnn_states = data["rnn_states"][0] # get states at start of window
@@ -845,29 +848,32 @@ class PMAlgorithm(MarlAlgorithm):
 
         # in the future it might be good to predicct the initial rnn state, for the moment just start with zero
         # we should ignore the first half of the rnn_window as the states will be simply warming up at this point
-        with torch.no_grad():
-            n_players = self.vec_env.max_players
-            predicted_initial_policy_rnn_states = self.extract_policy_rnn_states(self.get_initial_rnn_state(B * n_players))
-            # obs predictions are [N, B, n_players, *obs_shape], so map down
-            pred_policy_out,_ = self.policy_model.forward_sequence(
-                obs_predictions.reshape(N, B*n_players, *self.obs_shape),
-                rnn_states=predicted_initial_policy_rnn_states,
-                terminals=data["player_terminals"].reshape(N, B*n_players))
 
-            true_obs_log_policy = data["player_policy"].reshape(-1, *self.policy_shape)
-            pred_obs_log_policy = pred_policy_out['log_policy'].reshape(-1, *self.policy_shape)
+        if self.deception_batch_counter % 10 == 0:
+            with torch.no_grad():
 
-            true_obs_policy = torch.exp(true_obs_log_policy)
+                n_players = self.vec_env.max_players
+                predicted_initial_policy_rnn_states = self.extract_policy_rnn_states(self.get_initial_rnn_state(B * n_players))
+                # obs predictions are [N, B, n_players, *obs_shape], so map down
+                pred_policy_out,_ = self.policy_model.forward_sequence(
+                    obs_predictions.reshape(N, B*n_players, *self.obs_shape),
+                    rnn_states=predicted_initial_policy_rnn_states,
+                    terminals=data["player_terminals"].reshape(N, B*n_players))
 
-            # todo: cut out the first half of each window
 
-            # check the KL between these two
-            # kl = [B*n_players*N, *policy_shape]
-            kl = true_obs_policy * (true_obs_log_policy - pred_obs_log_policy)
-            kl = kl.sum(dim=-1)
-            kl = kl.mean()
+                # output will be [N, B*n_players, *], also we want only the later half, as this will give time
+                # for the lstm state to warm up
+                true_obs_log_policy = data["player_policy"][N//2:]
+                pred_obs_log_policy = pred_policy_out['log_policy'][N//2:]
+                true_obs_policy = torch.exp(true_obs_log_policy)[N//2:]
 
-            self.log.watch_mean("pred_kl", kl, display_precision=4)
+                # check the KL between these two
+                # kl = [B*n_players*N, *policy_shape]
+                kl = true_obs_policy * (true_obs_log_policy - pred_obs_log_policy)
+                kl = kl.sum(dim=-1)
+                kl = kl.mean()
+
+                self.log.watch_mean("pred_kl", kl, display_precision=4)
 
         # -------------------------------------------------------------------------
         # Apply loss
