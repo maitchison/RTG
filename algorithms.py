@@ -122,9 +122,9 @@ class PMAlgorithm(MarlAlgorithm):
             dm_out_features=1024,
             dm_xy_factor=1,
             dm_learning_rate=1e-3,
-            dm_lstm_mode="cat",
-            dm_loss_fn="mse",
-            dm_kl_factor=0.5, # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
+            dm_lstm_mode="residual",
+            dm_loss_fn="l2",
+            dm_kl_factor=0, # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
             dm_loss_scale=1.0
 
         ):
@@ -772,8 +772,6 @@ class PMAlgorithm(MarlAlgorithm):
 
         loss = torch.tensor(0, dtype=torch.float32, device=self.deception_model.device)
 
-        self.deception_batch_counter += 1
-
         prev_obs = data["prev_obs"]
         terminals = data["terminals"]
         rnn_states = data["rnn_states"][0] # get states at start of window
@@ -933,6 +931,7 @@ class PMAlgorithm(MarlAlgorithm):
             with torch.no_grad():
                 kl = calculate_kl(obs_predictions)
                 self.log.watch_mean("pred_kl", kl, display_precision=4)
+
         # -------------------------------------------------------------------------
         # Apply loss
         # -------------------------------------------------------------------------
@@ -945,6 +944,8 @@ class PMAlgorithm(MarlAlgorithm):
             self.scaler.scale(loss).backward()
         else:
             loss.backward()
+
+        self.deception_batch_counter += 1
 
     @profiler.record_function("grad_clip")
     def _log_and_clip_grad_norm(self, model, log_var_name="opt_grad"):
