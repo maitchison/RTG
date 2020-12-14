@@ -806,9 +806,11 @@ class PMAlgorithm(MarlAlgorithm):
         def calculate_kl(obs_predictions):
             """
             Calculates KL between policy of true observation and policy of predicted observation
-            # obs predictions are [N, B, n_players, *obs_shape]
+            # obs predictions are [N, B, n_players, *obs_shape] and should not be filtered
             :return:
             """
+
+            N, B, n_players, *obs_shape = obs_predictions.shape
 
             n_players = self.vec_env.max_players
             predicted_initial_policy_rnn_states = self.extract_policy_rnn_states(
@@ -825,8 +827,8 @@ class PMAlgorithm(MarlAlgorithm):
             pred_obs_log_policy = pred_policy_out['log_policy'].reshape(N, B, n_players, *self.policy_shape)[N // 2:]
 
             # filter out players that are not visible
-            true = filter_visible(true_obs_log_policy, player_visible[N // 2])
-            pred = filter_visible(pred_obs_log_policy, player_visible[N // 2])
+            true = filter_visible(true_obs_log_policy, player_visible[N // 2:])
+            pred = filter_visible(pred_obs_log_policy, player_visible[N // 2:])
 
             # check the KL between these two
             # kl = [N*B*n_players, *policy_shape]
@@ -841,23 +843,22 @@ class PMAlgorithm(MarlAlgorithm):
 
         # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
         obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape] (in public_id order)
-        obs_truth = data["player_obs"] # [N, B, n_players, *obs_shape] (in public_id order)
+        obs_truth = data["player_obs"].float()/255 # [N, B, n_players, *obs_shape] (in public_id order)
 
         # remove from prediction other players we are not visible
-        obs_predictions = filter_visible(obs_predictions, player_visible)
-        obs_truth = filter_visible(obs_truth, player_visible)
-        obs_truth = obs_truth.float()/255
+        filtered_obs_predictions = filter_visible(obs_predictions, player_visible)
+        filtered_obs_truth = filter_visible(obs_truth, player_visible)
 
         # calculate mse loss for logging
         if self.deception_batch_counter % 10 == 0:
             with torch.no_grad():
                 obs_mse_rgb = F.mse_loss(
-                    obs_predictions[..., :3],
-                    obs_truth[..., :3]
+                    filtered_obs_predictions[..., :3],
+                    filtered_obs_truth[..., :3]
                 )
                 obs_mse_xy = F.mse_loss(
-                    obs_predictions[..., 3:],
-                    obs_truth[..., 3:]
+                    filtered_obs_predictions[..., 3:],
+                    filtered_obs_truth[..., 3:]
                 )
 
                 obs_mse = obs_mse_rgb + obs_mse_xy
@@ -868,7 +869,7 @@ class PMAlgorithm(MarlAlgorithm):
 
                 # repeat but with non-visible players
                 pred = filter_visible(obs_predictions, ~player_visible)
-                true = filter_visible(obs_truth, ~player_visible).float()/255
+                true = filter_visible(obs_truth, ~player_visible)
 
                 if len(pred) > 0:
 
@@ -893,12 +894,12 @@ class PMAlgorithm(MarlAlgorithm):
 
         # calculate the actual loss and optimize
         obs_loss_rgb = self.dm_loss_fn(
-            obs_predictions[..., :3],
-            obs_truth[..., :3]
+            filtered_obs_predictions[..., :3],
+            filtered_obs_truth[..., :3]
         )
         obs_loss_xy = self.dm_loss_fn(
-            obs_predictions[..., 3:],
-            obs_truth[..., 3:]
+            filtered_obs_predictions[..., 3:],
+            filtered_obs_truth[..., 3:]
         )
 
         obs_loss = (obs_loss_rgb + obs_loss_xy * self.dm_xy_factor) * self.dm_loss_scale
