@@ -202,7 +202,7 @@ class DefaultDecoder(BaseDecoder):
         x = x.view((b, *self.initial_dims))
         x = torch.relu(self.deconv1(x))
         x = torch.relu(self.deconv2(x))
-        x = torch.sigmoid(self.deconv3(x))
+        x = (torch.sigmoid(1.2*self.deconv3(x))-0.1) # extend range just make it easier to hit 0 and 1 pixels
 
         # the decoder doubles the size each time, edges tend not to predict well anyway due to padding
         # so we calculate the required dims (rx,ry) and the excess (ex,ry), then take a center crop

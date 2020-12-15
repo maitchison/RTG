@@ -228,6 +228,9 @@ class RescueTheGeneralScenario():
         self.enable_signals = False
         self.starting_locations = "together"
         self.randomize_ids = True # randomize the starting ID colors each reset
+        # enables team colors on agents local observation. This can be useful if one policy plays all 3 teams,
+        # however it could cause problems if you want to infer what a different team would have done in that situation
+        self.local_team_colors = False
 
         # default is red knows red, but all others are hidden
         # all is all roles are hidden
@@ -1029,9 +1032,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     team_colors=team_colors,
                     padding=(self._map_padding, self._map_padding)
                 )
+
         for player in self.players:
             player_is_visible = (observer is None) or observer.in_vision(player.x, player.y)
             team_colors = self.can_see_role(observer, player)
+            if player.index == observer_id and not self.scenario.local_team_colors:
+                team_colors = False
 
             if not player.is_dead and player_is_visible:
                 self._draw_soldier(
@@ -1070,18 +1076,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 obs[:, -pixels_to_blank_out:, :3] = color
 
             blank_edges(obs, cells_to_blank_out * CELL_SIZE, [32, 32, 32])
-            blank_edges(obs, 3, observer.team_color//2)
+            if self.scenario.local_team_colors:
+                blank_edges(obs, 3, observer.team_color // 2)
+            else:
+                blank_edges(obs, 3, [128, 128, 128])
             obs[3:-3, :3, :3] = observer.id_color
 
             blank_edges(obs, 1, 0)
-
-            # embosed frame just make this easier to see
-            # obs[:1, :] = 128
-            # obs[-1:, :] = 0
-            # obs[:, :1] = 128
-            # obs[:, -1] = 0
-            # obs[0, -1] = 64
-            # obs[-1, 0] = 64
 
             # bars for time, health, and shooting timeout
             frame_width, frame_height, _ = obs[3:-3, 3:-3, :].shape
@@ -1093,10 +1094,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             obs[3:3 + health_bar, -2, :3] = (128, 255, 128)
 
             # this isn't helpful right now and it might be difficult for agents to predict.
-            show_shooting_timeout = False
-            if show_shooting_timeout and observer.shoot_range > 0:
-                shooting_bar = int(observer.turns_until_we_can_shoot / observer.shooting_timeout * frame_width)
-                obs[3:3 + shooting_bar, -1, :3] = (128, 128, 255)
+            # show_shooting_timeout = False
+            # if show_shooting_timeout and observer.shoot_range > 0:
+            #     shooting_bar = int(observer.turns_until_we_can_shoot / observer.shooting_timeout * frame_width)
+            #     obs[3:3 + shooting_bar, -1, :3] = (128, 128, 255)
 
         # show general off-screen location
         if (observer is not None) and (observer.team == self.TEAM_BLUE or self.scenario.general_always_visible):

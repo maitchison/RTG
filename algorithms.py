@@ -131,7 +131,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         A = vec_env.total_agents
         N = n_steps
-        R = vec_env.max_roles
+        R = 3 # stub locked to 3 roles for the moment
 
         self.enable_deception = enable_deception
         self.export_rollout = export_rollout
@@ -435,8 +435,6 @@ class PMAlgorithm(MarlAlgorithm):
                 # ------------------------------------
                 # roles
                 roles = self.vec_env.get_roles()
-                player_roles = self.vec_env.get_roles_expanded() # batch_roles is [A, n_players]
-                self.batch_player_roles[t] = player_roles
                 self.batch_roles[t] = roles
 
                 prev_obs = self.agent_obs.copy() #[A, *obs_shape]
@@ -444,15 +442,17 @@ class PMAlgorithm(MarlAlgorithm):
 
                 # forward state through model, then detach the result and convert to numpy.
                 with profiler.record_function("gr_model_step"):
-                    model_out, new_agent_rnn_state = self.forward(self.agent_obs, self.agent_rnn_state)
+                    model_out, new_agent_rnn_state = self.forward(self.agent_obs, self.agent_rnn_state, roles=roles)
                 self.agent_rnn_state[:] = new_agent_rnn_state
 
                 role_log_policies = model_out["role_log_policy"].detach().cpu().numpy()
-                role_ext_values = model_out["role_ext_value"].detach().cpu().numpy()
-                log_policy = role_log_policies[:, roles]
-                ext_value = role_ext_values[:, roles]
+                log_policy = model_out["log_policy"].detach().cpu().numpy()
+                ext_value = model_out["ext_value"].detach().cpu().numpy()
 
                 if self.enable_deception:
+
+                    player_roles = self.vec_env.get_roles_expanded()  # batch_roles is [A, n_players]
+                    self.batch_player_roles[t] = player_roles
 
                     # ------------------------------------
                     # observations
@@ -531,7 +531,7 @@ class PMAlgorithm(MarlAlgorithm):
                     self.batch_int_value[t] = int_value
 
             # get value estimates for final observation.
-            model_out, _ = self.forward(self.agent_obs, self.agent_rnn_state)
+            model_out, _ = self.forward(self.agent_obs, self.agent_rnn_state, roles=roles)
 
             self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
             if "int_value" in model_out:
@@ -1122,6 +1122,7 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data = {}
         batch_data["prev_obs"] = self.batch_prev_obs
         batch_data["actions"] = self.batch_actions.astype(np.long)
+        batch_data["roles"] = self.batch_roles.astype(np.long)
         batch_data["ext_returns"] = self.batch_ext_returns
         batch_data["int_returns"] = self.batch_int_returns
         batch_data["ext_value"] = self.batch_ext_value
