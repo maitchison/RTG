@@ -21,6 +21,7 @@ import strategies
 import rescue
 import utils
 from utils import Color as C
+from utils import draw_pixel
 
 from typing import Union, List
 from ast import literal_eval
@@ -208,7 +209,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
     # work out our height
     height, width, channels = frame.shape
-    orig_height = height
+    orig_height, orig_width = height, width
     if algorithm.enable_deception:
         height = height + n_players * obs_size
         width = max(width, (n_players*2 + 1) * obs_size)
@@ -236,22 +237,8 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
         env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
 
-        # format the role predictions
-        # role predictions are in public_id order so that they change each round, we need to put them back
-        # into index order.
-        if config.enable_deception:
-            # role prediction
-            raw_predictions = model_output["role_prediction"].detach().cpu().numpy()
-            role_predictions = np.zeros_like(raw_predictions)
-            for i in range(n_players):
-                for j in range(n_players):
-                    role_predictions[i, j] = np.exp(raw_predictions[i, env.players[j].public_id])
-        else:
-            role_predictions = None
-
         # generate frames from global perspective
-        frame = env.render("rgb_array", role_predictions=role_predictions)
-
+        frame = env.render("rgb_array")
 
         # overlay observation predictions
         if config.enable_deception:
@@ -259,6 +246,29 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             blank_frame = np.zeros([height, width, 3], dtype=np.uint8)
             blank_frame[:frame.shape[0], :frame.shape[1], :] = frame  # copy into potentially larger frame
             frame = blank_frame
+
+            # role predictions
+
+            # format the role predictions
+            # role predictions are in public_id order so that they change each round, we need to put them back
+            # into index order.
+
+            raw_predictions = model_output["role_prediction"].detach().cpu().numpy()
+            role_predictions = np.zeros_like(raw_predictions)
+            for i in range(n_players):
+                for j in range(n_players):
+                    role_predictions[i, j] = np.exp(raw_predictions[i, env.players[j].public_id])
+            dx = orig_width
+            dy = 10
+            block_size = 8
+            for i in range(env.n_players):
+                draw_pixel(frame, dy, dx + (i+1) * block_size, c=env.players[i].team_color, size=block_size) # indicate roles
+                draw_pixel(frame, dy + (i+1) * block_size, dx,  c=env.players[i].id_color, size=block_size)  # indicate roles
+
+            for i in range(env.n_players):
+                for j in range(env.n_players):
+                    c = [int(x * 255) for x in role_predictions[i, j]]
+                    draw_pixel(frame, dy + (i+1) * block_size, dx + (j+1) * block_size, c=c, size=block_size)
 
             # observation frames are [n_players, n_players, h, w, c]
             obs_predictions = model_output["obs_prediction"].detach().cpu().numpy()

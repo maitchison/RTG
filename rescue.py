@@ -1264,26 +1264,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         w,h,_ = image.shape
         frame[x:x+w, y:y+h] = image
 
-    def _draw_role_predictions(self, frame, role_predictions, x, y):
-        """
-        Draws role predictions onto frame at given location.
-        :param frame:
-        :param role_predictions: role predictions as np array [n_players, n_players, n_roles]
-            where cell (i,j) indicates player i's prediction of player j's role.
-        :param x:
-        :param y:
-        :return:
-        """
-
-        # we draw the predictions in id order, so that cell (x,y) = (1,3) is player 3's prediction of player 1's role.
-        for i in range(self.n_players):
-            frame[x + i + 1, y] = self.players[i].team_color # indicate roles
-            frame[x, y + i + 1] = self.players[i].id_color  # indicate id color
-
-        for i in range(self.n_players):
-            for j in range(self.n_players):
-                frame[x + j + 1, y + i + 1] = [int(x * 255) for x in role_predictions[i, j]]
-
     def _render_rgb(self, show_location=False, role_predictions=None):
         """
         Render out a frame
@@ -1350,10 +1330,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             length = max(0, int(self.team_scores[team] * 10))
             frame[0:100, team, team] = 50
             frame[0:length, team, team] = 255
-
-        # show current predictions
-        if role_predictions is not None:
-            self._draw_role_predictions(frame, role_predictions, 0, 0)
 
         frame = frame.swapaxes(0, 1) # I'm using x,y, but video needs y,x
 

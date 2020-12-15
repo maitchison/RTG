@@ -479,7 +479,7 @@ class PMAlgorithm(MarlAlgorithm):
                         return x
 
                     self.batch_player_obs[t] = duplicate_to_public_order(prev_obs)
-                    self.batch_player_predictions[t] = model_out["obs_prediction"]
+                    self.batch_player_predictions[t] = model_out["obs_prediction"].cpu().detach()
                     self.batch_player_policy[t] = duplicate_to_public_order(log_policy)
                     self.batch_player_terminals[t] = duplicate_to_public_order(prev_terminals)
                     self.batch_player_visible[t] = players_visible
@@ -845,7 +845,7 @@ class PMAlgorithm(MarlAlgorithm):
             return error_rgb, error_xy
 
         player_visible = data["player_visible"]
-        self.log.watch_mean("visible", torch.mean(player_visible)) # record what percentage of pairs have vision
+        self.log.watch_mean("visible", torch.mean(player_visible.float())) # record what percentage of pairs have vision
 
         # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
         obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape] (in public_id order)
@@ -866,14 +866,14 @@ class PMAlgorithm(MarlAlgorithm):
                 self.log.watch_mean("pred_obs_xy", obs_mse_xy, display_width=0)
 
                 # repeat but with non-visible players
-                pred = filter_visible(obs_predictions, ~player_visible)
-                true = filter_visible(obs_truth, ~player_visible)
+                pred_nv = filter_visible(obs_predictions, ~player_visible)
+                true_nv = filter_visible(obs_truth, ~player_visible)
 
-                if len(pred) > 0:
+                if len(pred_nv) > 0:
 
                     # it's possible there are no non visible agents,
                     # there will always be visible agents though as agents can always see themselves
-                    obs_mse_rgb_nv, obs_mse_xy_nv = get_obs_distance(pred, true)
+                    obs_mse_rgb_nv, obs_mse_xy_nv = get_obs_distance(pred_nv, true_nv)
                     obs_mse_nv = obs_mse_rgb_nv + obs_mse_xy_nv
 
                     self.log.watch_mean("pred_obs_mse_nv", obs_mse_nv, display_width=0)
@@ -901,8 +901,9 @@ class PMAlgorithm(MarlAlgorithm):
         # Prediction prediction error
         # -------------------------------------------------------------------------
 
-        pred_predictions = model_out["obs_predictions_prediction"]  # [N, B, n_players, *obs_shape] (in public_id order)
-        true_predictions = data["player_predictions"]
+        n_players = self.vec_env.max_players
+        pred_predictions = model_out["obs_predictions_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape] (in public_id order)
+        true_predictions = data["player_predictions"].float()/255
         pp_loss_rgb, pp_loss_xy = get_obs_distance(pred_predictions, true_predictions, self.dm_loss_fn)
         pp_loss = pp_loss_rgb + pp_loss_xy
         self.log.watch_mean("pp_rgb", pp_loss_rgb, display_width=0)

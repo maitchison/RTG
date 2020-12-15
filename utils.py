@@ -150,3 +150,6 @@ def prod(X):
     for x in X:
         y *= x
     return y
+
+def draw_pixel(frame, x, y, c, size=1):
+    frame[x:x+size, y:y+size] = c
