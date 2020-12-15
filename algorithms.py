@@ -261,6 +261,8 @@ class PMAlgorithm(MarlAlgorithm):
         if self.enable_deception:
             # all player observations at time t for given game recorded for all agents, in public_id order
             self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
+            # all player predictions at time t for given game recorded for all agents, in public_id order
+            self.batch_player_predictions = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
             # all policies at time t for given game recorded for all agents, in public_id order
             self.batch_player_policy = np.zeros([N, A, vec_env.max_players, *self.policy_shape], dtype=np.float32)
             # all terminals at time t for given game recorded for all agents, in public_id order
@@ -477,6 +479,7 @@ class PMAlgorithm(MarlAlgorithm):
                         return x
 
                     self.batch_player_obs[t] = duplicate_to_public_order(prev_obs)
+                    self.batch_player_predictions[t] = model_out["obs_prediction"]
                     self.batch_player_policy[t] = duplicate_to_public_order(log_policy)
                     self.batch_player_terminals[t] = duplicate_to_public_order(prev_terminals)
                     self.batch_player_visible[t] = players_visible
@@ -836,11 +839,16 @@ class PMAlgorithm(MarlAlgorithm):
 
             return kl
 
+        def get_obs_distance(true, pred, loss_fn=F.mse_loss):
+            error_rgb = loss_fn(true[..., :3], pred[..., :3])
+            error_xy = loss_fn(true[..., 3:], pred[..., 3:])
+            return error_rgb, error_xy
+
         player_visible = data["player_visible"]
+        self.log.watch_mean("visible", torch.mean(player_visible)) # record what percentage of pairs have vision
 
         # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
         obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape] (in public_id order)
-        obs_pp = model_out["obs_predictions_prediction"]  # [N, B, n_players, *obs_shape] (in public_id order)
         obs_truth = data["player_obs"].float()/255 # [N, B, n_players, *obs_shape] (in public_id order)
 
         # remove from prediction other players we are not visible
@@ -850,15 +858,7 @@ class PMAlgorithm(MarlAlgorithm):
         # calculate mse loss for logging
         if self.deception_batch_counter % 10 == 0:
             with torch.no_grad():
-                obs_mse_rgb = F.mse_loss(
-                    filtered_obs_predictions[..., :3],
-                    filtered_obs_truth[..., :3]
-                )
-                obs_mse_xy = F.mse_loss(
-                    filtered_obs_predictions[..., 3:],
-                    filtered_obs_truth[..., 3:]
-                )
-
+                obs_mse_rgb, obs_mse_xy = get_obs_distance(filtered_obs_predictions, filtered_obs_truth)
                 obs_mse = obs_mse_rgb + obs_mse_xy
 
                 self.log.watch_mean("pred_obs_mse", obs_mse, display_width=0)
@@ -873,16 +873,7 @@ class PMAlgorithm(MarlAlgorithm):
 
                     # it's possible there are no non visible agents,
                     # there will always be visible agents though as agents can always see themselves
-
-                    obs_mse_rgb_nv = F.mse_loss(
-                        pred[..., :3],
-                        true[..., :3]
-                    )
-                    obs_mse_xy_nv = F.mse_loss(
-                        pred[..., 3:],
-                        true[..., 3:]
-                    )
-
+                    obs_mse_rgb_nv, obs_mse_xy_nv = get_obs_distance(pred, true)
                     obs_mse_nv = obs_mse_rgb_nv + obs_mse_xy_nv
 
                     self.log.watch_mean("pred_obs_mse_nv", obs_mse_nv, display_width=0)
@@ -891,15 +882,7 @@ class PMAlgorithm(MarlAlgorithm):
 
 
         # calculate the actual loss and optimize
-        obs_loss_rgb = self.dm_loss_fn(
-            filtered_obs_predictions[..., :3],
-            filtered_obs_truth[..., :3]
-        )
-        obs_loss_xy = self.dm_loss_fn(
-            filtered_obs_predictions[..., 3:],
-            filtered_obs_truth[..., 3:]
-        )
-
+        obs_loss_rgb, obs_loss_xy = get_obs_distance(filtered_obs_predictions, filtered_obs_truth, self.dm_loss_fn)
         obs_loss = (obs_loss_rgb + obs_loss_xy * self.dm_xy_factor) * self.dm_loss_scale
 
         # use KL if needed
@@ -918,8 +901,15 @@ class PMAlgorithm(MarlAlgorithm):
         # Prediction prediction error
         # -------------------------------------------------------------------------
 
-        # todo:... this requires all players within a game to be in the batch
-        # so I need to reorganise things a bit...
+        pred_predictions = model_out["obs_predictions_prediction"]  # [N, B, n_players, *obs_shape] (in public_id order)
+        true_predictions = data["player_predictions"]
+        pp_loss_rgb, pp_loss_xy = get_obs_distance(pred_predictions, true_predictions, self.dm_loss_fn)
+        pp_loss = pp_loss_rgb + pp_loss_xy
+        self.log.watch_mean("pp_rgb", pp_loss_rgb, display_width=0)
+        self.log.watch_mean("pp_xy", pp_loss_xy, display_width=0)
+        self.log.watch_mean("pp_loss",  pp_loss, display_width=0)
+
+        loss += pp_loss
 
         # -------------------------------------------------------------------------
         # KL prediction error
@@ -1075,6 +1065,7 @@ class PMAlgorithm(MarlAlgorithm):
         this_batch_data = {}
         this_batch_data["prev_obs"] = self.batch_prev_obs
         this_batch_data["player_obs"] = self.batch_player_obs
+        this_batch_data["player_predictions"] = self.batch_player_predictions
         this_batch_data["player_policy"] = self.batch_player_policy
         this_batch_data["player_terminals"] = self.batch_player_terminals
         this_batch_data["player_visible"] = self.batch_player_visible
