@@ -165,7 +165,8 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     while not all(env_terminals):
 
         with torch.no_grad():
-            model_output, new_rnn_states = algorithm.forward(env_obs, rnn_states)
+            roles = vec_env.get_roles()
+            model_output, new_rnn_states = algorithm.forward(env_obs, rnn_states, roles)
             rnn_states[:] = new_rnn_states[:]
 
             log_policy = model_output["log_policy"].detach().cpu().numpy()
@@ -228,7 +229,8 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     while env.outcome == "":
 
         with torch.no_grad():
-            model_output, new_rnn_state = algorithm.forward(env_obs, rnn_state)
+            roles = vec_env.get_roles()
+            model_output, new_rnn_state = algorithm.forward(env_obs, rnn_state, roles)
 
             rnn_state[:] = new_rnn_state[:]
 
@@ -547,10 +549,12 @@ def run_benchmarks(train=True, model=True, env=True):
         obs = np.asarray(vec_env.reset())
         steps = 0
         start_time = time.time()
+
         while time.time() - start_time < 10:
 
             with torch.no_grad():
-                model_output, _ = agent.forward(obs, agent.agent_rnn_state)
+                roles = vec_env.get_roles()
+                model_output, _ = agent.forward(obs, agent.agent_rnn_state, roles)
                 log_policy = model_output["log_policy"].detach().cpu().numpy()
                 actions = utils.sample_action_from_logp(log_policy)
             steps += vec_env.num_envs

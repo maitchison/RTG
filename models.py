@@ -556,32 +556,67 @@ class PolicyModel(BaseModel):
             memory_units=128,
             out_features=128,
             model="default",
-            data_parallel=False
+            data_parallel=False,
+            roles=3,    # number of polcies / value_estimates to output
     ):
         super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode='cat')
 
+        self.roles = roles
+        self.actions = env.action_space.n
+
         # output heads
-        self.policy_head = nn.Linear(self.encoder_output_features, env.action_space.n)
+        self.policy_head = nn.Linear(self.encoder_output_features, self.roles * self.actions )
         torch.nn.init.xavier_uniform_(self.policy_head.weight, 0.01) # helps with exploration
 
-        self.local_int_value_head = nn.Linear(self.encoder_output_features, 1)
-        self.local_ext_value_head = nn.Linear(self.encoder_output_features, 1)
+        self.local_int_value_head = nn.Linear(self.encoder_output_features, roles)
+        self.local_ext_value_head = nn.Linear(self.encoder_output_features, roles)
 
         self.set_device_and_dtype(self.device, self.dtype)
 
-    def forward_sequence(self, obs, rnn_states, terminals=None):
+    def forward_sequence(self, obs, rnn_states, roles=None, terminals=None):
+        """
+        Forwards sequence through model. If roles is provided returns the appropriate policy and value as
+            log_policy: tensor [N, B, *policy_shape]
+            ext_value: tensor [N, B]
+            int_value: tensor [N, B]
+        Regardless all role policy and values are returned as
+            log_policies: tensor [N, B, R, *policy_shape]
+            ext_values: tensor [N, B, R]
+            int_values: tensor [N, B, R]
+        :param obs:
+        :param rnn_states:
+        :param roles: Roles for each agent at each timestep [N, B]
+        :param terminals:
+        :return:
+        """
 
         N, B, *obs_shape = obs.shape
         encoder_output, new_rnn_states = self._forward_sequence(obs, rnn_states, terminals)
 
-        log_policy = torch.log_softmax(self.policy_head(encoder_output), dim=-1)
-        ext_value = self.local_ext_value_head(encoder_output).squeeze(dim=-1)
-        int_value = self.local_int_value_head(encoder_output).squeeze(dim=-1)
+        policy_outputs = self.policy_head(encoder_output).reshape(N, B, self.roles, self.actions)
+        log_policy = torch.log_softmax(policy_outputs, dim=-1)
+        ext_value = self.local_ext_value_head(encoder_output)
+        int_value = self.local_int_value_head(encoder_output)
 
         result = {
-            'log_policy': log_policy,
-            'ext_value': ext_value,
-            'int_value': int_value
+            'role_log_policy': log_policy,
+            'role_ext_value': ext_value,
+            'role_int_value': int_value
         }
+
+        def extract_roles(x, roles):
+            """
+            Input is N, B, R, *shape
+            """
+            N, B, R, *shape = x.shape
+            parts = []
+            for n in range(N):
+                parts.append(x[n:n+1, range(B), roles[n]])
+            return torch.cat(parts, dim=0)
+
+        if roles is not None:
+            result['log_policy'] = extract_roles(log_policy, roles)
+            result['ext_value'] = extract_roles(ext_value, roles)
+            result['int_value'] = extract_roles(int_value, roles)
 
         return result, new_rnn_states
