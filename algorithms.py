@@ -484,8 +484,10 @@ class PMAlgorithm(MarlAlgorithm):
                         x = x.repeat(self.vec_env.max_players, axis=0)
                         return x
 
+                    player_predictions_uint8 = (torch.clamp(model_out["obs_prediction"].cpu().detach()*255, 0, 255).uint8()
+
                     self.batch_player_obs[t] = duplicate_to_public_order(prev_obs)
-                    self.batch_player_predictions[t] = model_out["obs_prediction"].cpu().detach()
+                    self.batch_player_predictions[t] = player_predictions_uint8
                     self.batch_player_policy[t] = duplicate_to_public_order(log_policy)
                     self.batch_player_terminals[t] = duplicate_to_public_order(prev_terminals)
                     self.batch_player_visible[t] = players_visible
