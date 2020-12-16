@@ -537,8 +537,10 @@ class PMAlgorithm(MarlAlgorithm):
                         self.agent_rnn_state[i] *= 0
                         # reset is handled automatically by vectorized environments
                         # so just need to keep track of book-keeping
-                        self.log.watch_full("ep_score", self.episode_score[i], display_width=0) # not needed in marl
-                        self.log.watch_full("ep_length", self.episode_len[i])
+                        self.log.watch_full("ep_score", self.episode_score[i], display_width=0)
+                        self.log.watch_full("ep_length", self.episode_len[i],  display_width=0)
+                        self.log.watch_mean("mean_ep_score", self.episode_score[i], display_width=8, display_precision=2)
+                        self.log.watch_mean("mean_ep_length", self.episode_len[i], display_width=8)
                         self.episode_score[i] = 0
                         self.episode_len[i] = 0
 

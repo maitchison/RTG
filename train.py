@@ -689,7 +689,7 @@ def run_test(scenario_name, team, epochs=2):
     # return scores
     return results
 
-def regression_test(tests: Union[str, tuple, list] = ("red2", "green2", "blue2")):
+def regression_test(tests: Union[str, tuple, list] = ("memory", "red2", "green2", "blue2")):
 
     print(f"Performing regression tests on {config.test_epochs} epochs, this could take some time.")
 
@@ -704,6 +704,7 @@ def regression_test(tests: Union[str, tuple, list] = ("red2", "green2", "blue2")
         f.write(str(config))
 
     for scenario_name, team, required_score in [
+        ("memory", "red", 7.5),
         ("red2", "red", 7.5),
         ("green2", "green", 7.5),
         ("blue2", "blue", 7.5),
@@ -824,6 +825,8 @@ def main():
         regression_test()
     elif args.mode == "profile":
         profile()
+    elif args.mode == "memory_test":
+        regression_test("memory")
     elif args.mode == "red_test":
         regression_test("red2")
     elif args.mode == "green_test":

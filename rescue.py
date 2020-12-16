@@ -192,6 +192,48 @@ class RescueTheGeneralScenario():
             "timeout": 1000
         },
 
+        "mem0": {
+            "description": "A test to make sure memory works.",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (2, 0, 0),
+            "max_view_distance": 5,
+            "team_view_distance": (5, 5, 5),
+            "bonus_actions": True,
+            "bonus_actions_delay": 0,
+            "timeout": 200,
+            "player_initial_health": 9999,
+            "general_initial_health": 9999, # game won't end until timeout
+        },
+
+        "mem1": {
+            "description": "A test to make sure memory works.",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (2, 0, 0),
+            "max_view_distance": 5,
+            "team_view_distance": (5, 5, 5),
+            "bonus_actions": True,
+            "bonus_actions_delay": 1,
+            "timeout": 200,
+            "player_initial_health": 9999,
+            "general_initial_health": 9999,  # game won't end until timeout
+        },
+
+        "mem10": {
+            "description": "A test to make sure memory works.",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (2, 0, 0),
+            "max_view_distance": 5,
+            "team_view_distance": (5, 5, 5),
+            "bonus_actions": True,
+            "bonus_actions_delay": 10,
+            "timeout": 200,
+            "player_initial_health": 9999,
+            "general_initial_health": 9999,  # game won't end until timeout
+        },
+
         # the idea here is to try and learn the other players identity
         "royale": {
             "description": "Red vs Blue, two soldiers each, in hidden roles battle royale.",
@@ -225,6 +267,9 @@ class RescueTheGeneralScenario():
         self.player_initial_health = 10
         self.location_encoding = "abs"  # none | sin | abs
         self.battle_royale = False   # removes general from game, and adds kill rewards
+        self.bonus_actions = False   # provides small reward for taking an action that is indicated on agents local
+                                     # observation some time after the signal appeared
+        self.bonus_actions_delay = 10
         self.enable_signals = False
         self.starting_locations = "together"
         self.randomize_ids = True # randomize the starting ID colors each reset
@@ -682,7 +727,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         result_general_killed = self.general_health <= 0
         result_general_rescued = self.general_tiles_from_edge == 0
-        result_game_timeout = self.counter >= self.scenario.timeout
+        result_game_timeout = self.counter >= (self.scenario.timeout-1)
         result_all_players_dead = all(player.is_dead for player in self.players)
         result_red_victory = False
         result_blue_victory = False
@@ -722,6 +767,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             team_rewards[self.TEAM_BLUE] += small_reward
             self.blue_rewards_for_winning -= small_reward  # make sure blue always gets the same number of points for winning
             self.blue_has_stood_next_to_general = True
+
+        if self.scenario.bonus_actions and self.counter > 0:
+            # reward agents for pressing actions that were indicated to them
+            # -1 is because there is a natural delay of 1 between giving hints and the score here.
+            expected_action = self.bonus_actions[self.counter-1]
+            for index, action in enumerate(actions):
+                if action == expected_action:
+                    rewards[index] += 10 / self.scenario.timeout
 
         if self.scenario.battle_royale:
 
@@ -764,7 +817,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # assign team rewards
 
         for player in self.players:
-            rewards[player.index] = team_rewards[player.team]
+            rewards[player.index] += team_rewards[player.team]
 
         self.team_scores += team_rewards
 
@@ -1099,6 +1152,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             #     shooting_bar = int(observer.turns_until_we_can_shoot / observer.shooting_timeout * frame_width)
             #     obs[3:3 + shooting_bar, -1, :3] = (128, 128, 255)
 
+            # if needed add a hint for 'bonus actions'
+            if self.scenario.bonus_actions:
+                action_hint = self.bonus_actions[self.counter+self.scenario.bonus_actions_delay]
+                obs[action_hint*3:(action_hint+1)*3, 0:3, :3] = (0, 255, 255)
+
         # show general off-screen location
         if (observer is not None) and (observer.team == self.TEAM_BLUE or self.scenario.general_always_visible):
 
@@ -1143,6 +1201,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.blue_rewards_for_winning = 10
 
         self._needs_repaint = True
+
+        # bonus actions
+        self.bonus_actions = np.random.randint(
+            low=0,
+            high=self.action_space.n,
+            size=[self.scenario.timeout + self.scenario.bonus_actions_delay + 1]
+        )
 
         # create map
         self.map[:, :] = 1
