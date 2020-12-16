@@ -111,6 +111,7 @@ class PMAlgorithm(MarlAlgorithm):
             vf_coef=0.5,
             ppo_epsilon=0.2,
             max_grad_norm=5.0,
+            lstm_mode="residual",
 
             # ------ deception module settings ----------------
 
@@ -164,7 +165,8 @@ class PMAlgorithm(MarlAlgorithm):
             data_parallel = False
 
         model = PolicyModel(vec_env, device=device, memory_units=policy_memory_units, model=model_name,
-                            data_parallel=data_parallel, out_features=policy_memory_units)
+                            data_parallel=data_parallel, out_features=policy_memory_units,
+                            lstm_mode=lstm_mode)
 
         if self.prediction_mode in ["self", "others", "both"]:
             self.deception_model = DeceptionModel(
@@ -475,7 +477,12 @@ class PMAlgorithm(MarlAlgorithm):
 
                 # forward state through model, then detach the result and convert to numpy.
                 with profiler.record_function("gr_model_step"):
-                    model_out, new_agent_rnn_state = self.forward(self.agent_obs, self.agent_rnn_state, roles=roles)
+                    model_out, new_agent_rnn_state = self.forward(
+                        self.agent_obs,
+                        self.agent_rnn_state,
+                        roles=roles,
+                        disable_deception=self.prediction_mode != "both" # only both requires predictions as targets
+                    )
                 self.agent_rnn_state[:] = new_agent_rnn_state
 
                 role_log_policies = model_out["role_log_policy"].detach().cpu().numpy()
@@ -645,7 +652,7 @@ class PMAlgorithm(MarlAlgorithm):
         return rnn_states[..., self.policy_memory_units:]
 
     @profiler.record_function("model_forward")
-    def forward(self, obs, rnn_states, roles):
+    def forward(self, obs, rnn_states, roles, disable_deception=False):
         """
         Forwards a single observations through model for each agent
         For more advanced uses call model.forward_sequence directly.
@@ -686,7 +693,7 @@ class PMAlgorithm(MarlAlgorithm):
             roles=roles
         )
 
-        if self.uses_deception_model:
+        if self.uses_deception_model and not disable_deception:
             deception_result, new_deception_rnn_states = self.deception_model.forward_sequence(
                 obs=obs[np.newaxis],
                 rnn_states=self.extract_deception_rnn_states(rnn_states)
@@ -870,7 +877,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         role_targets = merge_down(data["player_roles"]) # [N*B, n_players]
         # predictions come out as [N*B, n_players, n_roles], but we need them as [N*B, n_roles, n_players]
-        rp_coef = 1.0
+        rp_coef = 0.0001 # stub, don't let this interfare with graident clipping for the moment, should be 1
         role_predictions = merge_down(model_out["role_prediction"]).transpose(1, 2)
         loss_role = rp_coef * torch.nn.functional.nll_loss(role_predictions, role_targets)
 
@@ -881,12 +888,13 @@ class PMAlgorithm(MarlAlgorithm):
         # Calculate self prediction loss
         # -------------------------------------------------------------------------
 
-        if self.prediction_mode == ["self"]:
-            # in this case we make targets just our observations
-            self_obs_pred = model_out["obs_prediction"]  # [N, B, 1, *obs_shape]
+        if self.prediction_mode == "self":
+            # in this case we make targets our own observations
+            self_obs_pred = model_out["obs_prediction"][:, :, 0]  # [N, B, 1, *obs_shape]
             self_obs_true = data["prev_obs"].float() / 255  # [N, B, *obs_shape]
             self_obs_mse_rgb, self_obs_mse_xy = get_obs_distance(self_obs_pred, self_obs_true)
-            self.log.watch_mean("self_obs_mse_rgb", self_obs_mse_rgb)
+            self_obs_score = -np.log10(self_obs_mse_rgb.cpu().detach().numpy())
+            self.log.watch_mean("self_obs_score", self_obs_score, display_width=10, display_precision=2)
             loss += self_obs_mse_rgb
 
         # -------------------------------------------------------------------------
@@ -896,7 +904,7 @@ class PMAlgorithm(MarlAlgorithm):
         if self.prediction_mode in ["others", "both"]:
             # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
             obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape] (in public_id order)
-            obs_truth = data["player_obs"].float()/255 # [N, B, n_players, *obs_shape] (in public_id order)
+            obs_truth = data["player_obs"].float() / 255 # [N, B, n_players, *obs_shape] (in public_id order)
 
             # remove from prediction other players we are not visible
             filtered_obs_predictions = filter_visible(obs_predictions, player_visible)

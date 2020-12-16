@@ -518,7 +518,6 @@ class DeceptionModel(BaseModel):
         if self.prediction_players > 0:
             # predictions will come out as (N*B, c, h*n_players, w)
             # but we need (N, B, n_players, h, w, c)
-            # stub: check we are not messing with the shape here
             obs_prediction = self.observation_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
             h, w, c = self.obs_shape
             obs_prediction = obs_prediction.reshape(N, B, c, self.prediction_players * h, w)
@@ -569,8 +568,9 @@ class PolicyModel(BaseModel):
             model="default",
             data_parallel=False,
             roles=3,    # number of polcies / value_estimates to output
+            lstm_mode="residual",
     ):
-        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode='cat')
+        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode=lstm_mode)
 
         self.roles = roles
         self.actions = env.action_space.n

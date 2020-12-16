@@ -220,6 +220,34 @@ class RescueTheGeneralScenario():
             "general_initial_health": 9999,  # game won't end until timeout
         },
 
+        "mem2": {
+            "description": "A test to make sure memory works.",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (2, 0, 0),
+            "max_view_distance": 5,
+            "team_view_distance": (5, 5, 5),
+            "bonus_actions": True,
+            "bonus_actions_delay": 2,
+            "timeout_mean": 200,
+            "player_initial_health": 9999,
+            "general_initial_health": 9999,  # game won't end until timeout
+        },
+
+        "mem4": {
+            "description": "A test to make sure memory works.",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (2, 0, 0),
+            "max_view_distance": 5,
+            "team_view_distance": (5, 5, 5),
+            "bonus_actions": True,
+            "bonus_actions_delay": 4,
+            "timeout_mean": 200,
+            "player_initial_health": 9999,
+            "general_initial_health": 9999,  # game won't end until timeout
+        },
+
         "mem10": {
             "description": "A test to make sure memory works.",
             "map_width": 24,
@@ -262,7 +290,7 @@ class RescueTheGeneralScenario():
         self.team_shoot_timeout = (3, 3, 3)  # number of turns between shooting
 
         self.timeout_mean = 500
-        self.timeout_sigma = 50       # this helps make sure games are not always in sync, which can happen if lots of
+        self.timeout_rnd = 0.1      # this helps make sure games are not always in sync, which can happen if lots of
                                     # games timeout.
         self.general_always_visible = False
         self.general_initial_health = 10
@@ -775,9 +803,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             # reward agents for pressing actions that were indicated to them
             # -1 is because there is a natural delay of 1 between giving hints and the score here.
             expected_action = self.bonus_actions[self.counter-1]
-            for index, action in enumerate(actions):
-                if action == expected_action:
-                    rewards[index] += 10 / self.scenario.timeout_mean # must be mean otherwise rewards are stocastic
+            if expected_action >= 0:
+                bonus_count = len(self.bonus_actions[self.bonus_actions >= 0])
+                for index, action in enumerate(actions):
+                    if action == expected_action:
+                        # must be mean otherwise rewards are stocastic
+                        # this makes rewards total to ~10
+                        rewards[index] += 10 / bonus_count
 
         if self.scenario.battle_royale:
 
@@ -1203,7 +1235,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.blue_has_stood_next_to_general = False
         self.blue_rewards_for_winning = 10
 
-        self.timeout = np.random.normal(self.scenario.timeout_mean, self.scenario.timeout_sigma)
+        self.timeout = int(np.random.normal(self.scenario.timeout_mean, self.scenario.timeout_mean*self.scenario.timeout_rnd))
+        if self.timeout < 1:
+            self.timeout = 1
 
         self._needs_repaint = True
 
@@ -1213,6 +1247,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             high=self.action_space.n,
             size=[self.timeout + self.scenario.bonus_actions_delay + 1]
         )
+
+        # zero out actions so that agent only has to remember one at a time
+        if self.scenario.bonus_actions_delay > 0:
+            for i in range(len(self.bonus_actions)):
+                if i % self.scenario.bonus_actions_delay != 0:
+                    self.bonus_actions[i] = -1
 
         # create map
         self.map[:, :] = 1
