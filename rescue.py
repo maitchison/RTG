@@ -189,7 +189,7 @@ class RescueTheGeneralScenario():
             "team_view_distance": (5, 5, 5),
             "n_trees": 10,
             "reward_per_tree": 1,
-            "timeout": 1000
+            "timeout_mean": 1000
         },
 
         "mem0": {
@@ -201,7 +201,7 @@ class RescueTheGeneralScenario():
             "team_view_distance": (5, 5, 5),
             "bonus_actions": True,
             "bonus_actions_delay": 0,
-            "timeout": 200,
+            "timeout_mean": 200,
             "player_initial_health": 9999,
             "general_initial_health": 9999, # game won't end until timeout
         },
@@ -215,7 +215,7 @@ class RescueTheGeneralScenario():
             "team_view_distance": (5, 5, 5),
             "bonus_actions": True,
             "bonus_actions_delay": 1,
-            "timeout": 200,
+            "timeout_mean": 200,
             "player_initial_health": 9999,
             "general_initial_health": 9999,  # game won't end until timeout
         },
@@ -229,7 +229,7 @@ class RescueTheGeneralScenario():
             "team_view_distance": (5, 5, 5),
             "bonus_actions": True,
             "bonus_actions_delay": 10,
-            "timeout": 200,
+            "timeout_mean": 200,
             "player_initial_health": 9999,
             "general_initial_health": 9999,  # game won't end until timeout
         },
@@ -261,7 +261,9 @@ class RescueTheGeneralScenario():
         self.team_counts = (4, 4, 4)
         self.team_shoot_timeout = (3, 3, 3)  # number of turns between shooting
 
-        self.timeout = 500
+        self.timeout_mean = 500
+        self.timeout_sigma = 50       # this helps make sure games are not always in sync, which can happen if lots of
+                                    # games timeout.
         self.general_always_visible = False
         self.general_initial_health = 10
         self.player_initial_health = 10
@@ -465,6 +467,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.name = name
         self.counter = 0
+        self.timeout = 0
         self.game_counter = 0
         self.dummy_prob = dummy_prob
 
@@ -727,7 +730,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         result_general_killed = self.general_health <= 0
         result_general_rescued = self.general_tiles_from_edge == 0
-        result_game_timeout = self.counter >= (self.scenario.timeout-1)
+        result_game_timeout = self.counter >= (self.timeout-1)
         result_all_players_dead = all(player.is_dead for player in self.players)
         result_red_victory = False
         result_blue_victory = False
@@ -774,7 +777,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             expected_action = self.bonus_actions[self.counter-1]
             for index, action in enumerate(actions):
                 if action == expected_action:
-                    rewards[index] += 10 / self.scenario.timeout
+                    rewards[index] += 10 / self.scenario.timeout_mean # must be mean otherwise rewards are stocastic
 
         if self.scenario.battle_royale:
 
@@ -1140,7 +1143,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             # bars for time, health, and shooting timeout
             frame_width, frame_height, _ = obs[3:-3, 3:-3, :].shape
 
-            time_bar = int((self.scenario.timeout - self.counter) / self.scenario.timeout * frame_width)
+            time_bar = int((self.timeout - self.counter) / self.timeout * frame_width)
             obs[3:3 + time_bar, -3, :3] = (255, 255, 128)
 
             health_bar = int(observer.health / self.scenario.player_initial_health * frame_width)
@@ -1200,13 +1203,15 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.blue_has_stood_next_to_general = False
         self.blue_rewards_for_winning = 10
 
+        self.timeout = np.random.normal(self.scenario.timeout_mean, self.scenario.timeout_sigma)
+
         self._needs_repaint = True
 
         # bonus actions
         self.bonus_actions = np.random.randint(
             low=0,
             high=self.action_space.n,
-            size=[self.scenario.timeout + self.scenario.bonus_actions_delay + 1]
+            size=[self.timeout + self.scenario.bonus_actions_delay + 1]
         )
 
         # create map
