@@ -111,15 +111,20 @@ class MultiAgentVecEnv(SubprocVecEnv):
                 result = max(result, 1 + player.team)
         return result
 
+    @property
+    def players(self):
+        players = []
+        for game in self.games:
+            for player in game.players:
+                players.append(player)
+        return players
+
     def get_roles(self):
         """
         Returns numpy array containing roles for each player
         :return: tensor of dims [n_players]
         """
-        roles = []
-        for game in self.games:
-            for player in game.players:
-                roles.append(player.team)
+        roles = [player.team for player in self.players]
         return np.asarray(roles, dtype=np.int64)
 
     def get_roles_expanded(self):

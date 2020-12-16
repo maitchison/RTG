@@ -84,13 +84,13 @@ class Config():
         self.eval_scenarios = list()
         self.vary_team_player_counts = bool()
         self.amp = bool()
-        self.data_parallel = bool()
         self.micro_batch_size: Union[str, int] = str()
         self.n_steps = int()
         self.enable_deception = bool()
         self.export_rollout = bool()
         self.test_epochs = int()
         self.save_model = str()
+        self.prediction_mode = str()
 
         self.verbose = int()
 
@@ -211,7 +211,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     # work out our height
     height, width, channels = frame.shape
     orig_height, orig_width = height, width
-    if algorithm.enable_deception:
+    if algorithm.uses_deception_model:
         height = height + n_players * obs_size
         width = max(width, (n_players*2 + 1) * obs_size)
     scaled_width = (width * scale) // 4 * 4 # make sure these are multiples of 4
@@ -243,7 +243,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         frame = env.render("rgb_array")
 
         # overlay observation predictions
-        if config.enable_deception:
+        if config.prediction_mode != "off":
 
             blank_frame = np.zeros([height, width, 3], dtype=np.uint8)
             blank_frame[:frame.shape[0], :frame.shape[1], :] = frame  # copy into potentially larger frame
@@ -272,9 +272,6 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                     c = [int(x * 255) for x in role_predictions[i, j]]
                     draw_pixel(frame, dy + (i+1) * block_size, dx + (j+1) * block_size, c=c, size=block_size)
 
-            # observation frames are [n_players, n_players, h, w, c]
-            obs_predictions = model_output["obs_prediction"].detach().cpu().numpy()
-            obs_pp = model_output["obs_predictions_prediction"].detach().cpu().numpy()
             obs_truth = env_obs.copy()
 
             # ground truth
@@ -284,22 +281,28 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                 frame[dy:dy + obs_size, dx:dx + obs_size] = obs_truth[i, :, :, :3].swapaxes(0, 1)
 
             # predictions
-            for i in range(n_players):
-                for j in range(n_players):
-                    dx = j * obs_size + obs_size
-                    dy = orig_height + i * obs_size
-                    # we transpose as rescue is x,y instead of y,x
-                    frame[dy:dy+obs_size, dx:dx+obs_size] = \
-                        np.asarray(obs_predictions[i, j, :, :, :3]*255, dtype=np.uint8).swapaxes(0, 1)
+            if "obs_prediction" in model_output:
+                # observation frames are [n_players, n_predictions, h, w, c]
+                obs_predictions = model_output["obs_prediction"].detach().cpu().numpy()
+                n_players, n_predictions, h, w, c = obs_predictions.shape
+                for i in range(n_players):
+                    for j in range(n_predictions):
+                        dx = j * obs_size + obs_size
+                        dy = orig_height + i * obs_size
+                        # we transpose as rescue is x,y instead of y,x
+                        frame[dy:dy+obs_size, dx:dx+obs_size] = \
+                            np.asarray(obs_predictions[i, j, :, :, :3]*255, dtype=np.uint8).swapaxes(0, 1)
 
             # prediction predictions
-            for i in range(n_players):
-                for j in range(n_players):
-                    dx = j * obs_size + (obs_size*(n_players+1))
-                    dy = orig_height + i * obs_size
-                    # we transpose as rescue is x,y instead of y,x
-                    frame[dy:dy+obs_size, dx:dx+obs_size] = \
-                        np.asarray(obs_pp[i, j, :, :, :3]*255, dtype=np.uint8).swapaxes(0, 1)
+            if "obs_predictions_prediction" in model_output:
+                obs_pp = model_output["obs_predictions_prediction"].detach().cpu().numpy()
+                for i in range(n_players):
+                    for j in range(n_players):
+                        dx = j * obs_size + (obs_size*(n_players+1))
+                        dy = orig_height + i * obs_size
+                        # we transpose as rescue is x,y instead of y,x
+                        frame[dy:dy+obs_size, dx:dx+obs_size] = \
+                            np.asarray(obs_pp[i, j, :, :, :3]*255, dtype=np.uint8).swapaxes(0, 1)
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
@@ -491,7 +494,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
 
     algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, export_rollout=config.export_rollout,
                             micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
-                            enable_deception=config.enable_deception,
+                            prediction_mode=config.prediction_mode,
                             verbose=config.verbose >= 2, **algo_params)
 
     algorithm.log_folder = config.log_folder
@@ -792,11 +795,8 @@ def main():
     parser.add_argument('--export_rollout', type=str2bool, nargs='?', const=True, default=False,
                         help="Exports rollout to disk, very large")
 
-    parser.add_argument('--enable_deception', type=str2bool, nargs='?', const=True, default=False,
-                        help="Enables the deception module during training")
+    parser.add_argument('--prediction_mode', type=str, default="off", help="off|self|others|both")
 
-    parser.add_argument('--data_parallel', type=str2bool, nargs='?', const=True, default=False,
-                        help="Enable data parallelism, can speed things up on multi-gpu machines.")
     parser.add_argument('--micro_batch_size', type=str, default="auto",
                         help="Number of samples per micro-batch, reduce if GPU ram is exceeded.")
 

@@ -441,13 +441,16 @@ class DeceptionModel(BaseModel):
     def __init__(
             self,
             env: MultiAgentVecEnv,
+            prediction_players,
+            backwards_prediction_players,
             device="cpu",
             dtype=torch.float32,
             memory_units=512,
             out_features=512,
             model="default",
             data_parallel=False,
-            lstm_mode='cat'
+            lstm_mode='cat',
+
     ):
         super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode)
 
@@ -455,6 +458,9 @@ class DeceptionModel(BaseModel):
         self.role_prediction_head = nn.Linear(self.encoder_output_features, (self.n_players * self.n_roles))
         # prediction of each observation in public_id order
         h, w, c = self.obs_shape
+
+        self.prediction_players = prediction_players
+        self.backwards_prediction_players = backwards_prediction_players
 
         if model.lower() in ["default", "fast"]:
             if model.lower() == "fast":
@@ -466,23 +472,27 @@ class DeceptionModel(BaseModel):
         else:
             raise ValueError(f"Invalid model name {model}")
 
-        self.observation_prediction_head = decoder_fn(
-            (c, h * self.n_players, w),
-            self.encoder_output_features
-        )
+        if self.prediction_players > 0:
+            self.observation_prediction_head = decoder_fn(
+                (c, h * prediction_players, w),
+                self.encoder_output_features
+            )
+        else:
+            self.observation_prediction_head = None
 
-        self.observation_predictions_prediction_head = decoder_fn(
-            (c, h * self.n_players, w),
-            self.encoder_output_features
-        )
-
-        if data_parallel:
-            self.observation_prediction_head = DP(self.observation_prediction_head)
-            self.observation_predictions_prediction_head = DP(self.observation_predictions_prediction_head)
+        if self.backwards_prediction_players > 0:
+            self.observation_predictions_prediction_head = decoder_fn(
+                (c, h * self.backwards_prediction_players, w),
+                self.encoder_output_features
+            )
+        else:
+            self.observation_predictions_prediction_head = None
 
         self.set_device_and_dtype(self.device, self.dtype)
 
     def forward_sequence(self, obs, rnn_states, terminals=None):
+
+        result = {}
 
         N, B, *obs_shape = obs.shape
         encoder_output, new_rnn_states = self._forward_sequence(
@@ -499,38 +509,39 @@ class DeceptionModel(BaseModel):
         unnormalized_role_predictions = self.role_prediction_head(detached_encoder_output).reshape(
             [N, B, self.n_players, self.n_roles])
         role_prediction = torch.log_softmax(unnormalized_role_predictions, dim=-1)
+        result['role_prediction'] = role_prediction
 
         # ------------------------------
         # obs prediction
         # ------------------------------
 
-        obs_prediction = self.observation_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
-
-        # predictions will come out as (N*B, c, h*n_players, w)
-        # but we need (N, B, n_players, h, w, c)
-        h, w, c = self.obs_shape
-        obs_prediction = obs_prediction.reshape(N, B, c, self.n_players * h, w)
-        obs_prediction = obs_prediction.split(h, dim=3)
-        obs_prediction = torch.stack(obs_prediction, dim=2)
-        obs_prediction = obs_prediction.transpose(-3, -1)
-        obs_prediction = obs_prediction.transpose(-3, -2)
+        if self.prediction_players > 0:
+            # predictions will come out as (N*B, c, h*n_players, w)
+            # but we need (N, B, n_players, h, w, c)
+            # stub: check we are not messing with the shape here
+            obs_prediction = self.observation_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
+            h, w, c = self.obs_shape
+            obs_prediction = obs_prediction.reshape(N, B, c, self.prediction_players * h, w)
+            obs_prediction = obs_prediction.split(h, dim=3)
+            obs_prediction = torch.stack(obs_prediction, dim=2)
+            obs_prediction = obs_prediction.transpose(-3, -1)
+            obs_prediction = obs_prediction.transpose(-3, -2)
+            result['obs_prediction'] = obs_prediction
 
         # ------------------------------
         # obs predictions prediction
         # ------------------------------
 
-        obs_pp = self.observation_predictions_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
-        h, w, c = self.obs_shape
-        obs_pp = obs_pp.reshape(N, B, c, self.n_players * h, w)
-        obs_pp = obs_pp.split(h, dim=3)
-        obs_pp = torch.stack(obs_pp, dim=2)
-        obs_pp = obs_pp.transpose(-3, -1)
-        obs_pp = obs_pp.transpose(-3, -2)
+        if self.backwards_prediction_players > 0:
+            obs_pp = self.observation_predictions_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
+            h, w, c = self.obs_shape
+            obs_pp = obs_pp.reshape(N, B, c, self.backwards_prediction_players * h, w)
+            obs_pp = obs_pp.split(h, dim=3)
+            obs_pp = torch.stack(obs_pp, dim=2)
+            obs_pp = obs_pp.transpose(-3, -1)
+            obs_pp = obs_pp.transpose(-3, -2)
+            result['obs_predictions_prediction'] = obs_pp
 
-        result = {}
-        result['role_prediction'] = role_prediction
-        result['obs_prediction'] = obs_prediction
-        result['obs_predictions_prediction'] = obs_pp
         return result, new_rnn_states
 
 
@@ -585,7 +596,7 @@ class PolicyModel(BaseModel):
             int_values: tensor [N, B, R]
         :param obs:
         :param rnn_states:
-        :param roles: Roles for each agent at each timestep [N, B]
+        :param roles: Roles for each agent at each timestep (tensor) [N, B]
         :param terminals:
         :return:
         """
@@ -615,6 +626,9 @@ class PolicyModel(BaseModel):
             return torch.cat(parts, dim=0)
 
         if roles is not None:
+            if type(roles) is np.ndarray:
+                roles = torch.from_numpy(roles)
+            roles = roles.to(torch.int64) # required for indexing...?
             result['log_policy'] = extract_roles(log_policy, roles)
             result['ext_value'] = extract_roles(ext_value, roles)
             result['int_value'] = extract_roles(int_value, roles)
