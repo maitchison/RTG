@@ -150,13 +150,18 @@ if __name__ == "__main__":
         dm_loss_fn = random.choice(["l2", "mse", "l1"])
         dm_kl_factor = random.choice([0])
         dm_loss_scale = random.choice([1, 10, 100])
-
         dm_out_features = dm_memory_units
 
-        main_params = "--train_scenarios='r2g2_hrp' --eval_scenarios='[]' --prediction_mode='self' --save_model=recent "\
+        main_params = " ".join([
+            "--train_scenarios=r2g2_hrp",
+            "--eval_scenarios=[]",
+            "--micro_batch_size=1024", # slower, but less memory, can run two searches in parallel
+            "--prediction_mode='self'",
+            "--save_model=recent",
             "--epochs=5"
+            ])
 
-        algo_params = "{" +\
+        algo_params = "{" + \
                       f"'dm_max_window_size':{dm_max_window_size}," + \
                       f"'dm_replay_buffer_multiplier':{dm_replay_buffer_multiplier}," + \
                       f"'dm_mini_batch_size':{dm_mini_batch_size}," + \

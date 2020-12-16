@@ -1035,7 +1035,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         last_epoch = math.ceil(epochs)
 
-        B = batch_data["prev_obs"].shape[1]
+        N, B = batch_data["prev_obs"].shape[0:2]
         window_size = min(max_window_size or float('inf'), self.n_steps)
 
         assert mini_batch_size % window_size == 0
@@ -1085,7 +1085,7 @@ class PMAlgorithm(MarlAlgorithm):
 
                         # if we are using random window offsets calculate them here...
                         if max_window_size is not None:
-                            gap = len(value) - max_window_size
+                            gap = N - max_window_size
                             if enable_window_offsets and gap > 0:
                                 offsets = np.random.randint(0, gap, size=[segments_per_micro_batch])
                             else:
