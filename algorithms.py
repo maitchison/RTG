@@ -693,13 +693,17 @@ class PMAlgorithm(MarlAlgorithm):
             roles=roles
         )
 
-        if self.uses_deception_model and not disable_deception:
-            deception_result, new_deception_rnn_states = self.deception_model.forward_sequence(
-                obs=obs[np.newaxis],
-                rnn_states=self.extract_deception_rnn_states(rnn_states)
-            )
-            for k, v in deception_result.items():
-                result[k] = v
+        if self.uses_deception_model:
+            if disable_deception:
+                # just copy old states through
+                new_deception_rnn_states = self.extract_deception_rnn_states(rnn_states)
+            else:
+                deception_result, new_deception_rnn_states = self.deception_model.forward_sequence(
+                    obs=obs[np.newaxis],
+                    rnn_states=self.extract_deception_rnn_states(rnn_states)
+                )
+                for k, v in deception_result.items():
+                    result[k] = v
             new_rnn_states = torch.cat([new_rnn_states, new_deception_rnn_states], dim=-1)
 
         # remove the sequence of length 1
@@ -895,7 +899,7 @@ class PMAlgorithm(MarlAlgorithm):
             self_obs_mse_rgb, self_obs_mse_xy = get_obs_distance(self_obs_pred, self_obs_true)
             self_obs_score = -np.log10(self_obs_mse_rgb.cpu().detach().numpy())
             self.log.watch_mean("self_obs_score", self_obs_score, display_width=10, display_precision=2)
-            loss += self_obs_mse_rgb
+            loss += self_obs_mse_rgb * self.dm_loss_scale
 
         # -------------------------------------------------------------------------
         # Calculate observation prediction loss
@@ -1049,6 +1053,9 @@ class PMAlgorithm(MarlAlgorithm):
             assert mini_batch_segments % max_micro_batch_segments == 0
             micro_batches = mini_batch_segments // max_micro_batch_segments
 
+        # stub: print details
+        # print(short_name, micro_batches, mini_batches, mini_batch_segments, max_micro_batch_segments)
+
         for i in range(last_epoch):
 
             segments = list(range(B))
@@ -1076,6 +1083,14 @@ class PMAlgorithm(MarlAlgorithm):
                         batch_end = (micro_batch_counter + 1) * segments_per_micro_batch
                         sample = segments[batch_start:batch_end]
 
+                        # if we are using random window offsets calculate them here...
+                        if max_window_size is not None:
+                            gap = len(value) - max_window_size
+                            if enable_window_offsets and gap > 0:
+                                offsets = np.random.randint(0, gap, size=[segments_per_micro_batch])
+                            else:
+                                offsets = np.zeros([segments_per_micro_batch])
+
                         # put together a mini batch from all agents at this time step...
                         mini_batch_data = {}
                         for key, value in batch_data.items():
@@ -1086,16 +1101,13 @@ class PMAlgorithm(MarlAlgorithm):
                             # select random sub-windows, useful if n_steps if high, but we want small segments
                             if max_window_size is not None:
                                 if enable_window_offsets:
-                                    gap = len(value)-max_window_size
-                                    if gap > 0:
-                                        offsets = np.random.randint(0, gap, size=[len(value)])
-                                        value = np.roll(value, -offsets, axis=0)
-                                        value = value[:max_window_size]
+                                    value = np.roll(value, -offsets, axis=0)
+                                    value = value[:max_window_size]
                                 else:
                                     value = value[:max_window_size]
 
                             if key == "rnn_states":
-                                # only need first rnn_state for minibatch, saves a bit of GPU memory
+                                # only need first rnn_state for mini_batch, saves a bit of GPU memory
                                 value = value[0:1]
 
                             mini_batch_data[key] = torch.from_numpy(value).to(device=model.device)

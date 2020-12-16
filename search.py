@@ -127,24 +127,34 @@ if __name__ == "__main__":
         # dm_loss_scale = random.choice([1, 3, 10])
 
         # prediction_search_2
-        dm_max_window_size = random.choice([4, 8, 16])
-        dm_replay_buffer_multiplier = random.choice([4, 8])
-        dm_mini_batch_size = random.choice([256, 512, 1024])
-        dm_out_features = random.choice([1024])
-        dm_memory_units = random.choice([1024])
+        # dm_max_window_size = random.choice([4, 8, 16])
+        # dm_replay_buffer_multiplier = random.choice([4, 8])
+        # dm_mini_batch_size = random.choice([256, 512, 1024])
+        # dm_out_features = random.choice([1024])
+        # dm_memory_units = random.choice([1024])
+        # dm_lstm_mode = random.choice(['residual'])
+        # dm_xy_factor = random.choice([1])
+        # dm_learning_rate = random.choice([2.5e-4])
+        # dm_loss_fn = random.choice(["l2"])
+        # dm_kl_factor = random.choice([0, 0.5, 1])
+        # dm_loss_scale = random.choice([1])
+
+        # self search
+        dm_max_window_size = random.choice([2, 4, 8, 16, 32])
+        dm_replay_buffer_multiplier = random.choice([1, 2, 4, 8, 16])
+        dm_mini_batch_size = random.choice([128, 256, 512, 1024])
+        dm_memory_units = random.choice([128, 256, 512, 1024])
         dm_lstm_mode = random.choice(['residual'])
         dm_xy_factor = random.choice([1])
-        dm_learning_rate = random.choice([2.5e-4])
-        dm_loss_fn = random.choice(["l2"])
-        dm_kl_factor = random.choice([0, 0.5, 1])
-        dm_loss_scale = random.choice([1])
+        dm_learning_rate = random.choice([1e-3, 2.5e-4])
+        dm_loss_fn = random.choice(["l2", "mse", "l1"])
+        dm_kl_factor = random.choice([0])
+        dm_loss_scale = random.choice([1, 10, 100])
 
-        if dm_lstm_mode == 'residual':
-            # residual requires these to be the same..
-            dm_out_features = dm_memory_units
+        dm_out_features = dm_memory_units
 
-        main_params = "--train_scenarios='r2g2_hrp' --eval_scenarios='[]' --enable_deception=True --save_model=recent "\
-            "--epochs=50"
+        main_params = "--train_scenarios='r2g2_hrp' --eval_scenarios='[]' --prediction_mode='self' --save_model=recent "\
+            "--epochs=5"
 
         algo_params = "{" +\
                       f"'dm_max_window_size':{dm_max_window_size}," + \

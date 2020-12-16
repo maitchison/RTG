@@ -521,13 +521,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         if self.scenario.bonus_actions and self.counter > 0:
             # reward agents for pressing actions that were indicated to them
-            # -1 is because there is a natural delay of 1 between giving hints and the score here.
+            # there is a natural delay of 1
             expected_action = self.bonus_actions[self.counter-1]
             if expected_action >= 0:
                 bonus_count = len(self.bonus_actions[self.bonus_actions >= 0])
                 for index, action in enumerate(actions):
                     if action == expected_action:
-                        # must be mean otherwise rewards are stocastic
+                        # must be mean otherwise rewards are stochastic
                         # this makes rewards total to ~10
                         rewards[index] += 10 / bonus_count
 
@@ -620,15 +620,14 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 # record the outcome in infos as it will be lost if environment is auto reset.
                 info["outcome"] = self.outcome
 
-        obs = self._get_observations()
-
-        self.counter += 1
 
         rewards *= self.REWARD_SCALE
-
-        obs = np.asarray(obs)
         rewards = np.asarray(rewards)
         dones = np.asarray(dones)
+
+        self.counter += 1
+        obs = self._get_observations()
+        obs = np.asarray(obs)
 
         return obs, rewards, dones, infos
 
@@ -971,7 +970,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # zero out actions so that agent only has to remember one at a time
         if self.scenario.bonus_actions_one_at_a_time and self.scenario.bonus_actions_delay > 0:
             for i in range(len(self.bonus_actions)):
-                if i % self.scenario.bonus_actions_delay != 0:
+                if i % self.scenario.bonus_actions_delay != (self.scenario.bonus_actions_delay-1):
                     self.bonus_actions[i] = -1
 
         # create map
@@ -1098,7 +1097,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         w,h,_ = image.shape
         frame[x:x+w, y:y+h] = image
 
-    def _render_rgb(self, show_location=False, role_predictions=None):
+    def _render_rgb(self, show_location=False):
         """
         Render out a frame
         :param show_location: displays location information

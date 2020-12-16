@@ -86,7 +86,6 @@ class Config():
         self.amp = bool()
         self.micro_batch_size: Union[str, int] = str()
         self.n_steps = int()
-        self.enable_deception = bool()
         self.export_rollout = bool()
         self.test_epochs = int()
         self.save_model = str()
@@ -230,14 +229,13 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
         with torch.no_grad():
             roles = vec_env.get_roles()
+            obs_truth = env_obs.copy()
             model_output, new_rnn_state = algorithm.forward(env_obs, rnn_state, roles)
 
             rnn_state[:] = new_rnn_state[:]
 
             log_policy = model_output["log_policy"].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(log_policy)
-
-        env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
 
         # generate frames from global perspective
         frame = env.render("rgb_array")
@@ -271,8 +269,6 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                 for j in range(env.n_players):
                     c = [int(x * 255) for x in role_predictions[i, j]]
                     draw_pixel(frame, dy + (i+1) * block_size, dx + (j+1) * block_size, c=c, size=block_size)
-
-            obs_truth = env_obs.copy()
 
             # ground truth
             for i in range(n_players):
@@ -315,6 +311,9 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             "Frame should be {} but is {}".format((scaled_width, scaled_height, 3), frame.shape)
 
         video_out.write(frame)
+
+        # step environment
+        env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
 
     video_out.release()
 
@@ -689,7 +688,7 @@ def run_test(scenario_name, team, epochs=2):
     # return scores
     return results
 
-def regression_test(tests: Union[str, tuple, list] = ("memory", "red2", "green2", "blue2")):
+def regression_test(tests: Union[str, tuple, list] = ("mem2b", "red2", "green2", "blue2")):
 
     print(f"Performing regression tests on {config.test_epochs} epochs, this could take some time.")
 
@@ -704,7 +703,7 @@ def regression_test(tests: Union[str, tuple, list] = ("memory", "red2", "green2"
         f.write(str(config))
 
     for scenario_name, team, required_score in [
-        ("memory", "red", 7.5),
+        ("mem2b", "red", 7.5),
         ("red2", "red", 7.5),
         ("green2", "green", 7.5),
         ("blue2", "blue", 7.5),
@@ -826,7 +825,7 @@ def main():
     elif args.mode == "profile":
         profile()
     elif args.mode == "memory_test":
-        regression_test("memory")
+        regression_test("mem2b")
     elif args.mode == "red_test":
         regression_test("red2")
     elif args.mode == "green_test":

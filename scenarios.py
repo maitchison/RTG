@@ -206,6 +206,21 @@ class RescueTheGeneralScenario():
             "general_initial_health": 9999,  # game won't end until timeout
         },
 
+        "mem4b": {
+            "description": "A test to make sure memory works.",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (2, 0, 0),
+            "max_view_distance": 5,
+            "team_view_distance": (5, 5, 5),
+            "bonus_actions": True,
+            "bonus_actions_one_at_a_time": True,
+            "bonus_actions_delay": 4,
+            "timeout_mean": 200,
+            "player_initial_health": 9999,
+            "general_initial_health": 9999,  # game won't end until timeout
+        },
+
         "mem10": {
             "description": "A test to make sure memory works.",
             "map_width": 24,
