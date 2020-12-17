@@ -161,7 +161,7 @@ class PMAlgorithm(MarlAlgorithm):
         if self.prediction_mode in ["self", "others", "both"]:
             self.deception_model = DeceptionModel(
                 vec_env,
-                prediction_players=1 if self.prediction_mode == "self" else vec_env.max_players,
+                n_players=1 if self.prediction_mode == "self" else vec_env.max_players,
                 backwards_prediction_players=vec_env.max_players if self.prediction_mode == "both" else 0,
                 device=device,
                 memory_units=dm_memory_units,
@@ -945,7 +945,7 @@ class PMAlgorithm(MarlAlgorithm):
         if self.prediction_mode == "both":
             raise NotImplemented()
             # n_players = self.vec_env.max_players
-            # pred_predictions = model_out["obs_predictions_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape] (in public_id order)
+            # pred_predictions = model_out["obs_backwards_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape] (in public_id order)
             # true_predictions = data["player_predictions"].float()/255
             # pp_loss_rgb, pp_loss_xy = get_obs_distance(pred_predictions, true_predictions, self.dm_loss_fn)
             # pp_loss = pp_loss_rgb + pp_loss_xy

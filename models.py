@@ -288,7 +288,7 @@ class BaseModel(nn.Module):
         super().__init__()
 
         self.input_dims = env.observation_space.shape
-        self.actions = env.action_space.n
+        self.n_actions = env.action_space.n
         self.device = device
         self.dtype = dtype
         self.lstm_mode = lstm_mode
@@ -441,26 +441,30 @@ class DeceptionModel(BaseModel):
     def __init__(
             self,
             env: MultiAgentVecEnv,
-            prediction_players,
-            backwards_prediction_players,
+            n_predictions,
             device="cpu",
             dtype=torch.float32,
             memory_units=512,
             out_features=512,
             model="default",
             data_parallel=False,
-            lstm_mode='cat',
-
+            lstm_mode='residual',
+            predict='full',          # off|forward|full
+            predict_observations=True,
+            predict_actions=True,
     ):
         super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode)
+
+
+        assert predict in ['off', 'forward', 'full']
+        self.predict = predict
 
         # prediction of each role, in public_id order
         self.role_prediction_head = nn.Linear(self.encoder_output_features, (self.n_players * self.n_roles))
         # prediction of each observation in public_id order
         h, w, c = self.obs_shape
 
-        self.prediction_players = prediction_players
-        self.backwards_prediction_players = backwards_prediction_players
+        self.n_predictions = n_predictions
 
         if model.lower() in ["default", "fast"]:
             if model.lower() == "fast":
@@ -472,21 +476,28 @@ class DeceptionModel(BaseModel):
         else:
             raise ValueError(f"Invalid model name {model}")
 
-        if self.prediction_players > 0:
-            self.observation_prediction_head = decoder_fn(
-                (c, h * prediction_players, w),
-                self.encoder_output_features
-            )
-        else:
-            self.observation_prediction_head = None
+        self.observation_prediction_head = None
+        self.observation_backwards_prediction_head = None
+        self.action_prediction_head = None
+        self.action_backwards_prediction_head = None
 
-        if self.backwards_prediction_players > 0:
-            self.observation_predictions_prediction_head = decoder_fn(
-                (c, h * self.backwards_prediction_players, w),
-                self.encoder_output_features
-            )
-        else:
-            self.observation_predictions_prediction_head = None
+        if predict_observations:
+            if self.predict in ['forward', 'full']:
+                self.observation_prediction_head = decoder_fn(
+                    (c, h * self.n_predictions, w),
+                    self.encoder_output_features
+                )
+            if self.predict in ['full']:
+                self.observation_backwards_prediction_head = decoder_fn(
+                    (c, h * self.n_predictions, w),
+                    self.encoder_output_features
+                )
+
+        if predict_actions:
+            if self.predict in ['forward', 'full']:
+                self.action_prediction_head = nn.Linear(self.encoder_output_features, (self.n_predictions * self.n_roles * self.n_actions))
+            if self.predict in ['full']:
+                self.action_backwards_prediction_head = nn.Linear(self.encoder_output_features, (self.n_predictions * self.n_roles * self.n_actions))
 
         self.set_device_and_dtype(self.device, self.dtype)
 
@@ -512,15 +523,15 @@ class DeceptionModel(BaseModel):
         result['role_prediction'] = role_prediction
 
         # ------------------------------
-        # obs prediction
+        # obs forward prediction
         # ------------------------------
 
-        if self.prediction_players > 0:
+        if self.observation_prediction_head is not None:
             # predictions will come out as (N*B, c, h*n_players, w)
             # but we need (N, B, n_players, h, w, c)
             obs_prediction = self.observation_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
             h, w, c = self.obs_shape
-            obs_prediction = obs_prediction.reshape(N, B, c, self.prediction_players * h, w)
+            obs_prediction = obs_prediction.reshape(N, B, c, self.n_players * h, w)
             obs_prediction = obs_prediction.split(h, dim=3)
             obs_prediction = torch.stack(obs_prediction, dim=2)
             obs_prediction = obs_prediction.transpose(-3, -1)
@@ -528,18 +539,36 @@ class DeceptionModel(BaseModel):
             result['obs_prediction'] = obs_prediction
 
         # ------------------------------
-        # obs predictions prediction
+        # obs backward prediction
         # ------------------------------
 
-        if self.backwards_prediction_players > 0:
-            obs_pp = self.observation_predictions_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
+        if self.observation_backwards_prediction_head is not None:
+            obs_pp = self.observation_backwards_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
             h, w, c = self.obs_shape
-            obs_pp = obs_pp.reshape(N, B, c, self.backwards_prediction_players * h, w)
+            obs_pp = obs_pp.reshape(N, B, c, self.n_predictions * h, w)
             obs_pp = obs_pp.split(h, dim=3)
             obs_pp = torch.stack(obs_pp, dim=2)
             obs_pp = obs_pp.transpose(-3, -1)
             obs_pp = obs_pp.transpose(-3, -2)
-            result['obs_predictions_prediction'] = obs_pp
+            result["obs_backwards_prediction"] = obs_pp
+
+        # ------------------------------
+        # action forwards prediction
+        # ------------------------------
+
+        if self.action_prediction_head is not None:
+            unnormalized_action_predictions = self.action_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
+            # result will be [N*B, n_predictions * n_roles * n_actions]
+            unnormalized_action_predictions = unnormalized_action_predictions.reshape(N, B, self.n_predictions, self.n_roles, self.n_actions)
+            action_predictions = torch.log_softmax(unnormalized_action_predictions, dim=-1)
+            result["action_prediction"] = action_predictions
+
+        if self.action_backwards_prediction_head is not None:
+            unnormalized_action_backwards_predictions = self.action_backwards_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
+            # result will be [N*B, n_predictions * n_roles * n_actions]
+            unnormalized_action_backwards_predictions = unnormalized_action_backwards_predictions.reshape(N, B, self.n_predictions, self.n_roles, self.n_actions)
+            action_backwards_predictions = torch.log_softmax(unnormalized_action_backwards_predictions, dim=-1)
+            result["action_backwards_prediction"] = action_backwards_predictions
 
         return result, new_rnn_states
 
@@ -573,10 +602,9 @@ class PolicyModel(BaseModel):
         super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode=lstm_mode)
 
         self.roles = roles
-        self.actions = env.action_space.n
 
         # output heads
-        self.policy_head = nn.Linear(self.encoder_output_features, self.roles * self.actions )
+        self.policy_head = nn.Linear(self.encoder_output_features, self.roles * self.n_actions)
         torch.nn.init.xavier_uniform_(self.policy_head.weight, 0.01) # helps with exploration
 
         self.local_int_value_head = nn.Linear(self.encoder_output_features, roles)
@@ -604,7 +632,7 @@ class PolicyModel(BaseModel):
         N, B, *obs_shape = obs.shape
         encoder_output, new_rnn_states = self._forward_sequence(obs, rnn_states, terminals)
 
-        policy_outputs = self.policy_head(encoder_output).reshape(N, B, self.roles, self.actions)
+        policy_outputs = self.policy_head(encoder_output).reshape(N, B, self.roles, self.n_actions)
         log_policy = torch.log_softmax(policy_outputs, dim=-1)
         ext_value = self.local_ext_value_head(encoder_output)
         int_value = self.local_int_value_head(encoder_output)

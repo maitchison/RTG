@@ -269,7 +269,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                 for j in range(env.n_players):
                     c = [int(x * 255) for x in role_predictions[i, j]]
                     draw_pixel(frame, dy + (i+1) * block_size, dx + (j+1) * block_size, c=c, size=block_size)
-
+                    
             # ground truth
             for i in range(n_players):
                 dx = 0
@@ -290,8 +290,8 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                             np.asarray(obs_predictions[i, j]*255, dtype=np.uint8).swapaxes(0, 1)
 
             # prediction predictions
-            if "obs_predictions_prediction" in model_output:
-                obs_pp = model_output["obs_predictions_prediction"].detach().cpu().numpy()
+            if "obs_backwards_prediction" in model_output:
+                obs_pp = model_output["obs_backwards_prediction"].detach().cpu().numpy()
                 for i in range(n_players):
                     for j in range(n_players):
                         dx = j * obs_size + (obs_size*(n_players+1))
