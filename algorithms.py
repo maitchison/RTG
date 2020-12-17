@@ -314,6 +314,12 @@ class PMAlgorithm(MarlAlgorithm):
     def uses_deception_model(self):
         return self.prediction_mode != "off"
 
+    def save_logs(self, base_path):
+        with open(os.path.join(base_path, "checkpoint_log.dat"), "wb") as f:
+            pickle.dump(self.log, f)
+
+        self.log.export_to_csv(os.path.join(base_path, "training_log.csv"))
+
     def save(self, filename):
 
         data = {
@@ -331,14 +337,6 @@ class PMAlgorithm(MarlAlgorithm):
             data['intrinsic_returns_rms'] = self.intrinsic_returns_rms,
 
         torch.save(data, filename)
-
-        base_path = os.path.split(filename)[0]
-
-        with open(os.path.join(base_path, "checkpoint_log.dat"), "wb") as f:
-            pickle.dump(self.log, f)
-
-        self.log.export_to_csv(os.path.join(base_path, "training_log.csv"))
-
 
     def _eval(self):
         self.policy_model.eval()

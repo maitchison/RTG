@@ -410,7 +410,7 @@ def train_model():
     print(config)
     print()
 
-    model = make_algo(vec_env)
+    algorithm = make_algo(vec_env)
 
     print("="*60)
 
@@ -433,14 +433,14 @@ def train_model():
             os.makedirs(sub_folder, exist_ok=True)
             results_file = os.path.join(sub_folder, "results.csv")
 
-            scores = evaluate_model(model, eval_scenario, sub_folder, trials=100)
+            scores = evaluate_model(algorithm, eval_scenario, sub_folder, trials=100)
             rounded_scores = tuple(round(float(score), 1) for score in scores)
 
             print(f" -evaluation against {str(eval_scenario):<40} {rounded_scores}")
 
             # generate a video
             if config.export_video:
-                export_video(f"{sub_folder}/evaluation_{epoch:03}_M.mp4", model, eval_scenario)
+                export_video(f"{sub_folder}/evaluation_{epoch:03}_M.mp4", algorithm, eval_scenario)
 
             # write results to text file
             if not os.path.exists(results_file):
@@ -461,26 +461,31 @@ def train_model():
 
         # export training video
         if config.export_video:
-            export_video(f"{config.log_folder}/training_{epoch:03}_M.mp4", model, config.train_scenarios[0])
+            export_video(f"{config.log_folder}/training_{epoch:03}_M.mp4", algorithm, config.train_scenarios[0])
+
+        # save model
         if config.save_model == "all":
-            model.save(f"{config.log_folder}/model_{epoch:03}_M.pt")
+            algorithm.save(f"{config.log_folder}/model_{epoch:03}_M.pt")
         elif config.save_model == "none":
             pass
         elif config.save_model == "recent":
-            model.save(f"{config.log_folder}/model_M.pt")
+            algorithm.save(f"{config.log_folder}/model_M.pt")
         else:
             raise ValueError("Invalid save model parameter, use [none|recent|all].")
 
-        step_counter = learn(model, step_counter, (epoch+1)*1e6, verbose=config.verbose == 1)
+        step_counter = learn(algorithm, step_counter, (epoch+1)*1e6, verbose=config.verbose == 1)
         print()
+
+        # save logs
+        algorithm.save_logs(config.log_folder)
 
         # flush the log buffer and print scores
         rescue.flush_logs()
         print_scores(epoch=epoch)
 
-    model.save(f"{config.log_folder}/model_final.p")
+    algorithm.save(f"{config.log_folder}/model_final.p")
     if config.export_video:
-        export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", model, config.train_scenarios[0])
+        export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", algorithm, config.train_scenarios[0])
 
     time_taken = time.time() - start_time
     print(f"Finished training after {time_taken/60/60:.1f}h.")
