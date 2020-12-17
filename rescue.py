@@ -191,7 +191,15 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
     get_current_epoch = None  # assign a function to this that returns current epoch
 
-    def __init__(self, scenario_name:str= "full", name:str= "env", log_file:str=None, dummy_prob=0, **scenario_kwargs):
+    def __init__(
+            self,
+            scenario_name:str= "full",
+            name:str= "env",
+            log_file:str=None,
+            dummy_prob=0,
+            location_encoding="none",
+            **scenario_kwargs
+    ):
         """
         :param scenario_name:
         :param name:
@@ -224,6 +232,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.general_closest_tiles_from_edge = int()
         self.blue_has_stood_next_to_general = bool()
         self.blue_rewards_for_winning = int()
+        self.location_encoding = location_encoding
 
         # create players and assign teams
         self.players = [RTG_Player(index, self.scenario) for index in range(self.n_players)]
@@ -251,23 +260,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_general_hidden = np.zeros((3,), dtype=np.int)  # which teams stood ontop of general
         self.stats_tree_harvested = np.zeros((3,), dtype=np.int)  # which teams harvested trees
 
-
         self.stats_actions = np.zeros((3, self.action_space.n), dtype=np.int)
         self.outcome = str() # outcome of game
 
-        obs_channels = 3
-        if self.scenario.location_encoding == "none":
-            pass
-        elif self.scenario.location_encoding == "sin":
-            obs_channels += SIN_CHANNELS
-        elif self.scenario.location_encoding == "abs":
-            obs_channels += 2
-        else:
-            raise Exception(f"Invalid location encoding {self.scenario.location_encoding} use [none|sin|abs].")
-
         self.observation_space = gym.spaces.Box(
             low=0, high=255,
-            shape=((self.scenario.max_view_distance * 2 + 3) * CELL_SIZE, (self.scenario.max_view_distance * 2 + 3) * CELL_SIZE, obs_channels),
+            shape=((self.scenario.max_view_distance * 2 + 3) * CELL_SIZE, (self.scenario.max_view_distance * 2 + 3) * CELL_SIZE, 3),
             dtype=np.uint8
         )
 
@@ -636,7 +634,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
     def draw_tile(self, obs, x, y, c):
         dx, dy = x*CELL_SIZE, y*CELL_SIZE
-        obs[dx:dx+CELL_SIZE, dy:dy+CELL_SIZE, :3] = c
+        obs[dx:dx+CELL_SIZE, dy:dy+CELL_SIZE] = c
 
     def can_see_role(self, observer: RTG_Player, player: RTG_Player):
         """ Returns if player_a can see player_b's role """
@@ -686,18 +684,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         draw_x, draw_y = (player.x+padding[0]) * CELL_SIZE + 1, (player.y+padding[1]) * CELL_SIZE + 1
 
-        obs[draw_x - 1:draw_x + 2, draw_y - 1:draw_y + 2, :3] = ring_color
-        obs[draw_x, draw_y, :3] = inner_color
+        obs[draw_x - 1:draw_x + 2, draw_y - 1:draw_y + 2] = ring_color
+        obs[draw_x, draw_y] = inner_color
 
         if player.action in SHOOT_ACTIONS:
             index = player.action - ACTION_SHOOT_UP
             dx, dy = self.DX[index], self.DY[index]
-            obs[draw_x + dx, draw_y + dy, :3] = self.FIRE_COLOR
+            obs[draw_x + dx, draw_y + dy] = self.FIRE_COLOR
 
         if self.scenario.enable_signals and player.action in SIGNAL_ACTIONS:
             index = player.action - ACTION_SIGNAL_UP
             dx, dy = self.DX[index], self.DY[index]
-            obs[draw_x + dx, draw_y + dy, :3] = self.SIGNAL_COLOR
+            obs[draw_x + dx, draw_y + dy] = self.SIGNAL_COLOR
 
     def _draw_general(self, obs, padding=(0, 0)):
 
@@ -708,15 +706,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         dx, dy = (x+padding[0]) * CELL_SIZE, (y+padding[1]) * CELL_SIZE
         c = self.GENERAL_COLOR if self.general_health > 0 else self.DEAD_COLOR
 
-        obs[dx + 1, dy + 1, :3] = c
-        obs[dx + 2, dy + 1, :3] = c
-        obs[dx + 0, dy + 1, :3] = c
-        obs[dx + 1, dy + 2, :3] = c
-        obs[dx + 1, dy + 0, :3] = c
+        obs[dx:dx+3, dy + 1] = c
+        obs[dx + 1, dy + 2] = c
+        obs[dx + 1, dy + 0] = c
 
     def _get_map(self):
         """
-        Returns a map with optional positional encoding.
+        Returns a map.
         Map is only redrawn as needed (e.g. when trees are removed).
         :return:
         """
@@ -735,34 +731,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # paint general
         self._draw_general(obs)
-
-        # positional encoding
-        position_obs = None
-        if self.scenario.location_encoding == "none":
-            pass
-        elif self.scenario.location_encoding == "abs":
-            x = np.linspace(0, 1, obs.shape[0])
-            y = np.linspace(0, 1, obs.shape[1])
-            xs, ys = np.meshgrid(x, y)
-            position_obs = np.stack([xs, ys], axis=-1)
-            position_obs = np.asarray(position_obs * 255, dtype=np.uint8)
-        elif self.scenario.location_encoding == "sin":
-            x = np.linspace(0, 2*math.pi, obs.shape[0])
-            y = np.linspace(0, 2*math.pi, obs.shape[1])
-            xs, ys = np.meshgrid(x, y)
-            position_obs = []
-            for layer in range(SIN_CHANNELS):
-                freq = (2 ** (layer//2))
-                f = np.sin if (layer // 2) % 2 == 0 else np.cos
-                result = f((xs if layer % 2 == 0 else ys)*freq)
-                result = np.asarray((result + 1) / 2 * 255, dtype=np.uint8)
-                position_obs.append(result)
-            position_obs = np.stack(position_obs, axis=-1)
-        else:
-            raise Exception(f"Invalid location encoding {self.scenario.location_encoding} use [none|sin|abs].")
-
-        if position_obs is not None:
-            obs = np.concatenate([obs, position_obs], axis=2)
 
         # padding (makes cropping easier...)
         self._map_padding = (self.scenario.max_view_distance + 1) # +1 for border
@@ -873,43 +841,50 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             obs = obs[padding:-padding, padding:-padding, :]
 
         if observer_id >= 0:
+            player = self.players[observer_id]
             # blank out edges of frame, always have 1 tile due to status and indicators
             cells_to_blank_out = 1 + self.scenario.max_view_distance - observer.view_distance
 
             def blank_edges(obs, pixels_to_blank_out, color):
-                obs[:pixels_to_blank_out, :, :3] = color
-                obs[-pixels_to_blank_out:, :, :3] = color
-                obs[:, :pixels_to_blank_out, :3] = color
-                obs[:, -pixels_to_blank_out:, :3] = color
+                obs[:pixels_to_blank_out, :] = color
+                obs[-pixels_to_blank_out:, :] = color
+                obs[:, :pixels_to_blank_out] = color
+                obs[:, -pixels_to_blank_out:] = color
 
             blank_edges(obs, cells_to_blank_out * CELL_SIZE, [32, 32, 32])
             if self.scenario.local_team_colors:
                 blank_edges(obs, 3, observer.team_color // 2)
             else:
                 blank_edges(obs, 3, [128, 128, 128])
-            obs[3:-3, :3, :3] = observer.id_color
+            obs[3:-3, :3] = observer.id_color
 
             blank_edges(obs, 1, 0)
 
-            # bars for time, health, and shooting timeout
-            frame_width, frame_height, _ = obs[3:-3, 3:-3, :].shape
+            # status lights
 
-            time_bar = int((self.timeout - self.counter) / self.timeout * frame_width)
-            obs[3:3 + time_bar, -3, :3] = (255, 255, 128)
+            status_colors = [
+                (255, 255, 255), # x
+                (255, 255, 255), # y
+                (128, 255, 128), # health
+                (255, 255, 0), # timeout
+            ]
 
-            health_bar = int(observer.health / self.scenario.player_initial_health * frame_width)
-            obs[3:3 + health_bar, -2, :3] = (128, 255, 128)
+            status_values = [
+                player.x / self.scenario.map_width,
+                player.y / self.scenario.map_height,
+                player.health / self.scenario.player_initial_health,
+                self.counter / self.timeout
+            ]
 
-            # this isn't helpful right now and it might be difficult for agents to predict.
-            # show_shooting_timeout = False
-            # if show_shooting_timeout and observer.shoot_range > 0:
-            #     shooting_bar = int(observer.turns_until_we_can_shoot / observer.shooting_timeout * frame_width)
-            #     obs[3:3 + shooting_bar, -1, :3] = (128, 128, 255)
+            for i, (col, value) in enumerate(zip(status_colors, status_values)):
+                c = np.asarray(np.asarray(col, dtype=np.float32) * value, dtype=np.uint8)
+                obs[i*3:(i*3)+3, -3:] = c
 
             # if needed add a hint for 'bonus actions'
+            # just for debugging
             if self.scenario.bonus_actions:
                 action_hint = self.bonus_actions[self.counter+self.scenario.bonus_actions_delay]
-                obs[action_hint*3:(action_hint+1)*3, 0:3, :3] = (0, 255, 255)
+                obs[action_hint*3:(action_hint+1)*3, 0:3] = (0, 255, 255)
 
         # show general off-screen location
         if (observer is not None) and (observer.team == self.TEAM_BLUE or self.scenario.general_always_visible):
@@ -1065,52 +1040,19 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     def _render_human(self):
         raise NotImplemented("Sorry tile-map rendering not implemented yet")
 
-    def _process_obs(self, obs, use_location=False):
-        """
-        Converts observation into RGBobs[:, :, 1]
-        :return:
-        """
-
-        obs = obs.copy()
-
-        if use_location:
-            # get location embedding channels (if any exist)
-            _, _, channels = obs.shape
-            obs[:, :, :3] *= 0
-            # stub average location channels
-            if channels <= 6:
-                # take last 3
-                obs = obs[:, :, -3:]
-            else:
-                # average all location channels
-                obs[:, :, 0] = np.mean(obs[:, :, 3:], axis=2)
-                obs[:, :, 1] = obs[:, :, 0]
-
-            obs = obs[:, :, :3]
-        else:
-            # standard RGB
-            obs = obs[:, :, :3]
-
-        return obs
-
     def _draw(self, frame, x, y, image):
         w,h,_ = image.shape
         frame[x:x+w, y:y+h] = image
 
-    def _render_rgb(self, show_location=False):
+    def _render_rgb(self):
         """
         Render out a frame
-        :param show_location: displays location information
-        :param role_predictions: (optional) np array of dims [n_players, n_players, 3] indicating predictions for each
-            role as a probability distribution
         :return:
         """
 
-        global_frame = self._process_obs(self._get_player_observation(-1), show_location)
+        global_frame = self._get_player_observation(-1)
 
-        player_frames = [
-            self._process_obs(self._get_player_observation(player_id), show_location) for player_id in range(self.n_players)
-        ]
+        player_frames = [self._get_player_observation(player_id) for player_id in range(self.n_players)]
 
         gw, gh, _ = global_frame.shape
         pw, ph, _ = player_frames[0].shape

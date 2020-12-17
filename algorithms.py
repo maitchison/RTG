@@ -72,7 +72,7 @@ class MarlAlgorithm():
         n_agents = n_agents or self.n_agents
         return torch.zeros([n_agents, *self.rnn_state_shape], dtype=torch.float32, device=self.policy_model.device)
 
-    def forward(self, obs, rnn_state):
+    def forward(self, obs, rnn_state, roles=None):
         raise NotImplemented()
 
 class PMAlgorithm(MarlAlgorithm):
@@ -120,10 +120,8 @@ class PMAlgorithm(MarlAlgorithm):
             dm_mini_batch_size=256,
             dm_memory_units=1024,
             dm_out_features=1024,
-            dm_xy_factor=1,
             dm_learning_rate=1e-3,
             dm_lstm_mode="residual",
-            dm_loss_fn="l2",
             dm_kl_factor=0, # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
             dm_loss_scale=1.0
 
@@ -144,19 +142,11 @@ class PMAlgorithm(MarlAlgorithm):
         self.dm_memory_units = dm_memory_units
         self.dm_out_features = dm_out_features
         self.dm_lstm_mode = dm_lstm_mode
-        self.dm_xy_factor = dm_xy_factor
         self.dm_learning_rate = dm_learning_rate
         self.dm_loss_scale = dm_loss_scale
         self.dm_kl_factor = dm_kl_factor
         self.deception_batch_counter = 0
         self.prediction_mode = prediction_mode
-
-        if dm_loss_fn == "mse":
-            self.dm_loss_fn = F.mse_loss
-        elif dm_loss_fn == "l1":
-            self.dm_loss_fn = F.l1_loss
-        elif dm_loss_fn == "l2":
-            self.dm_loss_fn = lambda a, b: F.mse_loss(a, b)**0.5
 
         if device == "data_parallel":
             device = "cuda"
@@ -184,6 +174,8 @@ class PMAlgorithm(MarlAlgorithm):
             self.deception_model = None
 
         super().__init__(n_steps, A, model)
+
+        assert self.obs_shape[-1] == 3, f"Model assumes RGB 3-channel input, but found {self.obs_shape}"
 
         if self.uses_deception_model:
             # to handle the deception rnn states just concatenate the h,c states together
@@ -894,93 +886,74 @@ class PMAlgorithm(MarlAlgorithm):
 
         if self.prediction_mode == "self":
             # in this case we make targets our own observations
-            self_obs_pred = model_out["obs_prediction"][:, :, 0]  # [N, B, 1, *obs_shape]
-            self_obs_true = data["prev_obs"].float() / 255  # [N, B, *obs_shape]
-            self_obs_mse_rgb, self_obs_mse_xy = get_obs_distance(self_obs_pred, self_obs_true, self.dm_loss_fn)
-            self_obs_score = -np.log10(self_obs_mse_rgb.cpu().detach().numpy())
-            #if self.dm_loss_fn == "l2":
-            #    self_obs_score *= 2 # because of sqrt
-            self.log.watch_mean("self_obs_score", self_obs_score, display_width=10, display_precision=2)
-            loss += self_obs_mse_rgb * self.dm_loss_scale
+            pred_self = model_out["obs_prediction"][:, :, 0]  # [N, B, 1, *obs_shape]
+            pred_true = data["prev_obs"].float() / 255  # [N, B, *obs_shape]
+            pred_self_loss = F.mse_loss(pred_self, pred_true)
+            pred_self_score = -np.log10(pred_self_loss.cpu().detach().numpy())
+            pred_self_loss *= self.dm_loss_scale
+            self.log.watch_mean("pred_self_loss", pred_self_loss, display_width=0)
+            self.log.watch_mean("pred_self_score", pred_self_score, display_width=10, display_precision=2)
+            loss += pred_self_loss
 
         # -------------------------------------------------------------------------
         # Calculate observation prediction loss
         # -------------------------------------------------------------------------
 
         if self.prediction_mode in ["others", "both"]:
-            # note, might be better to do the MSE part on the CPU as this will require *a lot* of ram.
             obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape] (in public_id order)
             obs_truth = data["player_obs"].float() / 255 # [N, B, n_players, *obs_shape] (in public_id order)
 
             # remove from prediction other players we are not visible
-            filtered_obs_predictions = filter_visible(obs_predictions, player_visible)
-            filtered_obs_truth = filter_visible(obs_truth, player_visible)
+            visible_obs_predictions = filter_visible(obs_predictions, player_visible)
+            visible_obs_truth = filter_visible(obs_truth, player_visible)
 
-            # calculate mse loss for logging
-            if self.deception_batch_counter % 10 == 0:
+            # calculate the loss for the visible players
+            obs_pred_mse = F.mse_loss(visible_obs_predictions, visible_obs_truth)
+            obs_pred_mse *= self.dm_loss_scale
+
+            # use KL if needed
+            if self.dm_kl_factor > 0:
+                obs_pred_kl = calculate_kl(obs_predictions)/100 # get kl on roughly the same scale as mse
+                obs_loss = (1 - self.dm_kl_factor) * obs_pred_mse + self.dm_kl_factor * obs_pred_kl
+            else:
+                obs_loss = obs_pred_mse
+
+            loss += obs_loss
+            self.log.watch_mean("pred_obs_loss", obs_loss)
+
+            # calculate extra stats for logging
+            if self.deception_batch_counter % 10 == 9: # doing this late helps with benchmarking
                 with torch.no_grad():
-                    obs_mse_rgb, obs_mse_xy = get_obs_distance(filtered_obs_predictions, filtered_obs_truth)
-                    obs_mse = obs_mse_rgb + obs_mse_xy
 
-                    self.log.watch_mean("pred_obs_mse", obs_mse, display_width=0)
-                    self.log.watch_mean("pred_obs_rgb", obs_mse_rgb, display_width=0)
-                    self.log.watch_mean("pred_obs_xy", obs_mse_xy, display_width=0)
-
-                    # repeat but with non-visible players
+                    # log the accuracy on non-visible players (should be lower)
                     pred_nv = filter_visible(obs_predictions, ~player_visible)
                     true_nv = filter_visible(obs_truth, ~player_visible)
 
                     if len(pred_nv) > 0:
-
                         # it's possible there are no non visible agents,
                         # there will always be visible agents though as agents can always see themselves
-                        obs_mse_rgb_nv, obs_mse_xy_nv = get_obs_distance(pred_nv, true_nv)
-                        obs_mse_nv = obs_mse_rgb_nv + obs_mse_xy_nv
+                        obs_mse_nv = F.mse_loss(pred_nv, true_nv)
+                        self.log.watch_mean("pred_obs_nv", obs_mse_nv, display_width=0)
 
-                        self.log.watch_mean("pred_obs_mse_nv", obs_mse_nv, display_width=0)
-                        self.log.watch_mean("pred_obs_rgb_nv", obs_mse_rgb_nv, display_width=0)
-                        self.log.watch_mean("pred_obs_xy_nv", obs_mse_xy_nv, display_width=0)
-
-            # calculate the actual loss and optimize
-            obs_loss_rgb, obs_loss_xy = get_obs_distance(filtered_obs_predictions, filtered_obs_truth, self.dm_loss_fn)
-            obs_loss = (obs_loss_rgb + obs_loss_xy * self.dm_xy_factor) * self.dm_loss_scale
-
-            # use KL if needed
-            if self.dm_kl_factor > 0:
-                kl = calculate_kl(obs_predictions)/100 # get kl on roughly the same scale as mse
-                obs_loss = (1-self.dm_kl_factor)*obs_loss + self.dm_kl_factor*kl
-
-            loss += obs_loss
-            self.log.watch_mean("loss_obs", obs_loss)
-
-            # calculate the policy difference just for debugging
-            # note: right now we actually have one policy, conditioned on the team, but later I will have 3 seperate
-            # policies and remove team information from observation. This means all we can do for now is look at the
-            # kl between pi(obs) and pi(pred_obs)
-            # an interesting idea would be to minimize the policy error loss... hmmm... I wonder what that would generate?
-
-            # in the future it might be good to predicct the initial rnn state, for the moment just start with zero
-            # we should ignore the first half of the rnn_window as the states will be simply warming up at this point
-
-            if self.deception_batch_counter % 10 == 0:
-                with torch.no_grad():
+                    # log the kl between pi(true) and pi(pred) (for true role)
                     kl = calculate_kl(obs_predictions)
-                    self.log.watch_mean("pred_kl", kl, display_precision=4)
+                    self.log.watch_mean("pred_obs_kl", kl, display_precision=4)
 
         # -------------------------------------------------------------------------
         # Prediction prediction error
         # -------------------------------------------------------------------------
 
         if self.prediction_mode == "both":
-            n_players = self.vec_env.max_players
-            pred_predictions = model_out["obs_predictions_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape] (in public_id order)
-            true_predictions = data["player_predictions"].float()/255
-            pp_loss_rgb, pp_loss_xy = get_obs_distance(pred_predictions, true_predictions, self.dm_loss_fn)
-            pp_loss = pp_loss_rgb + pp_loss_xy
-            self.log.watch_mean("pp_rgb", pp_loss_rgb, display_width=0)
-            self.log.watch_mean("pp_xy", pp_loss_xy, display_width=0)
-            self.log.watch_mean("pp_loss",  pp_loss, display_width=0)
-            loss += pp_loss
+            raise NotImplemented()
+            # n_players = self.vec_env.max_players
+            # pred_predictions = model_out["obs_predictions_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape] (in public_id order)
+            # true_predictions = data["player_predictions"].float()/255
+            # pp_loss_rgb, pp_loss_xy = get_obs_distance(pred_predictions, true_predictions, self.dm_loss_fn)
+            # pp_loss = pp_loss_rgb + pp_loss_xy
+            # self.log.watch_mean("pp_rgb", pp_loss_rgb, display_width=0)
+            # self.log.watch_mean("pp_xy", pp_loss_xy, display_width=0)
+            # self.log.watch_mean("pp_loss",  pp_loss, display_width=0)
+            # loss += pp_loss
 
         # -------------------------------------------------------------------------
         # Apply loss
@@ -1292,12 +1265,6 @@ def test_filter_visible():
     test_2 = filter_visible(data, visible)
     assert test_2.shape == (2*4*3-1, 1)
     assert 12 not in test_2
-
-def get_obs_distance(true, pred, loss_fn=F.mse_loss):
-    error_rgb = loss_fn(true[..., :3], pred[..., :3])
-    error_xy = loss_fn(true[..., 3:], pred[..., 3:])
-    return error_rgb, error_xy
-
 
 test_calculate_returns()
 test_filter_visible()

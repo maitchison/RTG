@@ -274,7 +274,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             for i in range(n_players):
                 dx = 0
                 dy = orig_height + i * obs_size
-                frame[dy:dy + obs_size, dx:dx + obs_size] = obs_truth[i, :, :, :3].swapaxes(0, 1)
+                frame[dy:dy + obs_size, dx:dx + obs_size] = obs_truth[i].swapaxes(0, 1)
 
             # predictions
             if "obs_prediction" in model_output:
@@ -287,7 +287,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                         dy = orig_height + i * obs_size
                         # we transpose as rescue is x,y instead of y,x
                         frame[dy:dy+obs_size, dx:dx+obs_size] = \
-                            np.asarray(obs_predictions[i, j, :, :, :3]*255, dtype=np.uint8).swapaxes(0, 1)
+                            np.asarray(obs_predictions[i, j]*255, dtype=np.uint8).swapaxes(0, 1)
 
             # prediction predictions
             if "obs_predictions_prediction" in model_output:
@@ -298,7 +298,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                         dy = orig_height + i * obs_size
                         # we transpose as rescue is x,y instead of y,x
                         frame[dy:dy+obs_size, dx:dx+obs_size] = \
-                            np.asarray(obs_pp[i, j, :, :, :3]*255, dtype=np.uint8).swapaxes(0, 1)
+                            np.asarray(obs_pp[i, j]*255, dtype=np.uint8).swapaxes(0, 1)
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
@@ -703,10 +703,10 @@ def regression_test(tests: Union[str, tuple, list] = ("mem2b", "red2", "green2",
         f.write(str(config))
 
     for scenario_name, team, required_score in [
-        ("mem2b", "red", 7.5),
         ("red2", "red", 7.5),
         ("green2", "green", 7.5),
         ("blue2", "blue", 7.5),
+        ("mem2b", "red", 7.5),
     ]:
         if scenario_name not in tests:
             continue

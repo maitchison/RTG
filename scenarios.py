@@ -268,7 +268,6 @@ class RescueTheGeneralScenario():
         self.general_always_visible = False
         self.general_initial_health = 10
         self.player_initial_health = 10
-        self.location_encoding = "abs"  # none | sin | abs
         self.battle_royale = False   # removes general from game, and adds kill rewards
         self.bonus_actions = False   # provides small reward for taking an action that is indicated on agents local
                                      # observation some time after the signal appeared
