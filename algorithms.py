@@ -908,17 +908,18 @@ class PMAlgorithm(MarlAlgorithm):
             visible_obs_truth = filter_visible(obs_truth, player_visible)
 
             # calculate the loss for the visible players
-            obs_pred_mse = F.mse_loss(visible_obs_predictions, visible_obs_truth)
-            obs_pred_mse *= self.dm_loss_scale
+            pred_obs_mse = F.mse_loss(visible_obs_predictions, visible_obs_truth)
 
             # use KL if needed
             if self.dm_kl_factor > 0:
-                obs_pred_kl = calculate_kl(obs_predictions)/100 # get kl on roughly the same scale as mse
-                obs_loss = (1 - self.dm_kl_factor) * obs_pred_mse + self.dm_kl_factor * obs_pred_kl
+                pred_obs_kl = calculate_kl(obs_predictions)/100 # get kl on roughly the same scale as mse
+                obs_loss = (1 - self.dm_kl_factor) * pred_obs_mse + self.dm_kl_factor * pred_obs_kl
             else:
-                obs_loss = obs_pred_mse
+                obs_loss = pred_obs_mse
 
+            obs_loss *= self.dm_loss_scale
             loss += obs_loss
+            self.log.watch_mean("pred_obs_mse", pred_obs_mse)
             self.log.watch_mean("pred_obs_loss", obs_loss)
 
             # calculate extra stats for logging

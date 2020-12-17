@@ -169,9 +169,9 @@ if __name__ == "__main__":
         main_params = " ".join([
             "--train_scenarios=r2g2_hrp",
             "--eval_scenarios=[]",
-            "--micro_batch_size=1024", # slower, but less memory, can run two searches in parallel
+            "--micro_batch_size=1024", # 1024 is slower, but can run two searches in parallel
             "--prediction_mode='others'",
-            "--save_model=recent",
+            "--save_model=none",
             "--epochs=25"
             ])
 
