@@ -140,25 +140,39 @@ if __name__ == "__main__":
         # dm_loss_scale = random.choice([1])
 
         # self search
-        dm_max_window_size = random.choice([2, 4, 8, 16, 32])
+        # dm_max_window_size = random.choice([2, 4, 8, 16, 32])
+        # dm_replay_buffer_multiplier = random.choice([1, 2, 4, 8, 16])
+        # dm_mini_batch_size = random.choice([128, 256, 512, 1024])
+        # dm_memory_units = random.choice([128, 256, 512, 1024])
+        # dm_lstm_mode = random.choice(['residual'])
+        # dm_xy_factor = random.choice([1])
+        # dm_learning_rate = random.choice([2.5e-4])
+        # dm_loss_fn = random.choice(["mse", "l2"])
+        # dm_kl_factor = random.choice([0])
+        # dm_loss_scale = random.choice([1, 10, 100])
+        # dm_out_features = dm_memory_units
+
+        # others search
+        dm_max_window_size = random.choice([32])
         dm_replay_buffer_multiplier = random.choice([1, 2, 4, 8, 16])
-        dm_mini_batch_size = random.choice([128, 256, 512, 1024])
-        dm_memory_units = random.choice([128, 256, 512, 1024])
+        dm_mini_batch_size = random.choice([256])
+        dm_memory_units = random.choice([512, 1024, 2048])
         dm_lstm_mode = random.choice(['residual'])
-        dm_xy_factor = random.choice([1])
         dm_learning_rate = random.choice([2.5e-4])
-        dm_loss_fn = random.choice(["mse", "l2"])
         dm_kl_factor = random.choice([0])
         dm_loss_scale = random.choice([1, 10, 100])
         dm_out_features = dm_memory_units
+
+        #2nd round check lstm_mode and kl factor
+
 
         main_params = " ".join([
             "--train_scenarios=r2g2_hrp",
             "--eval_scenarios=[]",
             "--micro_batch_size=1024", # slower, but less memory, can run two searches in parallel
-            "--prediction_mode='self'",
+            "--prediction_mode='others'",
             "--save_model=recent",
-            "--epochs=5"
+            "--epochs=25"
             ])
 
         algo_params = "{" + \
@@ -168,8 +182,6 @@ if __name__ == "__main__":
                       f"'dm_memory_units':{dm_memory_units}," + \
                       f"'dm_out_features':{dm_out_features}," + \
                       f"'dm_lstm_mode':'{dm_lstm_mode}'," + \
-                      f"'dm_xy_factor':{dm_xy_factor}," + \
-                      f"'dm_loss_fn':'{dm_loss_fn}'," + \
                       f"'dm_kl_factor':{dm_kl_factor}," + \
                       f"'dm_loss_scale':{dm_loss_scale}," + \
                       f"'dm_learning_rate':{dm_learning_rate}," + \

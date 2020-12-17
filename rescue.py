@@ -878,7 +878,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
             for i, (col, value) in enumerate(zip(status_colors, status_values)):
                 c = np.asarray(np.asarray(col, dtype=np.float32) * value, dtype=np.uint8)
-                obs[i*3:(i*3)+3, -3:] = c
+                obs[(i+1)*3:((i+1)*3)+3, -3:-1] = c
 
             # if needed add a hint for 'bonus actions'
             # just for debugging
