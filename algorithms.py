@@ -170,7 +170,7 @@ class PMAlgorithm(MarlAlgorithm):
                 lstm_mode=self.dm_lstm_mode,
                 predict='full' if self.prediction_mode == "both" else 'forward',
                 predict_observations=True,
-                predict_actions=False,
+                predict_actions=True,
             )
         else:
             self.deception_model = None
@@ -945,16 +945,12 @@ class PMAlgorithm(MarlAlgorithm):
         # -------------------------------------------------------------------------
 
         if self.prediction_mode == "both":
-            raise NotImplemented()
-            # n_players = self.vec_env.max_players
-            # pred_predictions = model_out["obs_backwards_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape] (in public_id order)
-            # true_predictions = data["player_predictions"].float()/255
-            # pp_loss_rgb, pp_loss_xy = get_obs_distance(pred_predictions, true_predictions, self.dm_loss_fn)
-            # pp_loss = pp_loss_rgb + pp_loss_xy
-            # self.log.watch_mean("pp_rgb", pp_loss_rgb, display_width=0)
-            # self.log.watch_mean("pp_xy", pp_loss_xy, display_width=0)
-            # self.log.watch_mean("pp_loss",  pp_loss, display_width=0)
-            # loss += pp_loss
+            n_players = self.vec_env.max_players
+            pred_predictions = model_out["obs_backwards_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape] (in public_id order)
+            true_predictions = data["player_predictions"].float()/255
+            pred_back_mse = F.mse_loss(pred_predictions, true_predictions)
+            self.log.watch_mean("pred_back_mse", pred_back_mse, display_width=0)
+            loss += pred_back_mse * self.dm_loss_scale
 
         # -------------------------------------------------------------------------
         # Apply loss
