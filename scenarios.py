@@ -1,3 +1,38 @@
+from ast import literal_eval
+
+class ScenarioSetting():
+    """
+    Scenario paired with optional scripted behaviour for teams
+    """
+    def __init__(self, scenario_name, strategies):
+        self.scenario_name = scenario_name
+        self.strategies = strategies
+
+    @staticmethod
+    def parse(input):
+        """
+        Converts text into an array of scenarios
+        :param input:
+        :return:
+        """
+        if '[' not in input:
+            input = f"[['{input}', None, None, None]]"
+
+        input = literal_eval(input)
+
+        result = []
+
+        for scenario_info in input:
+            scenario = ScenarioSetting(scenario_info[0], scenario_info[1:4])
+            result.append(scenario)
+
+        return result
+
+    def __repr__(self):
+        array = [self.scenario_name, *self.strategies]
+        return str(array)
+
+
 class RescueTheGeneralScenario():
 
     SCENARIOS = {

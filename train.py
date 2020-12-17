@@ -24,45 +24,13 @@ from typing import Union, List
 from ast import literal_eval
 
 from rescue import RescueTheGeneralEnv
+from scenarios import ScenarioSetting, RescueTheGeneralScenario
 from marl_env import MultiAgentVecEnv
 from tools import load_results, get_score, get_score_alt, export_graph
 from strategies import RTG_ScriptedEnv
 from algorithms import PMAlgorithm, MarlAlgorithm
 from typing import Union
 import torch.autograd.profiler as profiler
-
-
-class ScenarioSetting():
-    """
-    Scenario paired with optional scripted behaviour for teams
-    """
-    def __init__(self, scenario_name, strategies):
-        self.scenario_name = scenario_name
-        self.strategies = strategies
-
-    @staticmethod
-    def parse(input):
-        """
-        Converts text into an array of scenarios
-        :param input:
-        :return:
-        """
-        if '[' not in input:
-            input = f"[['{input}', None, None, None]]"
-
-        input = literal_eval(input)
-
-        result = []
-
-        for scenario_info in input:
-            scenario = ScenarioSetting(scenario_info[0], scenario_info[1:4])
-            result.append(scenario)
-
-        return result
-
-    def __repr__(self):
-        array = [self.scenario_name, *self.strategies]
-        return str(array)
 
 class Config():
     """ Class to hold config files"""
@@ -199,10 +167,10 @@ def make_env(scenarios: Union[List[ScenarioSetting], ScenarioSetting, str], para
     """
 
     # for convenience we allow non-list input, and string format
-    if type(scenarios) is ScenarioSetting:
+    if isinstance(scenarios, ScenarioSetting):
         scenarios = [scenarios]
 
-    if type(scenarios) is str:
+    if isinstance(scenarios, str):
         scenarios = ScenarioSetting.parse(scenarios)
 
     parallel_envs = parallel_envs or config.parallel_envs
@@ -346,7 +314,7 @@ def train_model():
 
     algorithm.save(f"{config.log_folder}/model_final.p")
     if config.export_video:
-        export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", algorithm, config.train_scenarios[0])
+        video.export_video(f"{config.log_folder}/ppo_run_{config.epochs:03}_M.mp4", algorithm, config.train_scenarios[0])
 
     time_taken = time.time() - start_time
     print(f"Finished training after {time_taken/60/60:.1f}h.")
@@ -543,7 +511,7 @@ def run_test(scenario_name, team, epochs=2):
     final_score = get_score(results, team)
     print(f" -final_eval: {final_score}")
 
-    export_video(f"{destination_folder}/{scenario_name}.mp4", algorithm, scenario_name)
+    video.export_video(f"{destination_folder}/{scenario_name}.mp4", algorithm, scenario_name)
 
     try:
         export_graph(eval_log_file, epoch=epochs, png_base_name="results")
@@ -703,7 +671,6 @@ def main():
 
 
 if __name__ == "__main__":
-
     CURRENT_EPOCH = 0
     RescueTheGeneralEnv.get_current_epoch = get_current_epoch
     config = Config()
