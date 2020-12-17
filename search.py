@@ -146,8 +146,8 @@ if __name__ == "__main__":
         dm_memory_units = random.choice([128, 256, 512, 1024])
         dm_lstm_mode = random.choice(['residual'])
         dm_xy_factor = random.choice([1])
-        dm_learning_rate = random.choice([1e-3, 2.5e-4])
-        dm_loss_fn = random.choice(["l2", "mse", "l1"])
+        dm_learning_rate = random.choice([2.5e-4])
+        dm_loss_fn = random.choice(["mse", "l2"])
         dm_kl_factor = random.choice([0])
         dm_loss_scale = random.choice([1, 10, 100])
         dm_out_features = dm_memory_units

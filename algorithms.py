@@ -117,7 +117,7 @@ class PMAlgorithm(MarlAlgorithm):
 
             dm_replay_buffer_multiplier=4,
             dm_max_window_size=8,
-            dm_mini_batch_size=512,
+            dm_mini_batch_size=256,
             dm_memory_units=1024,
             dm_out_features=1024,
             dm_xy_factor=1,
@@ -881,7 +881,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         role_targets = merge_down(data["player_roles"]) # [N*B, n_players]
         # predictions come out as [N*B, n_players, n_roles], but we need them as [N*B, n_roles, n_players]
-        rp_coef = 0.0001 # stub, don't let this interfare with graident clipping for the moment, should be 1
+        rp_coef = 0.1 # this is just to make sure that role_prediction doesn't clip gradients.
         role_predictions = merge_down(model_out["role_prediction"]).transpose(1, 2)
         loss_role = rp_coef * torch.nn.functional.nll_loss(role_predictions, role_targets)
 
@@ -896,8 +896,10 @@ class PMAlgorithm(MarlAlgorithm):
             # in this case we make targets our own observations
             self_obs_pred = model_out["obs_prediction"][:, :, 0]  # [N, B, 1, *obs_shape]
             self_obs_true = data["prev_obs"].float() / 255  # [N, B, *obs_shape]
-            self_obs_mse_rgb, self_obs_mse_xy = get_obs_distance(self_obs_pred, self_obs_true)
+            self_obs_mse_rgb, self_obs_mse_xy = get_obs_distance(self_obs_pred, self_obs_true, self.dm_loss_fn)
             self_obs_score = -np.log10(self_obs_mse_rgb.cpu().detach().numpy())
+            #if self.dm_loss_fn == "l2":
+            #    self_obs_score *= 2 # because of sqrt
             self.log.watch_mean("self_obs_score", self_obs_score, display_width=10, display_precision=2)
             loss += self_obs_mse_rgb * self.dm_loss_scale
 

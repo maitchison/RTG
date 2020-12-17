@@ -158,7 +158,7 @@ def load_results(path):
     return data
 
 def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "score_blue"), hold=False, label=None,
-               color=None):
+               color=None, legend_location="best"):
 
     marking_map = {
         "GvG": "--",
@@ -285,7 +285,7 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
         plt.xlim(0, xlim)
 
     if label != '':
-        plt.legend(loc="upper center", bbox_to_anchor=(0.5, 0.99))
+        plt.legend(loc=legend_location)
     plt.grid()
     plt.xlabel("agent epoch (Million steps)")
     plt.ylabel(y_units_map.get(y_axis[0], ""))
