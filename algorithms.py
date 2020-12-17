@@ -49,7 +49,7 @@ if platform.system() == "Windows":
 
 class MarlAlgorithm():
 
-    def __init__(self, N, A, model: nn.Module):
+    def __init__(self, N, A, model: PolicyModel):
 
         self.policy_model = model
 
@@ -59,7 +59,7 @@ class MarlAlgorithm():
 
         self.obs_shape = self.policy_model.input_dims
         self.rnn_state_shape = [2, self.policy_model.memory_units]  # records h and c for LSTM units
-        self.policy_shape = [self.policy_model.actions]
+        self.policy_shape = [self.policy_model.n_actions]
 
     def learn(self, total_timesteps, reset_num_timesteps=True):
         raise NotImplemented()
@@ -161,14 +161,16 @@ class PMAlgorithm(MarlAlgorithm):
         if self.prediction_mode in ["self", "others", "both"]:
             self.deception_model = DeceptionModel(
                 vec_env,
-                n_players=1 if self.prediction_mode == "self" else vec_env.max_players,
-                backwards_prediction_players=vec_env.max_players if self.prediction_mode == "both" else 0,
+                n_predictions=1 if self.prediction_mode == "self" else vec_env.max_players,
                 device=device,
                 memory_units=dm_memory_units,
                 out_features=dm_out_features,
                 model=model_name,
                 data_parallel=data_parallel,
-                lstm_mode=self.dm_lstm_mode
+                lstm_mode=self.dm_lstm_mode,
+                predict='full' if self.prediction_mode == "both" else 'forward',
+                predict_observations=True,
+                predict_actions=False,
             )
         else:
             self.deception_model = None
@@ -915,7 +917,7 @@ class PMAlgorithm(MarlAlgorithm):
             else:
                 obs_loss = pred_obs_mse
 
-            obs_loss *= self.dm_loss_scale
+            obs_loss = obs_loss * self.dm_loss_scale
             loss += obs_loss
             self.log.watch_mean("pred_obs_mse", pred_obs_mse)
             self.log.watch_mean("pred_obs_loss", obs_loss)
