@@ -94,7 +94,8 @@ class PMAlgorithm(MarlAlgorithm):
             policy_memory_units=128,
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
-            prediction_mode = "self",   # off|self|others|both
+            prediction_mode="self",   # off|self|others|both
+            prediction_type="action", # action|observation|both
 
             # ------ long list of parameters to algorithm ------------
             n_steps=32,
@@ -129,6 +130,7 @@ class PMAlgorithm(MarlAlgorithm):
         ):
 
         assert prediction_mode in ["off", "self", "others", "both"]
+        assert prediction_type in ["action", "observation", "both"]
 
         A = vec_env.total_agents
         N = n_steps
@@ -148,6 +150,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.dm_kl_factor = dm_kl_factor
         self.deception_batch_counter = 0
         self.prediction_mode = prediction_mode
+        self.prediction_type = prediction_type
         self.dm_vision_filter = dm_vision_filter
 
         if device == "data_parallel":
@@ -171,8 +174,8 @@ class PMAlgorithm(MarlAlgorithm):
                 data_parallel=data_parallel,
                 lstm_mode=self.dm_lstm_mode,
                 predict='full' if self.prediction_mode == "both" else 'forward',
-                predict_observations=True,
-                predict_actions=True,
+                predict_observations=self.prediction_type in ["both", "observation"],
+                predict_actions=self.prediction_type in ["both", "action"],
             )
         else:
             self.deception_model = None
@@ -885,7 +888,7 @@ class PMAlgorithm(MarlAlgorithm):
         # predictions come out as [N*B, n_players, n_roles], but we need them as [N*B, n_roles, n_players]
         rp_coef = 0.1 # this is just to make sure that role_prediction doesn't clip gradients.
         role_predictions = merge_down(model_out["role_prediction"]).transpose(1, 2)
-        loss_role = rp_coef * torch.nn.functional.nll_loss(role_predictions, role_targets)
+        loss_role = rp_coef * F.nll_loss(role_predictions, role_targets)
 
         loss += loss_role
         self.log.watch_mean("loss_role", loss_role)
@@ -1324,13 +1327,13 @@ def calculate_action_prediction_loss(pred: torch.Tensor, true: torch.Tensor):
 
     :param pred: tensor of logprobs of dims [N, B, n_players, n_roles, n_actions]
     :param true: tensor of logprobs of dims [N, B, n_players, n_roles, n_actions]
-    :return:
+    :return: scalar indicating average kl over batch.
     """
     assert pred.shape == true.shape
     N, B, n_players, n_roles, n_actions = pred.shape
     pred = pred.reshape(N * B * n_players * n_roles, n_actions)
     true = true.reshape(N * B * n_players * n_roles, n_actions)
-    return torch.nn.functional.nll_loss(pred, true)
+    return F.kl_div(pred, true, reduction='batchmean', log_target=True)
 
 
 test_calculate_returns()

@@ -56,6 +56,7 @@ class Config():
         self.test_epochs = int()
         self.save_model = str()
         self.prediction_mode = str()
+        self.prediction_type = str()
 
         self.verbose = int()
 
@@ -328,6 +329,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
     algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, export_rollout=config.export_rollout,
                             micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
                             prediction_mode=config.prediction_mode,
+                            prediction_type=config.prediction_type,
                             verbose=config.verbose >= 2, **algo_params)
 
     algorithm.log_folder = config.log_folder
@@ -630,6 +632,7 @@ def main():
                         help="Exports rollout to disk, very large")
 
     parser.add_argument('--prediction_mode', type=str, default="off", help="off|self|others|both")
+    parser.add_argument('--prediction_type', type=str, default="both", help="action|observation|both")
 
     parser.add_argument('--micro_batch_size', type=str, default="auto",
                         help="Number of samples per micro-batch, reduce if GPU ram is exceeded.")
