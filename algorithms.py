@@ -115,15 +115,16 @@ class PMAlgorithm(MarlAlgorithm):
 
             # ------ deception module settings ----------------
 
-            dm_replay_buffer_multiplier=4,
-            dm_max_window_size=8,
+            dm_replay_buffer_multiplier=2,
+            dm_max_window_size=32,
             dm_mini_batch_size=256,
             dm_memory_units=1024,
             dm_out_features=1024,
-            dm_learning_rate=1e-3,
+            dm_learning_rate=2.5e-4,
             dm_lstm_mode="residual",
             dm_kl_factor=0, # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
-            dm_loss_scale=1.0
+            dm_vision_filter=0,  # what proportion of non_visible agent pairs to train on
+            dm_loss_scale=10.0
 
         ):
 
@@ -147,6 +148,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.dm_kl_factor = dm_kl_factor
         self.deception_batch_counter = 0
         self.prediction_mode = prediction_mode
+        self.dm_vision_filter = dm_vision_filter
 
         if device == "data_parallel":
             device = "cuda"
@@ -267,7 +269,8 @@ class PMAlgorithm(MarlAlgorithm):
         if self.uses_deception_model:
             # the true role of each player in the game that agent a is playing
             self.batch_player_roles = np.zeros([N, A, vec_env.max_players], dtype=np.int64)
-
+            # policies for each player for each role at time t for given game recorded for all agents, in public_id order
+            self.batch_player_role_policy = np.zeros([N, A, vec_env.max_players, R, *self.policy_shape], dtype=np.float32)
             # all policies at time t for given game recorded for all agents, in public_id order
             self.batch_player_policy = np.zeros([N, A, vec_env.max_players, *self.policy_shape], dtype=np.float32)
             # all terminals at time t for given game recorded for all agents, in public_id order
@@ -281,11 +284,14 @@ class PMAlgorithm(MarlAlgorithm):
             else:
                 self.batch_player_obs = None
 
-                # all player predictions at time t for given game recorded for all agents, in public_id order
             if self.prediction_mode == "both":
-                self.batch_player_predictions = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
+                # all player predictions at time t for given game recorded for all agents, in public_id order
+                self.batch_player_obs_predictions = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
+                self.batch_player_action_predictions = np.zeros([N, A, vec_env.max_players, R, *self.policy_shape],
+                                                             dtype=np.float32)
             else:
-                self.batch_player_predictions = None
+                self.batch_player_obs_predictions = None
+                self.batch_player_action_predictions = None
 
             self.replay_buffer = []
 
@@ -499,6 +505,7 @@ class PMAlgorithm(MarlAlgorithm):
                     player_roles = self.vec_env.get_roles_expanded()  # batch_roles is [A, n_players]
                     self.batch_player_roles[t] = player_roles
                     self.batch_player_policy[t] = duplicate_to_public_order(log_policy)
+                    self.batch_player_role_policy[t] = duplicate_to_public_order(role_log_policies)
                     self.batch_player_terminals[t] = duplicate_to_public_order(prev_terminals)
                     self.batch_player_visible[t] = players_visible
 
@@ -508,9 +515,12 @@ class PMAlgorithm(MarlAlgorithm):
 
                 if self.prediction_mode == "both":
                     # organise prediction predictions
-                    player_predictions = torch.clamp(model_out["obs_prediction"].cpu().detach() * 255, 0, 255).to(
+                    player_obs_predictions = torch.clamp(model_out["obs_prediction"].cpu().detach() * 255, 0, 255).to(
                         torch.uint8)
-                    self.batch_player_predictions[t] = player_predictions
+                    self.batch_player_obs_predictions[t] = player_obs_predictions
+                    # again for actions...
+                    player_action_predictions = model_out["action_prediction"].cpu().detach()
+                    self.batch_player_action_predictions[t] = player_action_predictions
 
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
@@ -896,6 +906,24 @@ class PMAlgorithm(MarlAlgorithm):
             loss += pred_self_loss
 
         # -------------------------------------------------------------------------
+        # Calculate action prediction loss
+        # -------------------------------------------------------------------------
+
+        if "action_prediction" in model_out:
+            pred = model_out["action_prediction"]
+            true = data["player_role_policy"]
+            ap_loss = calculate_action_prediction_loss(pred, true)
+            self.log.watch_mean("ap_loss", ap_loss, display_width=10)
+            loss += ap_loss
+
+        if "action_backwards_prediction" in model_out:
+            pred = model_out["action_backwards_prediction"]
+            true = data["player_action_predictions"]
+            bap_loss = calculate_action_prediction_loss(pred, true)
+            self.log.watch_mean("bap_loss", bap_loss, display_width=10)
+            loss += bap_loss
+
+        # -------------------------------------------------------------------------
         # Calculate observation prediction loss
         # -------------------------------------------------------------------------
 
@@ -904,8 +932,8 @@ class PMAlgorithm(MarlAlgorithm):
             obs_truth = data["player_obs"].float() / 255 # [N, B, n_players, *obs_shape] (in public_id order)
 
             # remove from prediction other players we are not visible
-            visible_obs_predictions = filter_visible(obs_predictions, player_visible)
-            visible_obs_truth = filter_visible(obs_truth, player_visible)
+            visible_obs_predictions = filter_visible(obs_predictions, player_visible, self.dm_vision_filter)
+            visible_obs_truth = filter_visible(obs_truth, player_visible, self.dm_vision_filter)
 
             # calculate the loss for the visible players
             pred_obs_mse = F.mse_loss(visible_obs_predictions, visible_obs_truth)
@@ -926,7 +954,7 @@ class PMAlgorithm(MarlAlgorithm):
             if self.deception_batch_counter % 10 == 9: # doing this late helps with benchmarking
                 with torch.no_grad():
 
-                    # log the accuracy on non-visible players (should be lower)
+                    # log the accuracy on non-visible players (should be worse)
                     pred_nv = filter_visible(obs_predictions, ~player_visible)
                     true_nv = filter_visible(obs_truth, ~player_visible)
 
@@ -936,9 +964,22 @@ class PMAlgorithm(MarlAlgorithm):
                         obs_mse_nv = F.mse_loss(pred_nv, true_nv)
                         self.log.watch_mean("pred_obs_nv", obs_mse_nv, display_width=0)
 
+                    # note: as agents learn more determanistic policies KL gets larger
+                    # would be nice to have some kind of reference level, maybe KL when
+                    # observations are rolled along the players dim, ah yes, this will work
+
+                    # also this kl will include non-visible players. This is required as we can't (yet) partially
+                    # mask out players for only some transitions within a segment
+
                     # log the kl between pi(true) and pi(pred) (for true role)
                     kl = calculate_kl(obs_predictions)
                     self.log.watch_mean("pred_obs_kl", kl, display_precision=4)
+
+                    # log the kl between pi(true) and pi(pred) (for true role)
+                    rolled_obs = torch.roll(obs_truth, 1, dims=2)
+                    kl_reference = calculate_kl(rolled_obs)
+                    self.log.watch_mean("ref_kl", kl_reference, display_precision=4)
+                    self.log.watch_mean("delta_kl", kl / kl_reference, display_precision=4)
 
         # -------------------------------------------------------------------------
         # Prediction prediction error
@@ -947,7 +988,7 @@ class PMAlgorithm(MarlAlgorithm):
         if self.prediction_mode == "both":
             n_players = self.vec_env.max_players
             pred_predictions = model_out["obs_backwards_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape] (in public_id order)
-            true_predictions = data["player_predictions"].float()/255
+            true_predictions = data["player_obs_predictions"].float()/255
             pred_back_mse = F.mse_loss(pred_predictions, true_predictions)
             self.log.watch_mean("pred_back_mse", pred_back_mse, display_width=0)
             loss += pred_back_mse * self.dm_loss_scale
@@ -1106,8 +1147,12 @@ class PMAlgorithm(MarlAlgorithm):
         this_batch_data["rnn_states"] = self.extract_deception_rnn_states(self.batch_rnn_states)
         if self.batch_player_obs is not None:
             this_batch_data["player_obs"] = self.batch_player_obs
-        if self.batch_player_predictions is not None:
-            this_batch_data["player_predictions"] = self.batch_player_predictions
+        if self.batch_player_obs_predictions is not None:
+            this_batch_data["player_obs_predictions"] = self.batch_player_obs_predictions
+        if self.batch_player_action_predictions is not None:
+            this_batch_data["player_action_predictions"] = self.batch_player_action_predictions
+        if self.batch_player_role_policy is not None:
+            this_batch_data["player_role_policy"] = self.batch_player_role_policy
 
         # handle the replay buffer
         self.replay_buffer.append(this_batch_data)
@@ -1131,7 +1176,7 @@ class PMAlgorithm(MarlAlgorithm):
             self.deception_model,
             self.deception_optimizer,
             self.forward_deception_mini_batch,
-            epochs=(self.batch_epochs / self.dm_replay_buffer_multiplier) * windows_per_segment,
+            epochs=(self.batch_epochs / len(self.replay_buffer)) * windows_per_segment,
             mini_batch_size=self.dm_mini_batch_size,
             short_name="dec",
             max_window_size=self.dm_max_window_size,
@@ -1225,16 +1270,26 @@ def test_calculate_returns():
     assert list(calculate_returns(rewards, dones, final_value_estimate=6, gamma=1.0).ravel()) == [7, 7, 5, 4, 7]
 
 
-def filter_visible(x, visible):
+def filter_visible(x, visible, proportion_to_let_through=0.0):
     """
     Note: once filtered reshaping back to [N, B] is no longer viable (as different N's have different B's)
     :param x: Input is in form [N, B, n_players, *] with players in public order
     :param visible: [N, B, n_players] indicating if player is visible
     :return: flatened filtered results (N*B*n_players <filtered>, *]
     """
+
     N, B, n_players, *x_shape = x.shape
     assert visible.shape == (N, B, n_players), f"Expected visible to be {N, B, n_players} but found {visible.shape}"
+
+    if proportion_to_let_through >= 1:
+        return x.reshape(-1, *x_shape)
+
     mask = visible.reshape(-1)
+    if proportion_to_let_through > 0:
+        pass_through = np.random.choice(a=[True, False], size=[len(mask)], p=[proportion_to_let_through, 1 - proportion_to_let_through])
+        pass_through = torch.tensor(pass_through, dtype=torch.bool, device=x.device) # gets cast to uint8 for some reason..
+        mask = torch.logical_or(mask, pass_through)
+
     return x.reshape(N * B * n_players, *x_shape)[mask].reshape(-1, *x_shape)
 
 def test_filter_visible():
@@ -1262,6 +1317,21 @@ def test_filter_visible():
     test_2 = filter_visible(data, visible)
     assert test_2.shape == (2*4*3-1, 1)
     assert 12 not in test_2
+
+
+def calculate_action_prediction_loss(pred: torch.Tensor, true: torch.Tensor):
+    """
+
+    :param pred: tensor of logprobs of dims [N, B, n_players, n_roles, n_actions]
+    :param true: tensor of logprobs of dims [N, B, n_players, n_roles, n_actions]
+    :return:
+    """
+    assert pred.shape == true.shape
+    N, B, n_players, n_roles, n_actions = pred.shape
+    pred = pred.reshape(N * B * n_players * n_roles, n_actions)
+    true = true.reshape(N * B * n_players * n_roles, n_actions)
+    return torch.nn.functional.nll_loss(pred, true)
+
 
 test_calculate_returns()
 test_filter_visible()

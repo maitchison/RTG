@@ -8,20 +8,26 @@ import random
 import argparse
 import ast
 
+def has_been_started(base_path, run):
+    folders = [x[0] for x in os.walk(base_path)]
+    return any(run in folder for folder in folders)
+
 def run_experiment(job):
 
-    id, params = job
+    id, params, name = job
 
     device = DEVICES[multiprocessing.current_process()._identity[0]-1]
 
-    run_name = f"{RUN_NAME}/{id}"
+    path = f"{args.run}/{name}"
 
-    if os.path.exists(run_name):
-        print(f"skipping {run_name} as it exists.")
+    if has_been_started(os.path.join('run',args.run), name):
+        print(f"skipping {path} as it exists.")
         return
 
+    # todo: look for and ignore folders that are already done
+
     script = \
-        f"python ./run/{RUN_NAME}/train.py train --run=\"{run_name}\" --device={device} " + params
+        f"python ./run/{args.run}/train.py train --run=\"{path}\" --device={device} " + params
 
     print()
     print(script)
@@ -29,6 +35,51 @@ def run_experiment(job):
 
     os.system(script)
 
+def quote_if_str(x):
+    return f"'{x}'" if type(x) is str else x
+
+def algo_dict_to_str(params):
+    return "{" + (" ".join([f"'{k}':{quote_if_str(v)}" for k, v in params.items()])) + "}"
+
+def random_search(main_params, search_params, count=256):
+
+    jobs = []
+    id = 0
+    for i in range(count):
+        params = {}
+        for k, v in search_params.items():
+            params[k] = random.choice(v)
+
+        algo_params = algo_dict_to_str(params)
+
+        params = f"{main_params} --algo_params=\"{algo_params}\""
+
+        jobs.append([id, params, str(id)])
+        id += 1
+
+    return jobs
+
+def axis_search(main_params, search_params, default_params=None):
+
+    jobs = []
+    id = 0
+
+    for k, values in search_params.items():
+        for v in values:
+            if default_params is not None:
+                params = default_params.copy()
+            else:
+                params = {}
+            params[k] = v
+
+            name = f"{k}-{v}-1"
+
+            algo_params = algo_dict_to_str(params)
+            params = f"{main_params} --algo_params=\"{algo_params}\""
+            jobs.append([id, params, name])
+            id += 1
+
+    return jobs
 
 if __name__ == "__main__":
 
@@ -38,158 +89,50 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     DEVICES = ast.literal_eval(args.devices)
-    RUN_NAME = args.run
 
     print("Training on devices", DEVICES)
 
     pool = multiprocessing.Pool(processes=len(DEVICES))
 
-    jobs = []
-    id = 0
-
     os.system(f'mkdir ./run/{args.run}')
-    os.system(f'cp *.py ./run/{args.run}')
 
-    for i in range(256):
+    # copy source files so that modifications will not effect search
+    if not os.path.exists(f"./run/{args.run}/train.py"):
+        print("Copying train.py")
+        os.system(f'cp *.py ./run/{args.run}')
+    else:
+        print("Using previous train.py")
 
-        # search 3
-        # n_steps = random.choice([8, 16, 32, 64, 128])
-        # learning_rate = random.choice([1e-4, 2.5e-4, 1e-3])
-        # model = random.choice(["default", "large"])
-        # parallel_envs = random.choice([8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096])
-        # entropy_bonus = random.choice([0.003, 0.01, 0.03])
-        # mini_batches = random.choice([4, 8, 16])
-        # adam_epsilon = random.choice([1e-5, 1e-8])
-        # memory_units = random.choice([32, 64, 128, 256, 512])
-        # out_features = random.choice([32, 64, 128, 256, 512])
-        # max_grad_norm = random.choice([None, 0.5, 5.0])
-        # gamma = random.choice([0.95, 0.99, 0.995])
-        # amp = random.choice([False])
+    main_params = " ".join([
+        "--train_scenarios=r2g2_hrp",
+        "--eval_scenarios=[]",
+        "--micro_batch_size=1024",  # 1024 is slower, but can run two searches in parallel
+        "--prediction_mode=others",
+        "--save_model=none",
+        "--epochs=25"
+    ])
 
-        # search 4
-        # the idea here is to see if we can do very large parallel envs, and at the same time
-        # increase the test length to 4 epochs (as I suspect they will train slower but better)
-        # I'm also interested in finding out how mini_batches works now that I removed loss
-        # attenuation during microbatches
-        # n_steps = random.choice([32]) # shortest one that works
-        # learning_rate = random.choice([2.5e-4])
-        # model = random.choice(["default"])
-        # parallel_envs = random.choice([2**x for x in [7, 8, 9, 10, 11, 12, 13, 14]])
-        # entropy_bonus = random.choice([0.01])
-        # mini_batches = random.choice([4, 8, 16])
-        # adam_epsilon = random.choice([1e-8])
-        # memory_units = random.choice([256])
-        # out_features = random.choice([256])
-        # max_grad_norm = random.choice([5.0])
-        # gamma = random.choice([0.99])
-        # amp = random.choice([False])
-        #
-        # search 5
-        # / n_minibatches is back
-        # trying really hard to get parallel envs higher
-        # n_steps = random.choice([32])  # shortest one that works
-        # learning_rate = random.choice([2.5e-4])
-        # model = random.choice(["default"])
-        # parallel_envs = random.choice([2 ** x for x in [13, 14, 15, 16]])
-        # entropy_bonus = random.choice([0.01])
-        # mini_batches = random.choice([8])
-        # adam_epsilon = random.choice([1e-8])
-        # memory_units = random.choice([256])
-        # out_features = random.choice([256])
-        # max_grad_norm = random.choice([5.0])
-        # gamma = random.choice([0.99])
-        # amp = random.choice([False])
+    search_params = {
+                  'dm_max_window_size': [1, 2, 4, 8, 16, 32],
+                  'dm_replay_buffer_multiplier': [1, 2, 4, 8, 16],
+                  'dm_mini_batch_size': [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192],
+                  'dm_memory_units': [256, 512, 1024, 2048],
+                  'dm_out_features': [256, 512, 1024, 2048],
+                  'dm_lstm_mode': ['off', 'on', 'residual', 'cat'],
+                  'dm_kl_factor': [0, 0.5],
+                  'dm_vision_filter': [0, 0.5, 1],
+                  'dm_loss_scale': [0.1, 1, 10, 100, 1000],
+                  'dm_learning_rate': [1e-3, 2.5e-4, 1e-4]
+    }
 
-        # main_params = f"--amp={amp} --model={model} --n_steps={n_steps} --parallel_envs={parallel_envs} --test_epochs=4"
-        #
-        # algo_params = "{"+\
-        #               f"'learning_rate':{learning_rate}, " + \
-        #               f"'adam_epsilon':{adam_epsilon}, " + \
-        #               f"'gamma':{gamma}, " + \
-        #               f"'entropy_bonus':{entropy_bonus}, " + \
-        #               f"'mini_batches':{mini_batches}, " + \
-        #               f"'memory_units':{memory_units}, " + \
-        #               f"'out_features':{out_features}, " + \
-        #               f"'max_grad_norm':{max_grad_norm}" + \
-        #         "}"
-
-        # prediction_search_1
-
-        # dm_max_window_size = random.choice([8, 16, 32])
-        # dm_replay_buffer_multiplier = random.choice([1, 4, 8])
-        # dm_mini_batches = random.choice([4, 8, 16, 32, 64])
-        # dm_out_features = random.choice([512, 1024, 2048])
-        # dm_memory_units = random.choice([512, 1024, 2048])
-        # dm_lstm_mode = random.choice(['off', 'on', 'residual', 'cat'])
-        # dm_xy_factor = random.choice([1, 0.1, 0.01, 0])
-        # dm_learning_rate = random.choice([3e-3, 1e-3, 2.5e-4])
-        # dm_loss_fn = random.choice(["mse", "l1", "l2"])
-        # dm_loss_scale = random.choice([1, 3, 10])
-
-        # prediction_search_2
-        # dm_max_window_size = random.choice([4, 8, 16])
-        # dm_replay_buffer_multiplier = random.choice([4, 8])
-        # dm_mini_batch_size = random.choice([256, 512, 1024])
-        # dm_out_features = random.choice([1024])
-        # dm_memory_units = random.choice([1024])
-        # dm_lstm_mode = random.choice(['residual'])
-        # dm_xy_factor = random.choice([1])
-        # dm_learning_rate = random.choice([2.5e-4])
-        # dm_loss_fn = random.choice(["l2"])
-        # dm_kl_factor = random.choice([0, 0.5, 1])
-        # dm_loss_scale = random.choice([1])
-
-        # self search
-        # dm_max_window_size = random.choice([2, 4, 8, 16, 32])
-        # dm_replay_buffer_multiplier = random.choice([1, 2, 4, 8, 16])
-        # dm_mini_batch_size = random.choice([128, 256, 512, 1024])
-        # dm_memory_units = random.choice([128, 256, 512, 1024])
-        # dm_lstm_mode = random.choice(['residual'])
-        # dm_xy_factor = random.choice([1])
-        # dm_learning_rate = random.choice([2.5e-4])
-        # dm_loss_fn = random.choice(["mse", "l2"])
-        # dm_kl_factor = random.choice([0])
-        # dm_loss_scale = random.choice([1, 10, 100])
-        # dm_out_features = dm_memory_units
-
-        # others search
-        dm_max_window_size = random.choice([32])
-        dm_replay_buffer_multiplier = random.choice([1, 2, 4, 8, 16])
-        dm_mini_batch_size = random.choice([256])
-        dm_memory_units = random.choice([512, 1024, 2048])
-        dm_lstm_mode = random.choice(['residual'])
-        dm_learning_rate = random.choice([2.5e-4])
-        dm_kl_factor = random.choice([0])
-        dm_loss_scale = random.choice([1, 10, 100])
-        dm_out_features = dm_memory_units
-
-        #2nd round check lstm_mode and kl factor
-
-
-        main_params = " ".join([
-            "--train_scenarios=r2g2_hrp",
-            "--eval_scenarios=[]",
-            "--micro_batch_size=1024", # 1024 is slower, but can run two searches in parallel
-            "--prediction_mode='others'",
-            "--save_model=none",
-            "--epochs=25"
-            ])
-
-        algo_params = "{" + \
-                      f"'dm_max_window_size':{dm_max_window_size}," + \
-                      f"'dm_replay_buffer_multiplier':{dm_replay_buffer_multiplier}," + \
-                      f"'dm_mini_batch_size':{dm_mini_batch_size}," + \
-                      f"'dm_memory_units':{dm_memory_units}," + \
-                      f"'dm_out_features':{dm_out_features}," + \
-                      f"'dm_lstm_mode':'{dm_lstm_mode}'," + \
-                      f"'dm_kl_factor':{dm_kl_factor}," + \
-                      f"'dm_loss_scale':{dm_loss_scale}," + \
-                      f"'dm_learning_rate':{dm_learning_rate}," + \
-                      "}"
-
-        params = f"{main_params} --algo_params=\"{algo_params}\""
-
-        jobs.append([id, params])
-        id += 1
-
+    jobs = axis_search(main_params, search_params)
+    print()
+    print("-"*60)
+    print()
+    for job in jobs:
+        print(job)
+    print()
+    print("-" * 60)
+    print()
     pool.map(run_experiment, jobs)
+    # stub: new version
