@@ -306,6 +306,7 @@ class RescueTheGeneralScenario():
 
         self.max_view_distance = 7      # distance used for size of observational space, unused tiles are blanked out
         self.team_view_distance = (7, 5, 5)
+        self.team_general_view_distance = (3, 5, 5) # how close you need to be to the general to see him
         self.team_shoot_range = (4, 0, 0)
         self.team_counts = (4, 4, 4)
         self.team_shoot_timeout = (3, 3, 3)  # number of turns between shooting
@@ -327,6 +328,11 @@ class RescueTheGeneralScenario():
         # enables team colors on agents local observation. This can be useful if one policy plays all 3 teams,
         # however it could cause problems if you want to infer what a different team would have done in that situation
         self.local_team_colors = False
+
+        # number of times to soft reset game before a hard reset
+        # during a soft reset, player positions and health are reset, but not their teams, or id_colors
+        # this allows players to remember roles across soft resets
+        # a done is issued only at the end of all resets
         self.rounds = 1
 
         # default is red knows red, but all others are hidden

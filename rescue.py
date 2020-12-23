@@ -111,11 +111,12 @@ class RTG_Player():
         if self.shoot_range > 0:
             self.turns_until_we_can_shoot = max(0, self.turns_until_we_can_shoot - 1)
 
-    def in_vision(self, x, y):
+    def in_vision(self, x, y, view_distance=None):
         """
         Returns if given co-ordinates are within vision of the given player or not.
         """
-        return max(abs(self.x - x), abs(self.y - y)) <= self.view_distance
+        view_distance = view_distance or self.view_distance
+        return max(abs(self.x - x), abs(self.y - y)) <= view_distance
 
     def damage(self, damage):
         """
@@ -257,12 +258,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_general_moved = np.zeros((3,), dtype=np.int)  # which teams moved general
         self.stats_general_hidden = np.zeros((3,), dtype=np.int)  # which teams stood ontop of general
         self.stats_tree_harvested = np.zeros((3,), dtype=np.int)  # which teams harvested trees
-
-        # number of times to soft reset game before a hard reset
-        # during a soft reset, player positions and health are reset, but not their teams, or id_colors
-        # this allows players to remember roles across soft resets
-        # a done is issued only at the end of all resets
-        self.rounds = 4
 
         self.stats_actions = np.zeros((3, self.action_space.n), dtype=np.int)
         self.outcome = str() # outcome of game
@@ -715,8 +710,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         c = self.GENERAL_COLOR if self.general_health > 0 else self.DEAD_COLOR
 
         obs[dx:dx+3, dy + 1] = c
-        obs[dx + 1, dy + 2] = c
-        obs[dx + 1, dy + 0] = c
+        obs[dx + 1, dy:dy+3] = c
 
     def _get_map(self):
         """
@@ -736,9 +730,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             for y in range(self.scenario.map_height):
                 if self.map[x, y] == self.MAP_TREE:
                     self.draw_tile(obs, x, y, self.TREE_COLOR)
-
-        # paint general
-        self._draw_general(obs)
 
         # padding (makes cropping easier...)
         self._map_padding = (self.scenario.max_view_distance + 1) # +1 for border
@@ -801,6 +792,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         obs = self._get_map()
 
         observer = self.players[observer_id] if (observer_id != -1) else None
+
+        # paint general if they are visibile
+        if observer is None or observer.in_vision(
+                self.general_location[0], self.general_location[1],
+                min(
+                    self.scenario.team_general_view_distance[observer.team],
+                    self.scenario.team_view_distance[observer.team]
+                )):
+            self._draw_general(obs, padding=(self._map_padding, self._map_padding))
+
 
         # paint soldiers, living over dead
         for player in self.players:
