@@ -39,7 +39,20 @@ class RescueTheGeneralScenario():
         "full": {
             "description": "This is the default scenario.",
             "map_width": 48,
-            "map_height": 48
+            "map_height": 48,
+            "team_counts": (2, 2, 4),
+
+            "n_trees": 10,
+            "max_view_distance": 7,
+            "team_view_distance": (7, 5, 5),    # red can see slightly further
+            "team_shoot_range": (4, 4, 2),      # everyone can shoot, but blue is limited
+            "team_shoot_timeout": (3, 3, 3),
+            "timeout_mean": 500,
+            "timeout_rnd": 0.1,                 # a little variation on the timeouts so games are out of sync
+            "starting_locations": "together",   # players start together, rather than randomly spread out.
+            "randomize_ids": True,              # public id's rather than teams are randomized
+            "local_team_colors": True,          # show team colors on local observation
+            "rounds": 4,                        # number of rounds before reset
         },
 
         "medium": {
@@ -314,6 +327,7 @@ class RescueTheGeneralScenario():
         # enables team colors on agents local observation. This can be useful if one policy plays all 3 teams,
         # however it could cause problems if you want to infer what a different team would have done in that situation
         self.local_team_colors = False
+        self.rounds = 1
 
         # default is red knows red, but all others are hidden
         # all is all roles are hidden

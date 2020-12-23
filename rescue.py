@@ -222,9 +222,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.action_space = gym.spaces.Discrete(14 if self.scenario.enable_signals else 10)
 
         self.name = name
-        self.counter = 0
-        self.timeout = 0
-        self.game_counter = 0
+        self.round_timer = 0            # the timer tick for current round
+        self.round_timeout = 0          # timeout for current round
+        self.game_counter = 0           # counts the number of games played
+        self.round_number = 0           # the current round we are on
         self.dummy_prob = dummy_prob
 
         self.general_location = (0,0)
@@ -259,6 +260,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_general_moved = np.zeros((3,), dtype=np.int)  # which teams moved general
         self.stats_general_hidden = np.zeros((3,), dtype=np.int)  # which teams stood ontop of general
         self.stats_tree_harvested = np.zeros((3,), dtype=np.int)  # which teams harvested trees
+
+        # number of times to soft reset game before a hard reset
+        # during a soft reset, player positions and health are reset, but not their teams, or id_colors
+        # this allows players to remember roles across soft resets
+        # a done is issued only at the end of all resets
+        self.rounds = 4
 
         self.stats_actions = np.zeros((3, self.action_space.n), dtype=np.int)
         self.outcome = str() # outcome of game
@@ -476,7 +483,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         result_general_killed = self.general_health <= 0
         result_general_rescued = self.general_tiles_from_edge == 0
-        result_game_timeout = self.counter >= (self.timeout-1)
+        result_game_timeout = self.round_timer >= (self.timeout - 1)
         result_all_players_dead = all(player.is_dead for player in self.players)
         result_red_victory = False
         result_blue_victory = False
@@ -517,10 +524,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.blue_rewards_for_winning -= small_reward  # make sure blue always gets the same number of points for winning
             self.blue_has_stood_next_to_general = True
 
-        if self.scenario.bonus_actions and self.counter > 0:
+        if self.scenario.bonus_actions and self.round_timer > 0:
             # reward agents for pressing actions that were indicated to them
             # there is a natural delay of 1
-            expected_action = self.bonus_actions[self.counter-1]
+            expected_action = self.bonus_actions[self.round_timer - 1]
             if expected_action >= 0:
                 bonus_count = len(self.bonus_actions[self.bonus_actions >= 0])
                 for index, action in enumerate(actions):
@@ -610,20 +617,24 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self.outcome = "complete"
 
             self.write_stats_to_log()
-            dones[:] = True
-
-            #print(f"{self.name}: round finished at step {self.counter}", self.team_scores, rewards)
 
             for info in infos:
                 # record the outcome in infos as it will be lost if environment is auto reset.
                 info["outcome"] = self.outcome
 
+            # increment round, or if this was the last round send done
+            if self.round_number == self.scenario.rounds:
+                # setting dones to true will cause runner to call the hard reset
+                dones[:] = True
+            else:
+                # a soft reset to move us to the next round
+                self.soft_reset()
 
         rewards *= self.REWARD_SCALE
         rewards = np.asarray(rewards)
         dones = np.asarray(dones)
 
-        self.counter += 1
+        self.round_timer += 1
         obs = self._get_observations()
         obs = np.asarray(obs)
 
@@ -767,7 +778,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         output_string = ",".join(
             str(x) for x in [
-                self.name, epoch, self.game_counter, self.counter, *self.team_scores,
+                self.name, epoch, self.game_counter, self.round_timer, *self.team_scores,
                 *(nice_print(x) for x in stats),
                 self.outcome, time_since_env_started, time.time()
             ]
@@ -873,7 +884,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 player.x / self.scenario.map_width,
                 player.y / self.scenario.map_height,
                 player.health / self.scenario.player_initial_health,
-                self.counter / self.timeout
+                self.round_timer / self.timeout
             ]
 
             for i, (col, value) in enumerate(zip(status_colors, status_values)):
@@ -883,7 +894,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             # if needed add a hint for 'bonus actions'
             # just for debugging
             if self.scenario.bonus_actions:
-                action_hint = self.bonus_actions[self.counter+self.scenario.bonus_actions_delay]
+                action_hint = self.bonus_actions[self.round_timer + self.scenario.bonus_actions_delay]
                 obs[action_hint*3:(action_hint+1)*3, 0:3] = (0, 255, 255)
 
         # show general off-screen location
@@ -912,30 +923,40 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             x, y, (self.scenario.map_width - 1) - x, (self.scenario.map_height - 1) - y
         )
 
-    def reset(self):
+    def soft_reset(self):
         """
-        Reset game.
-        :return: observations
+        A soft reset rests player positions health, and the environment, but not player_teams or player colors
+        :return:
         """
 
-        # save previous result so we we reset we still have this info.
+        # save previous result so when we reset we still have this info.
         self.previous_team_scores = self.team_scores.copy()
         self.previous_outcome = self.outcome
 
+        # reset game info
+        self.outcome = ""
+        self.round_timer = 0
+        self.round_number += 1
+        self.team_scores *= 0
+
+        # make sure we force a repaint of the map
+        self._needs_repaint = True
+
+        # timeout is slightly random so that environments get out of sync
+        self.timeout = int(
+            np.random.normal(self.scenario.timeout_mean, self.scenario.timeout_mean * self.scenario.timeout_rnd))
+        if self.timeout < 1:
+            self.timeout = 1
+
         # general location
-        self.general_location = (np.random.randint(3, self.scenario.map_width - 2), np.random.randint(3, self.scenario.map_height - 2))
+        self.general_location = (
+        np.random.randint(3, self.scenario.map_width - 2), np.random.randint(3, self.scenario.map_height - 2))
         self.general_health = self.scenario.general_initial_health
         self.general_closest_tiles_from_edge = self.general_tiles_from_edge
         self.blue_has_stood_next_to_general = False
         self.blue_rewards_for_winning = 10
 
-        self.timeout = int(np.random.normal(self.scenario.timeout_mean, self.scenario.timeout_mean*self.scenario.timeout_rnd))
-        if self.timeout < 1:
-            self.timeout = 1
-
-        self._needs_repaint = True
-
-        # bonus actions
+        # handle bonus actions
         self.bonus_actions = np.random.randint(
             low=0,
             high=self.action_space.n,
@@ -945,10 +966,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # zero out actions so that agent only has to remember one at a time
         if self.scenario.bonus_actions_one_at_a_time and self.scenario.bonus_actions_delay > 0:
             for i in range(len(self.bonus_actions)):
-                if i % self.scenario.bonus_actions_delay != (self.scenario.bonus_actions_delay-1):
+                if i % self.scenario.bonus_actions_delay != (self.scenario.bonus_actions_delay - 1):
                     self.bonus_actions[i] = -1
 
-        # create map
+        # create the map
         self.map[:, :] = 1
         self.player_lookup[:, :] = -1
 
@@ -957,33 +978,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for loc in [all_locations[idx] for idx in idxs]:
             self.map[loc] = 2
 
-        self.outcome = ""
-
-        # reset stats
-        self.stats_player_hit *= 0
-        self.stats_deaths *= 0
-        self.stats_kills *= 0
-        self.stats_general_shot *= 0
-        self.stats_general_moved *= 0
-        self.stats_general_hidden *= 0
-        self.stats_tree_harvested *= 0
-        self.stats_actions *= 0
-
         # initialize players location
         if self.scenario.starting_locations == "random":
-
             # players are placed randomly around the map
             start_locations = [all_locations[i] for i in np.random.choice(range(len(all_locations)), size=self.n_players)]
-
         elif self.scenario.starting_locations == "together":
-
             # players are placed together but not right ontop of the general
             general_filter = lambda p: \
                 abs(p[0] - self.general_location[0]) > 4 and \
                 abs(p[1] - self.general_location[1]) > 4
-
             assert self.n_players <= 16, "This method of initializing starting locations only works with 16 or less players."
-
             valid_start_locations = list(filter(general_filter, all_locations))
             start_location_center = valid_start_locations[np.random.choice(range(len(valid_start_locations)))]
             start_locations = []
@@ -997,20 +1001,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         else:
             raise Exception(f"Invalid starting location mode {self.scenario.starting_locations}")
 
-        # setup the rest of the game
-        self.counter = 0
-        self.game_counter += 1
-
-        self.team_scores *= 0
-
-        ids = list(range(self.n_players))
-        if self.scenario.randomize_ids:
-            np.random.shuffle(ids)
-
         # initialize the players
-        for id, player in zip(ids, self.players):
-
-            player.public_id = id
+        for player in self.players:
             player.x, player.y = start_locations.pop()
 
             self.player_lookup[player.x, player.y] = player.index
@@ -1027,7 +1019,36 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self.player_lookup[player.x, player.y] = -1
                 players_left_alive -= 1
 
+        # reset stats
+        self.stats_player_hit *= 0
+        self.stats_deaths *= 0
+        self.stats_kills *= 0
+        self.stats_general_shot *= 0
+        self.stats_general_moved *= 0
+        self.stats_general_hidden *= 0
+        self.stats_tree_harvested *= 0
+        self.stats_actions *= 0
+
         return np.asarray(self._get_observations())
+
+    def reset(self):
+        """
+        Perform hard reset of game.
+        :return: observations
+        """
+
+        self.game_counter += 1
+        self.round_number = 0
+
+        # assign random public_ids
+        ids = list(range(self.n_players))
+        if self.scenario.randomize_ids:
+            np.random.shuffle(ids)
+
+        for id, player in zip(ids, self.players):
+            player.public_id = id
+
+        return self.soft_reset()
 
     @property
     def n_players(self):
