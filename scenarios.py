@@ -40,7 +40,7 @@ class RescueTheGeneralScenario():
             "description": "This is the default scenario.",
             "map_width": 48,
             "map_height": 48,
-            "team_counts": (2, 2, 4),
+            "team_counts": (1, 1, 2),           # I really want more players, but it's faster with less
 
             "n_trees": 10,
             "max_view_distance": 7,
