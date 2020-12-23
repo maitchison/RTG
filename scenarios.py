@@ -43,8 +43,8 @@ class RescueTheGeneralScenario():
             "team_counts": (1, 1, 2),           # I really want more players, but it's faster with less
 
             "n_trees": 10,
-            "max_view_distance": 7,
-            "team_view_distance": (7, 5, 5),    # red can see slightly further
+            "max_view_distance": 5,
+            "team_view_distance": (5, 5, 5),    # all players can see 5 squares
             "team_shoot_range": (4, 4, 2),      # everyone can shoot, but blue is limited
             "team_shoot_timeout": (3, 3, 3),
             "timeout_mean": 500,
