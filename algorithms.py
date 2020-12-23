@@ -116,16 +116,16 @@ class PMAlgorithm(MarlAlgorithm):
 
             # ------ deception module settings ----------------
 
-            dm_replay_buffer_multiplier=2,
-            dm_max_window_size=32,
-            dm_mini_batch_size=256,
+            dm_replay_buffer_multiplier=1,
+            dm_max_window_size=16,
+            dm_mini_batch_size=128,
             dm_memory_units=1024,
             dm_out_features=1024,
             dm_learning_rate=2.5e-4,
             dm_lstm_mode="residual",
             dm_kl_factor=0, # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
-            dm_vision_filter=0,  # what proportion of non_visible agent pairs to train on
-            dm_loss_scale=10.0
+            dm_vision_filter=0.25,  # what proportion of non_visible agent pairs to train on
+            dm_loss_scale=0.1,
 
         ):
 
@@ -266,6 +266,11 @@ class PMAlgorithm(MarlAlgorithm):
         # role of each player
         self.batch_roles = np.zeros([N, A], dtype=np.int64)
 
+        # these will be set if deception model is enabled
+        self.batch_player_obs = None
+        self.batch_player_obs_predictions = None
+        self.batch_player_action_predictions = None
+
         # ground truth observations for each player in public_id order,
         # this is so when we take a random sample we always have the information we need.
         # It's a bit wasteful with memory though, especially with high player counts.
@@ -283,18 +288,17 @@ class PMAlgorithm(MarlAlgorithm):
 
             if self.prediction_mode in ["both", "others"]:
                 # all player observations at time t for given game recorded for all agents, in public_id order
-                self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
-            else:
-                self.batch_player_obs = None
+                if self.prediction_type in ["both", "observation"]:
+                    self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
 
             if self.prediction_mode == "both":
                 # all player predictions at time t for given game recorded for all agents, in public_id order
-                self.batch_player_obs_predictions = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
-                self.batch_player_action_predictions = np.zeros([N, A, vec_env.max_players, R, *self.policy_shape],
+                if self.prediction_type in ["both", "observation"]:
+                    self.batch_player_obs_predictions = np.zeros([N, A, vec_env.max_players, *self.obs_shape],
+                                                                 dtype=np.uint8)
+                if self.prediction_type in ["both", "action"]:
+                    self.batch_player_action_predictions = np.zeros([N, A, vec_env.max_players, R, *self.policy_shape],
                                                              dtype=np.float32)
-            else:
-                self.batch_player_obs_predictions = None
-                self.batch_player_action_predictions = None
 
             self.replay_buffer = []
 
@@ -512,11 +516,11 @@ class PMAlgorithm(MarlAlgorithm):
                     self.batch_player_terminals[t] = duplicate_to_public_order(prev_terminals)
                     self.batch_player_visible[t] = players_visible
 
-                if self.prediction_mode in ["both", "others"]:
+                if self.batch_player_obs is not None:
                     # predictions of other players observations
                     self.batch_player_obs[t] = duplicate_to_public_order(prev_obs)
 
-                if self.prediction_mode == "both":
+                if self.prediction_mode == "both" and "obs_prediction" in model_out:
                     # organise prediction predictions
                     player_obs_predictions = torch.clamp(model_out["obs_prediction"].cpu().detach() * 255, 0, 255).to(
                         torch.uint8)
@@ -897,7 +901,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Calculate self prediction loss
         # -------------------------------------------------------------------------
 
-        if self.prediction_mode == "self":
+        if self.prediction_mode == "self" and "obs_prediction" in model_out:
             # in this case we make targets our own observations
             pred_self = model_out["obs_prediction"][:, :, 0]  # [N, B, 1, *obs_shape]
             pred_true = data["prev_obs"].float() / 255  # [N, B, *obs_shape]
@@ -930,7 +934,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Calculate observation prediction loss
         # -------------------------------------------------------------------------
 
-        if self.prediction_mode in ["others", "both"]:
+        if self.prediction_mode in ["others", "both"] and "obs_prediction" in model_out:
             obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape] (in public_id order)
             obs_truth = data["player_obs"].float() / 255 # [N, B, n_players, *obs_shape] (in public_id order)
 
@@ -988,7 +992,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Prediction prediction error
         # -------------------------------------------------------------------------
 
-        if self.prediction_mode == "both":
+        if self.prediction_mode == "both" and "obs_backwards_prediction" in model_out:
             n_players = self.vec_env.max_players
             pred_predictions = model_out["obs_backwards_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape] (in public_id order)
             true_predictions = data["player_obs_predictions"].float()/255

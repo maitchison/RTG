@@ -117,11 +117,10 @@ if __name__ == "__main__":
                   'dm_replay_buffer_multiplier': [1, 2, 4, 8, 16],
                   'dm_mini_batch_size': [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192],
                   'dm_memory_units': [256, 512, 1024, 2048],
-                  'dm_out_features': [256, 512, 1024, 2048],
                   'dm_lstm_mode': ['off', 'on', 'residual', 'cat'],
                   'dm_kl_factor': [0, 0.5],
                   'dm_vision_filter': [0, 0.5, 1],
-                  'dm_loss_scale': [0.1, 1, 10, 100, 1000],
+                  'dm_loss_scale': [0.001, 0.1, 1, 10, 100, 1000],
                   'dm_learning_rate': [1e-3, 2.5e-4, 1e-4]
     }
 
