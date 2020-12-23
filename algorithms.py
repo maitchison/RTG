@@ -116,7 +116,7 @@ class PMAlgorithm(MarlAlgorithm):
 
             # ------ deception module settings ----------------
 
-            dm_replay_buffer_multiplier=1,
+            dm_replay_buffer_multiplier=1,  # this doesn't seem to help... so keep it at 1
             dm_max_window_size=16,
             dm_mini_batch_size=128,
             dm_memory_units=1024,

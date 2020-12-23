@@ -170,7 +170,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     HIGHLIGHT_COLOR = np.asarray([180, 180, 50], dtype=np.uint8)
     GENERAL_COLOR = np.asarray([255, 255, 255], dtype=np.uint8)
     NEUTRAL_COLOR = np.asarray([96, 96, 96], dtype=np.uint8)
-    GRASS_COLOR = np.asarray([24, 42, 16], dtype=np.uint8)
+    GRASS_COLOR = np.asarray([0, 128, 0], dtype=np.uint8)
     TREE_COLOR = np.asarray([12, 174, 91], dtype=np.uint8)
     DEAD_COLOR = np.asarray([0, 0, 0], dtype=np.uint8)
 
@@ -687,8 +687,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         draw_x, draw_y = (player.x+padding[0]) * CELL_SIZE + 1, (player.y+padding[1]) * CELL_SIZE + 1
 
-        obs[draw_x - 1:draw_x + 2, draw_y - 1:draw_y + 2] = ring_color
-        obs[draw_x, draw_y] = inner_color
+        obs[draw_x - 1:draw_x + 2, draw_y - 1:draw_y + 2] = inner_color
+        obs[draw_x - 1:draw_x + 2, draw_y] = ring_color
 
         if player.action in SHOOT_ACTIONS:
             index = player.action - ACTION_SHOOT_UP
