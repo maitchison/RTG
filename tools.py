@@ -286,7 +286,7 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
 
     if label != '':
         plt.legend(loc=legend_location)
-    plt.grid()
+    plt.grid(True)
     plt.xlabel("agent epoch (Million steps)")
     plt.ylabel(y_units_map.get(y_axis[0], ""))
     if not hold:
