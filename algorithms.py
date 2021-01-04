@@ -94,8 +94,8 @@ class PMAlgorithm(MarlAlgorithm):
             policy_memory_units=128,
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
-            prediction_mode="self",   # off|self|others|both
-            prediction_type="action", # action|observation|both
+            prediction_mode="both",   # off|self|others|both
+            prediction_type="both",   # action|observation|both
 
             # ------ long list of parameters to algorithm ------------
             n_steps=32,
@@ -113,20 +113,20 @@ class PMAlgorithm(MarlAlgorithm):
             ppo_epsilon=0.2,
             max_grad_norm=5.0,
             lstm_mode="residual",
+            deception_bonus=None,           # scale of deception bonus for each team (requires deception module to be enabled)
 
             # ------ deception module settings ----------------
 
             dm_replay_buffer_multiplier=1,  # this doesn't seem to help... so keep it at 1
             dm_max_window_size=16,
-            dm_mini_batch_size=128,
-            dm_memory_units=1024,
-            dm_out_features=1024,
+            dm_mini_batch_size=256,         # 128 works best, but might train's 20% slower than 256, which is also ok.
+            dm_memory_units=512,
+            dm_out_features=512,
             dm_learning_rate=2.5e-4,
             dm_lstm_mode="residual",
-            dm_kl_factor=0, # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
-            dm_vision_filter=0.25,  # what proportion of non_visible agent pairs to train on
+            dm_kl_factor=0,                 # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
+            dm_vision_filter=0.25,          # what proportion of non_visible agent pairs to train on
             dm_loss_scale=0.1,
-
         ):
 
         assert prediction_mode in ["off", "self", "others", "both"]
@@ -149,8 +149,8 @@ class PMAlgorithm(MarlAlgorithm):
         self.dm_loss_scale = dm_loss_scale
         self.dm_kl_factor = dm_kl_factor
         self.deception_batch_counter = 0
-        self.prediction_mode = prediction_mode
-        self.prediction_type = prediction_type
+        self.prediction_mode = prediction_mode  # self|others|both
+        self.prediction_type = prediction_type  # action|observation|both
         self.dm_vision_filter = dm_vision_filter
 
         if device == "data_parallel":
@@ -183,6 +183,7 @@ class PMAlgorithm(MarlAlgorithm):
         super().__init__(n_steps, A, model)
 
         assert self.obs_shape[-1] == 3, f"Model assumes RGB 3-channel input, but found {self.obs_shape}"
+        assert deception_bonus is not None or prediction_mode == "both", "To enable deception bonus prediction mode must be 'both'."
 
         if self.uses_deception_model:
             # to handle the deception rnn states just concatenate the h,c states together
@@ -207,6 +208,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.vf_coef = vf_coef
         self.ppo_epsilon = ppo_epsilon
         self.max_grad_norm = max_grad_norm
+        self.deception_bonus = deception_bonus
 
         # these are not used yet
         self.intrinsic_reward_propagation = False,
@@ -263,13 +265,14 @@ class PMAlgorithm(MarlAlgorithm):
         self.batch_ext_returns = np.zeros([N, A], dtype=np.float32)
         self.batch_int_returns = np.zeros([N, A], dtype=np.float32)
 
-        # role of each player
+        # role of each player at each timestep
         self.batch_roles = np.zeros([N, A], dtype=np.int64)
 
         # these will be set if deception model is enabled
         self.batch_player_obs = None
         self.batch_player_obs_predictions = None
         self.batch_player_action_predictions = None
+        self.batch_player_role_predictions = None
 
         # ground truth observations for each player in public_id order,
         # this is so when we take a random sample we always have the information we need.
@@ -292,6 +295,8 @@ class PMAlgorithm(MarlAlgorithm):
                     self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
 
             if self.prediction_mode == "both":
+                # each players prediction about the roles of all other players, as a log prob.
+                self.batch_player_role_predictions = np.zeros([N, A, vec_env.max_players, R], dtype=np.float32)
                 # all player predictions at time t for given game recorded for all agents, in public_id order
                 if self.prediction_type in ["both", "observation"]:
                     self.batch_player_obs_predictions = np.zeros([N, A, vec_env.max_players, *self.obs_shape],
@@ -446,6 +451,133 @@ class PMAlgorithm(MarlAlgorithm):
         self.episode_len *= 0
         self.terminals *= 0
 
+    def calculate_deception_bonus_from_actions(
+            self,
+            player_action_prediction_predictions: torch.Tensor,
+            prior_role_belief: torch.Tensor,
+            true_role: torch.Tensor,
+            mask: torch.Tensor,
+            actions: torch.Tensor,
+        ):
+        """
+        Calculates a deception bonus based on modifying other agents belief under the assumption that they are
+        bayesian agents, and using our own estimations of their estimations of our likely actions for each role.
+
+        The observations version uses the policy of the predicted observations, but this one uses predictions of policy
+        directly. This avoids rnn_states, and having to predict unimportant parts of the observation space.
+
+        :param player_action_prediction_predictions: distribution over actions that represent agent i's belief about agent j's
+            belief about i's action distribution for each role at current timestep. These should be log probabilities
+            Tensor of dims [B, n_players, n_roles, *action_space] of type float32
+        :param prior_role_belief: Agent i's belief about agent j's belief about agent i's true role. These should be log probabilities
+            Tensor of dims [B, n_players, n_roles] of type float32
+
+        :param true_role: The true roles for each player, of shape [B] of type long
+        :param mask: A mask indicating which players we are trying to deceive, and therefore get a bonus for.
+            This can be used to mask out invisible players, or players that are known to be on the same team
+            Tensor of dims [B, n_players] of type float
+
+        :param actions: Actions for each agent
+            Tensor of dims [B] of type long
+
+        :return: The bonus for each player summed over other players, tensor of dims [B],
+        """
+
+        B, n_players, *role_policy_shape = player_action_prediction_predictions.shape
+
+        # [B, n_players, n_roles, n_actions]
+        role_policy = torch.exp(player_action_prediction_predictions)
+        prior_role_belief = torch.exp(prior_role_belief)
+
+        # next calculate the B_ji, which is agent j's belief about agent i's role being the true role if we take
+        # action a
+        # (actually this is not the posterior belief, it's the likeliehood ratio)
+        likeliehood_true_role = torch.zeros([B, n_players])
+
+        # todo: vectorize this
+        # todo: calculate this using logs
+        for i in range(B):
+            a = actions[i]
+            for j in range(n_players):
+                role_sum = 0
+                for role in range(3):
+                    # policy of my prediction of their prediction of my current state, times prior belief
+                    role_sum += role_policy[i, j, role, a] * prior_role_belief[i, j, role]
+                likeliehood_true_role[i, j] = role_policy[i, j, true_role[i], a] / role_sum
+
+        # bonus is just neg log likelihood, and sum over other players we are trying to deceive
+        bonus = -torch.log(likeliehood_true_role)
+        bonus *= mask
+        bonus = torch.sum(bonus, dim=-1) # sum over players
+        return bonus
+
+
+    def calculate_deception_bonus_from_observations(
+            self,
+            player_observation_prediction_predictions: torch.Tensor,
+            prior_role_belief: torch.Tensor,
+            believed_policy_rnn_states: torch.Tensor,
+            terminals: torch.Tensor,
+            true_role: torch.Tensor,
+            mask: torch.Tensor,
+            actions: torch.Tensor,
+        ):
+        """
+        Calculates a deception bonus based on modifiying other agents belief under the assumption that they are
+        baysian agents, and using our own estimations of their estimations of our likely actions for each role.
+
+        :param player_observation_prediction_predictions: Sequence of observations that represent agent i's belief about agent j's
+            belief about i's observations.
+            Tensor of dims [B, n_players, *obs_space] of type uint8
+        :param prior_role_belief: Agent i's belief about agent j's belief about agent i's true role. These should be log probabilities
+            Tensor of dims [B, n_players, n_roles] of type float32
+
+        :param believed_policy_rnn_states: the players current estimate of the policy rnn states for the other players
+            Tensor of dims [B, n_players, *rnn_policy_state_space] of type float32
+
+        :param terminals: The true terminals for each player, of shape [B, n_players] of type bool
+        :param true_role: The true roles for each player, of shape [B] of type long
+        :param mask: A mask indicating which players we are trying to deceive, and therefore get a bonus for.
+            This can be used to mask out invisible players
+            Tensor of dims [B, n_players] of type bool
+
+        :param actions: Actions for each agent
+            Tensor of dims [B] of type long
+
+        :return: A tuple containing
+            The bonus for each player summed over other players, tensor of dims [B],
+            The updated rnn_states, tensor of dims [B, n_players, *rnn_policy_state_space
+        """
+
+        assert player_observation_prediction_predictions.dtype == torch.uint8
+
+        B, n_players, *obs_shape = player_observation_prediction_predictions.shape
+
+        # upload rnn_states if needed
+        believed_policy_rnn_states = believed_policy_rnn_states.to(device=self.policy_model.device)
+
+        # first get policy output for predicted observations, the output will include policy for each role
+        pred_policy_out, new_rnn_states = self.policy_model.forward_sequence(
+            player_observation_prediction_predictions.reshape(1, B * n_players, *self.obs_shape),
+            rnn_states=believed_policy_rnn_states.reshape((B * n_players, 2, self.policy_memory_units)),
+            terminals=terminals.reshape(1, B * n_players)
+        )
+
+        # this will be [1, B*n_players, n_roles, n_actions], so drop first dim, and reshape
+        n_roles = 3
+        n_actions = self.vec_env.action_space.n
+        role_log_policy = pred_policy_out["role_log_policy"].reshape(B, n_players, n_roles, n_actions)
+        # states need to be reshaped too
+        new_rnn_states = new_rnn_states.reshape(B, n_players, 2, self.policy_memory_units)
+
+        return self.calculate_deception_bonus_from_actions(
+            player_action_prediction_predictions=role_log_policy,
+            prior_role_belief=prior_role_belief,
+            true_role=true_role,
+            mask=mask,
+            actions=actions
+        ), new_rnn_states
+
     @profiler.record_function("generate_rollout")
     def generate_rollout(self):
         """
@@ -465,6 +597,11 @@ class PMAlgorithm(MarlAlgorithm):
                 x[i, :] = x[i, orderings[i]]
             x = x.repeat(self.vec_env.max_players, axis=0)
             return x
+
+        n_players = self.vec_env.max_players
+        believed_other_rnn_states = torch.zeros(
+            [self.n_agents, n_players, 2, self.policy_memory_units], dtype=torch.float32
+        )
 
         with torch.no_grad():
 
@@ -529,6 +666,11 @@ class PMAlgorithm(MarlAlgorithm):
                     player_action_predictions = model_out["action_prediction"].cpu().detach()
                     self.batch_player_action_predictions[t] = player_action_predictions
 
+                if self.batch_player_role_predictions is not None:
+                    # record role predictions
+                    player_role_predictions = model_out["role_prediction"].detach().cpu().numpy()
+                    self.batch_player_role_predictions[t] = player_role_predictions
+
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
                 with profiler.record_function("gr_env_step"):
@@ -539,6 +681,58 @@ class PMAlgorithm(MarlAlgorithm):
                 # work out our intrinsic rewards
                 int_value = model_out["int_value"].detach().cpu().numpy()
                 int_rewards = np.zeros_like(ext_rewards)
+
+                if self.deception_bonus is not None and self.prediction_mode in ["others", "both"]:
+
+                    # generate a mask that assigns bonus only for deceiving enemy players (or players thought to be
+                    # enemies.
+
+                    bonus_mask = np.ones((len(int_rewards), n_players), dtype=np.float32)
+                    public_ids = np.asarray([player.public_id for player in self.vec_env.players])
+
+                    # we don't try and deceive ourselves
+                    bonus_mask[range(len(bonus_mask)), public_ids] = 0
+                    # don't get a bonus for deceiving players on our own team
+                    # note, this leaks a little team information, but just during training...
+                    # to fix this we'd need to mask the mask with who knows who's identities
+                    same_team_mask = roles[:, np.newaxis] == self.vec_env.get_roles_expanded()
+                    bonus_mask *= (1-same_team_mask)
+                    bonus_mask = torch.from_numpy(bonus_mask)
+
+                    # there are two ways of doing this, the predict actions method and the predict observations method
+                    deception_bonus = np.zeros_like(int_rewards)
+
+                    if self.prediction_type in ["observation", "both"]:
+                        db_actions = self.calculate_deception_bonus_from_actions(
+                            player_action_prediction_predictions=model_out["action_backwards_prediction"],
+                            prior_role_belief=model_out["role_backwards_prediction"],
+                            true_role=roles,
+                            mask=bonus_mask,           # for the moment don't mask non-visible players
+                            actions=torch.from_numpy(actions)
+                        )
+                        deception_bonus += db_actions.cpu().detach().numpy()
+                    if self.prediction_type in ["action", "both"]:
+                        expanded_terminals = torch.from_numpy(
+                            duplicate_to_public_order(prev_terminals)).to(device=self.policy_model.device)
+                        obs_backwards_predictions = model_out["obs_backwards_prediction"]
+                        obs_backwards_predictions = torch.clamp(obs_backwards_predictions * 255, 0, 255).to(dtype=torch.uint8)
+                        db_observations, believed_other_rnn_states = self.calculate_deception_bonus_from_observations(
+                            player_observation_prediction_predictions=obs_backwards_predictions,
+                            prior_role_belief=model_out["role_backwards_prediction"],
+                            believed_policy_rnn_states=believed_other_rnn_states,
+                            terminals=expanded_terminals,
+                            true_role=roles,
+                            mask=bonus_mask,           # for the moment don't mask non-visible players
+                            actions=torch.from_numpy(actions)
+                        )
+                        deception_bonus += db_observations.cpu().detach().numpy()
+
+                    if self.deception_bonus is float:
+                        deception_bonus = deception_bonus * self.deception_bonus
+                    else:
+                        deception_bonus = deception_bonus * np.asarray([self.deception_bonus[r] for r in roles])
+
+                    int_rewards += deception_bonus
 
                 # save raw rewards for monitoring the agents progress
                 raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
@@ -632,26 +826,25 @@ class PMAlgorithm(MarlAlgorithm):
         self.log.watch_mean("value_est_ext_std", np.std(self.batch_ext_value), display_name="est_v_ext_std", display_width=0)
         self.log.watch_mean("ev_ext", utils.explained_variance(self.batch_ext_value.ravel(), self.batch_ext_returns.ravel()))
 
-        # these are not helpful yet...
-        # if self.enable_deception:
-        #     self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
-        #     self.log.watch_mean("batch_reward_int_std", np.std(self.int_rewards), display_name="rew_int_std",
-        #                         display_width=0)
-        #     self.log.watch_mean("batch_return_int", np.mean(self.batch_int_returns), display_name="ret_int")
-        #     self.log.watch_mean("batch_return_int_std", np.std(self.batch_int_returns), display_name="ret_int_std")
-        #     self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.int_returns_raw),
-        #                         display_name="ret_int_raw_mu",
-        #                         display_width=0)
-        #     self.log.watch_mean("batch_return_int_raw_std", np.std(self.int_returns_raw),
-        #                         display_name="ret_int_raw_std",
-        #                         display_width=0)
-        #
-        #     self.log.watch_mean("value_est_int", np.mean(self.batch_int_value), display_name="est_v_int")
-        #     self.log.watch_mean("value_est_int_std", np.std(self.batch_int_value), display_name="est_v_int_std")
-        #     self.log.watch_mean("ev_int", utils.explained_variance(self.batch_int_value.ravel(), self.batch_int_returns.ravel()))
-        #
-        #     if self.normalize_intrinsic_rewards:
-        #         self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
+        if self.deception_bonus is not None:
+            self.log.watch_mean("batch_reward_int", np.mean(self.batch_int_rewards), display_name="rew_int", display_width=0)
+            self.log.watch_mean("batch_reward_int_std", np.std(self.batch_int_rewards), display_name="rew_int_std",
+                                display_width=0)
+            self.log.watch_mean("batch_return_int", np.mean(self.batch_int_returns), display_name="ret_int")
+            self.log.watch_mean("batch_return_int_std", np.std(self.batch_int_returns), display_name="ret_int_std")
+            # self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.batch_int_returns_raw),
+            #                     display_name="ret_int_raw_mu",
+            #                     display_width=0)
+            # self.log.watch_mean("batch_return_int_raw_std", np.std(self.batch_int_returns_raw),
+            #                     display_name="ret_int_raw_std",
+            #                     display_width=0)
+
+            self.log.watch_mean("value_est_int", np.mean(self.batch_int_value), display_name="est_v_int")
+            self.log.watch_mean("value_est_int_std", np.std(self.batch_int_value), display_name="est_v_int_std")
+            self.log.watch_mean("ev_int", utils.explained_variance(self.batch_int_value.ravel(), self.batch_int_returns.ravel()))
+
+            if self.normalize_intrinsic_rewards:
+                self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
 
     def extract_policy_rnn_states(self, rnn_states):
         # input can be either [A, 2, memory_units], or [N, 2, memory_units]
@@ -668,6 +861,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         :param obs: Observations for each agent, tensor of dims [B, *observation_shape]
         :param rnn_states: tensor of dims [B, 2|4, memory_units]
+        :param roles: role for each player, [B]
 
         :return: a tuple(
             dictionary containing,
@@ -699,7 +893,7 @@ class PMAlgorithm(MarlAlgorithm):
         result, new_rnn_states = self.policy_model.forward_sequence(
             obs=obs[np.newaxis],
             rnn_states=self.extract_policy_rnn_states(rnn_states),
-            roles=roles
+            roles=np.asarray(roles).reshape([1, len(roles)])
         )
 
         if self.uses_deception_model:
@@ -826,6 +1020,7 @@ class PMAlgorithm(MarlAlgorithm):
         else:
             (-loss).backward()
 
+    @profiler.record_function("deception_back")
     def forward_deception_mini_batch(self, data, loss_scale=1):
 
         def calculate_kl(obs_predictions):
@@ -873,6 +1068,8 @@ class PMAlgorithm(MarlAlgorithm):
         terminals = data["terminals"]
         rnn_states = data["rnn_states"][0] # get states at start of window
         N, B, *obs_shape = prev_obs.shape
+        n_players = self.vec_env.max_players
+        n_roles = 3
 
         # calculate
         model_out, _ = self.deception_model.forward_sequence(
@@ -888,14 +1085,55 @@ class PMAlgorithm(MarlAlgorithm):
         # Calculate loss_role
         # -------------------------------------------------------------------------
 
-        role_targets = merge_down(data["player_roles"]) # [N*B, n_players]
-        # predictions come out as [N*B, n_players, n_roles], but we need them as [N*B, n_roles, n_players]
-        rp_coef = 0.1 # this is just to make sure that role_prediction doesn't clip gradients.
-        role_predictions = merge_down(model_out["role_prediction"]).transpose(1, 2)
-        loss_role = rp_coef * F.nll_loss(role_predictions, role_targets)
+        def calculate_roll_prediction_nll(role_predictions, role_targets, filter=None):
+            """
+            Calculate KL divergence between role predictions and role targets.
+            :param role_predictions: Prediction of role for each player
+                i.e, at timestep N, player B's prediction about n_players role.
+                log probabilities for each player, float32 tensor of dims [N, B, n_players, n_roles]
+            :param role_targets: true roles, int64 tensor of dims [N, B]
+            :param filter: (optional) boolean tensor indicating which items in batch to use of dims [N, B]
+            :return:
+            """
 
+            role_targets = merge_down(role_targets)
+            role_predictions = merge_down(role_predictions)
+
+            if filter is not None:
+                filter = merge_down(filter)
+                if sum(filter) == 0:
+                    return None
+                role_predictions = role_predictions[filter]
+                role_targets = role_targets[filter]
+            # we want this in N*B, n_roles, n_players order as torch expects, (batch, class, d1,d2,d3... etc)
+            role_predictions = role_predictions.transpose(1, 2)
+            return F.nll_loss(role_predictions, role_targets)
+
+        rp_coef = 0.1  # this is just to make sure that role_prediction doesn't clip gradients.
+        loss_role = rp_coef * calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"])
         loss += loss_role
         self.log.watch_mean("loss_role", loss_role)
+
+        # get clean roll_loss for each team, this is used for debugging only
+        if self.deception_batch_counter % 10 == 0:
+            with torch.no_grad():
+                for team in range(3):
+                    team_filter = data["roles"] == team
+                    nll = calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"], team_filter)
+                    if nll is not None:
+                        self.log.watch_mean(f"role_nll_{team}", nll, display_width=0)
+
+        if "role_backwards_prediction" in model_out:
+            role_backwards_targets = data["player_role_predictions"].reshape(N*B*n_players, n_roles)
+            role_backwards_predictions = model_out["role_backwards_prediction"].reshape(N*B*n_players, n_roles)
+            loss_backwards_role = rp_coef * F.kl_div(
+                role_backwards_predictions,
+                role_backwards_targets,
+                reduction="batchmean",
+                log_target=True
+            )
+            loss += loss_backwards_role
+            self.log.watch_mean("loss_role_bp", loss_backwards_role)
 
         # -------------------------------------------------------------------------
         # Calculate self prediction loss
@@ -920,14 +1158,14 @@ class PMAlgorithm(MarlAlgorithm):
             pred = model_out["action_prediction"]
             true = data["player_role_policy"]
             ap_loss = calculate_action_prediction_loss(pred, true)
-            self.log.watch_mean("ap_loss", ap_loss, display_width=10)
+            self.log.watch_mean("ap_loss", ap_loss, display_width=10, display_precision=5)
             loss += ap_loss
 
         if "action_backwards_prediction" in model_out:
             pred = model_out["action_backwards_prediction"]
             true = data["player_action_predictions"]
             bap_loss = calculate_action_prediction_loss(pred, true)
-            self.log.watch_mean("bap_loss", bap_loss, display_width=10)
+            self.log.watch_mean("bap_loss", bap_loss, display_width=10, display_precision=5)
             loss += bap_loss
 
         # -------------------------------------------------------------------------
@@ -939,8 +1177,21 @@ class PMAlgorithm(MarlAlgorithm):
             obs_truth = data["player_obs"].float() / 255 # [N, B, n_players, *obs_shape] (in public_id order)
 
             # remove from prediction other players we are not visible
-            visible_obs_predictions = filter_visible(obs_predictions, player_visible, self.dm_vision_filter)
-            visible_obs_truth = filter_visible(obs_truth, player_visible, self.dm_vision_filter)
+            if self.dm_vision_filter >= 1:
+                visible_obs_predictions = obs_predictions
+                visible_obs_truth = obs_truth
+            elif self.dm_vision_filter == 0:
+                visible_obs_predictions = filter_visible(obs_predictions, player_visible)
+                visible_obs_truth = filter_visible(obs_truth, player_visible)
+            else:
+                pass_through = np.random.choice(a=[True, False], size=player_visible.shape,
+                                                p=[self.dm_vision_filter, 1 - self.dm_vision_filter])
+                pass_through = torch.tensor(pass_through, dtype=torch.bool,
+                                            device=player_visible.device)  # gets cast to uint8 for some reason..
+                mask = torch.logical_or(pass_through, player_visible)
+
+                visible_obs_predictions = filter_visible(obs_predictions, mask)
+                visible_obs_truth = filter_visible(obs_truth, mask)
 
             # calculate the loss for the visible players
             pred_obs_mse = F.mse_loss(visible_obs_predictions, visible_obs_truth)
@@ -980,13 +1231,13 @@ class PMAlgorithm(MarlAlgorithm):
 
                     # log the kl between pi(true) and pi(pred) (for true role)
                     kl = calculate_kl(obs_predictions)
-                    self.log.watch_mean("pred_obs_kl", kl, display_precision=4)
+                    self.log.watch_mean("pred_obs_kl", kl, display_precision=4, display_width=0)
 
                     # log the kl between pi(true) and pi(pred) (for true role)
                     rolled_obs = torch.roll(obs_truth, 1, dims=2)
                     kl_reference = calculate_kl(rolled_obs)
                     self.log.watch_mean("ref_kl", kl_reference, display_precision=4)
-                    self.log.watch_mean("delta_kl", kl / kl_reference, display_precision=4)
+                    self.log.watch_mean("delta_kl", kl / kl_reference, display_precision=4, display_width=0)
 
         # -------------------------------------------------------------------------
         # Prediction prediction error
@@ -1030,7 +1281,7 @@ class PMAlgorithm(MarlAlgorithm):
             grad_norm = grad_norm ** 0.5
         self.log.watch_mean(log_var_name, grad_norm)
 
-    @profiler.record_function("minibatch_back")
+    @profiler.record_function("opt_step")
     def opt_step_minibatch(self, model, optimizer, log_var_name):
         """ Runs the optimization step for a minimatch, forward_minibatch should be called first."""
 
@@ -1052,6 +1303,10 @@ class PMAlgorithm(MarlAlgorithm):
         :param batch_data: a dictionary containing data required for training
         :return:
         """
+
+        for k, v in batch_data.items():
+            assert type(v) == np.ndarray, "batch_data input must be numpy array."
+            assert v.dtype != np.float64, f"batch_data entry {k} is float64, should be float32."
 
         last_epoch = math.ceil(epochs)
 
@@ -1142,8 +1397,8 @@ class PMAlgorithm(MarlAlgorithm):
 
         # put the required data into a dictionary
         this_batch_data = {}
+        this_batch_data["roles"] = self.batch_roles
         this_batch_data["prev_obs"] = self.batch_prev_obs
-
         this_batch_data["player_policy"] = self.batch_player_policy
         this_batch_data["player_terminals"] = self.batch_player_terminals
         this_batch_data["player_visible"] = self.batch_player_visible
@@ -1152,6 +1407,8 @@ class PMAlgorithm(MarlAlgorithm):
         this_batch_data["log_policy"] = self.batch_log_policy
         this_batch_data["role_log_policies"] = self.batch_role_log_policies
         this_batch_data["rnn_states"] = self.extract_deception_rnn_states(self.batch_rnn_states)
+        if self.batch_player_role_predictions is not None:
+            this_batch_data["player_role_predictions"] = self.batch_player_role_predictions
         if self.batch_player_obs is not None:
             this_batch_data["player_obs"] = self.batch_player_obs
         if self.batch_player_obs_predictions is not None:
@@ -1277,7 +1534,7 @@ def test_calculate_returns():
     assert list(calculate_returns(rewards, dones, final_value_estimate=6, gamma=1.0).ravel()) == [7, 7, 5, 4, 7]
 
 
-def filter_visible(x, visible, proportion_to_let_through=0.0):
+def filter_visible(x, visible):
     """
     Note: once filtered reshaping back to [N, B] is no longer viable (as different N's have different B's)
     :param x: Input is in form [N, B, n_players, *] with players in public order
@@ -1288,16 +1545,8 @@ def filter_visible(x, visible, proportion_to_let_through=0.0):
     N, B, n_players, *x_shape = x.shape
     assert visible.shape == (N, B, n_players), f"Expected visible to be {N, B, n_players} but found {visible.shape}"
 
-    if proportion_to_let_through >= 1:
-        return x.reshape(-1, *x_shape)
-
-    mask = visible.reshape(-1)
-    if proportion_to_let_through > 0:
-        pass_through = np.random.choice(a=[True, False], size=[len(mask)], p=[proportion_to_let_through, 1 - proportion_to_let_through])
-        pass_through = torch.tensor(pass_through, dtype=torch.bool, device=x.device) # gets cast to uint8 for some reason..
-        mask = torch.logical_or(mask, pass_through)
-
-    return x.reshape(N * B * n_players, *x_shape)[mask].reshape(-1, *x_shape)
+    visible = visible.reshape(-1)
+    return x.reshape(N * B * n_players, *x_shape)[visible].reshape(-1, *x_shape)
 
 def test_filter_visible():
     data = torch.zeros([2,4,3,1])

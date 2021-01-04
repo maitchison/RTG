@@ -86,11 +86,11 @@ class RTG_ScriptedEnv(MultiAgentEnv, Wrapper):
 
     @property
     def team_scores(self):
-        return self.env.team_scores
+        return self.env.round_team_scores
 
     @property
     def outcome(self):
-        return self.env.outcome
+        return self.env.round_outcome
 
 def stand_still(player:RTG_Player, env:RescueTheGeneralEnv):
     """

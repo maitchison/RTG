@@ -18,8 +18,8 @@ class LogVariable():
         assert type in ["int", "float", "stats", "str"]
 
         default_display_width = {
-            "int": 10,
-            "float": 10,
+            "int": 6,
+            "float": 8,
             "stats": 26,
             "str": 20
         }[type]

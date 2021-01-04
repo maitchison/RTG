@@ -196,7 +196,7 @@ class MultiAgentVecEnv(SubprocVecEnv):
                 # save final terminal observation for later
                 for this_info, this_obs in zip(env_infos, env_obs):
                     this_info['terminal_observation'] = this_obs
-                    this_info['team_scores'] = game.team_scores.copy()
+                    this_info['team_scores'] = game.round_team_scores.copy()
                 if not self.run_once:
                     env_obs = game.reset()
                 self.env_completed[i] = True

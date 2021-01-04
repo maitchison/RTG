@@ -79,7 +79,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     rnn_state = algorithm.get_initial_rnn_state(len(env.players))
 
     # play the game...
-    while env.outcome == "":
+    while env.round_outcome == "":
 
         with torch.no_grad():
             roles = vec_env.get_roles()
@@ -170,7 +170,11 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
     # rename video to include outcome
     try:
-        modified_filename = f"{os.path.splitext(filename)[0]} [{env.outcome}]{os.path.splitext(filename)[1]}"
+        outcome = env.game_outcomes
+        # if we only ran one round then remove the unnecessary array brackets
+        if type(outcome) == list and len(outcome) == 1:
+            outcome = outcome[0]
+        modified_filename = f"{os.path.splitext(filename)[0]} [{outcome}]{os.path.splitext(filename)[1]}"
         shutil.move(filename, modified_filename)
     except:
         print("Warning: could not rename video file.")

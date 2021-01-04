@@ -39,7 +39,7 @@ def quote_if_str(x):
     return f"'{x}'" if type(x) is str else x
 
 def algo_dict_to_str(params):
-    return "{" + (" ".join([f"'{k}':{quote_if_str(v)}" for k, v in params.items()])) + "}"
+    return "{" + (", ".join([f"'{k}':{quote_if_str(v)}" for k, v in params.items()])) + "}"
 
 def random_search(main_params, search_params, count=256):
 
@@ -71,6 +71,10 @@ def axis_search(main_params, search_params, default_params=None):
             else:
                 params = {}
             params[k] = v
+
+            if params.get('dm_lstm_mode', 'residual') == 'residual' and k == 'dm_memory_units':
+                # in residual mode out features must match memory units
+                params['dm_out_features'] = v
 
             name = f"{k}-{v}-1"
 
@@ -104,27 +108,20 @@ if __name__ == "__main__":
         print("Using previous train.py")
 
     main_params = " ".join([
-        "--train_scenarios=r2g2_hrp",
-        "--eval_scenarios=[]",
-        "--micro_batch_size=1024",  # 1024 is slower, but can run two searches in parallel
-        "--prediction_mode=others",
-        "--save_model=none",
-        "--epochs=25"
+        "--train_scenarios=wolf_sheep",
+        "--micro_batch_size=2048",  # 1024 is slower, but can run two searches in parallel
+        "--prediction_mode=both",
+        "--prediction_type=both",
+        "--save_model=recent",
+        "--epochs=200"
     ])
 
     search_params = {
-                  'dm_max_window_size': [1, 2, 4, 8, 16, 32],
-                  'dm_replay_buffer_multiplier': [1, 2, 4, 8, 16],
-                  'dm_mini_batch_size': [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192],
-                  'dm_memory_units': [256, 512, 1024, 2048],
-                  'dm_lstm_mode': ['off', 'on', 'residual', 'cat'],
-                  'dm_kl_factor': [0, 0.5],
-                  'dm_vision_filter': [0, 0.5, 1],
-                  'dm_loss_scale': [0.001, 0.1, 1, 10, 100, 1000],
-                  'dm_learning_rate': [1e-3, 2.5e-4, 1e-4]
+        'dm_mini_batch_size': [128],
     }
+    default_params = {'dm_vision_filter': 0.0, 'dm_mini_batch_size': 128}
 
-    jobs = axis_search(main_params, search_params)
+    jobs = axis_search(main_params, search_params, default_params)
     print()
     print("-"*60)
     print()

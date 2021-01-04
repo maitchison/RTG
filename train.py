@@ -57,6 +57,7 @@ class Config():
         self.save_model = str()
         self.prediction_mode = str()
         self.prediction_type = str()
+        self.deception_bonus = str()
 
         self.verbose = int()
 
@@ -104,6 +105,12 @@ class Config():
         if config.device == "auto":
             config.device = "cuda" if torch.has_cuda else "cpu"
 
+        if type(self.deception_bonus) == str:
+            self.deception_bonus = literal_eval(self.deception_bonus)
+            if type(self.deception_bonus) in [float, int]:
+                self.deception_bonus = [self.deception_bonus] * 3
+            assert type(self.deception_bonus) in [list]
+
         # setup the scenarios... these are a bit complex now due to the scripted players
         args.eval_scenarios = args.eval_scenarios or args.train_scenarios
         config.train_scenarios = ScenarioSetting.parse(args.train_scenarios)
@@ -142,8 +149,8 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
 
         # look for finished games
         for i, env in enumerate(vec_env.games):
-            if env.outcome != "":
-                results[i] = env.team_scores
+            if env.round_outcome != "":
+                results[i] = env.round_team_scores
 
     # collate results
     red_score = np.mean([r for r, g, b in results])
@@ -330,6 +337,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
                             micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
                             prediction_mode=config.prediction_mode,
                             prediction_type=config.prediction_type,
+                            deception_bonus=config.deception_bonus,
                             verbose=config.verbose >= 2, **algo_params)
 
     algorithm.log_folder = config.log_folder
@@ -602,6 +610,7 @@ def main():
     parser.add_argument('mode', type=str, help="[benchmark|train|test|evaluate]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
     parser.add_argument('--device', type=str, help="[CPU|AUTO|CUDA|CUDA:n]", default="auto")
+    parser.add_argument('--deception_bonus', type=str, help="Bonus to give agents for applying deception (per team)", default=None)
 
     parser.add_argument('--train_scenarios', type=str, default="full",
         help="Scenario settings for training. Can be a single scenario name e.g. 'red2' or for a mixed training setting "

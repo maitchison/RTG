@@ -242,10 +242,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for index, team in enumerate(teams):
             self.players[index].team = team
 
-        self.team_scores = np.zeros([3], dtype=np.float)
+        self.round_outcome = str()  # outcome of round
+        self.game_outcomes = []     # list of outcomes for each round
 
-        self.previous_team_scores = np.zeros([3], dtype=np.float)
-        self.previous_outcome = str()
+        # team scores for current round
+        self.round_team_scores = np.zeros([3], dtype=np.float)
+        # scores for each round, updated at end of round
+        self.game_team_scores = np.zeros([self.scenario.rounds, 3], dtype=np.float)
+
+        # scores from previous game
+        self.previous_game_team_scores = np.zeros_like(self.game_team_scores)
+        # list of outcomes for previous game
+        self.previous_game_outcomes = []
 
         # create map, and a lookup (just for optimization
         self.map = np.zeros((self.scenario.map_width, self.scenario.map_height), dtype=np.int)
@@ -260,7 +268,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_tree_harvested = np.zeros((3,), dtype=np.int)  # which teams harvested trees
 
         self.stats_actions = np.zeros((3, self.action_space.n), dtype=np.int)
-        self.outcome = str() # outcome of game
 
         self.observation_space = gym.spaces.Box(
             low=0, high=255,
@@ -315,9 +322,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         """
         assert self.game_counter > 0, "Must call reset before step."
         assert len(actions) == self.n_players, f"{self.name}: Invalid number of players"
-        assert self.outcome == "", f"{self.name}: Game has concluded with result {self.outcome}, reset must be called."
+        assert self.round_outcome == "", f"{self.name}: Game has concluded with result {self.round_outcome}, reset must be called."
 
         green_tree_harvest_counter = 0
+        team_rewards = np.zeros([3], dtype=np.float)
+        team_players_alive = np.zeros([3], dtype=np.int)
 
         rewards = np.zeros([self.n_players], dtype=np.float)
         dones = np.zeros([self.n_players], dtype=np.bool)
@@ -375,7 +384,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
             player.turns_until_we_can_shoot = player.shooting_timeout
 
-            for j in range(player.shoot_range):
+            for _ in range(player.shoot_range):
                 # check location
 
                 x += self.DX[index]
@@ -404,6 +413,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                             blue_team_good_kills += 1
 
                         self.player_lookup[other_player.x, other_player.y] = -1 # remove player from lookup
+
+                        # issue points for kills
+                        team_rewards[player.team] += self.scenario.points_for_kill[player.team, other_player.team]
 
                     self.stats_player_hit[player.team, other_player.team] += 1
                     break
@@ -480,9 +492,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         result_red_victory = False
         result_blue_victory = False
         result_green_victory = False
-
-        team_rewards = np.zeros([3], dtype=np.float)
-        team_players_alive = np.zeros([3], dtype=np.int)
 
         team_rewards[self.TEAM_GREEN] += green_tree_harvest_counter * self.scenario.reward_per_tree
 
@@ -571,7 +580,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for player in self.players:
             rewards[player.index] += team_rewards[player.team]
 
-        self.team_scores += team_rewards
+        self.round_team_scores += team_rewards
 
         # send done notifications to players who are dead
         # note: it's better not to do this, just return done all at once, but zero out the updates
@@ -591,35 +600,44 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if game_finished:
 
             if result_general_killed:
-                self.outcome = "general_killed"
+                self.round_outcome = "general_killed"
             elif result_general_rescued:
-                self.outcome = "general_rescued"
+                self.round_outcome = "general_rescued"
             elif result_game_timeout:
-                self.outcome = "timeout"
+                self.round_outcome = "timeout"
             elif result_all_players_dead:
-                self.outcome = "all_players_dead"
+                self.round_outcome = "all_players_dead"
             elif result_red_victory:
-                self.outcome = "red_win" # royale wins
+                self.round_outcome = "red_win" # royale wins
             elif result_blue_victory:
-                self.outcome = "blue_win"
+                self.round_outcome = "blue_win"
             elif result_green_victory:
-                self.outcome = "green_win"
+                self.round_outcome = "green_win"
             else:
                 # general end of game tag, this shouldn't happen
-                self.outcome = "complete"
+                self.round_outcome = "complete"
 
             self.write_stats_to_log()
 
             for info in infos:
                 # record the outcome in infos as it will be lost if environment is auto reset.
-                info["outcome"] = self.outcome
+                info["outcome"] = self.round_outcome
+
+            # keep track of scores / outcomes for each round in game
+            self.game_outcomes.append(self.round_outcome)
+            self.game_team_scores[self.round_number] = self.round_team_scores
 
             # increment round, or if this was the last round send done
-            if self.round_number == self.scenario.rounds:
+            if self.round_number == self.scenario.rounds-1:
                 # setting dones to true will cause runner to call the hard reset
+                # also send outcomes through game_info
+                for info in infos:
+                    info["outcomes"] = self.game_outcomes
+                    info["game_scores"] = self.game_team_scores
                 dones[:] = True
             else:
                 # a soft reset to move us to the next round
+                self.round_number += 1
                 self.soft_reset()
 
         rewards *= self.REWARD_SCALE
@@ -766,9 +784,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         output_string = ",".join(
             str(x) for x in [
-                self.name, epoch, self.game_counter, self.round_timer, *self.team_scores,
+                self.name, epoch, self.game_counter, self.round_number, self.round_timer, *self.round_team_scores,
                 *(nice_print(x) for x in stats),
-                self.outcome, time_since_env_started, time.time()
+                self.round_outcome, time_since_env_started, time.time()
             ]
         )
 
@@ -928,14 +946,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         """
 
         # save previous result so when we reset we still have this info.
-        self.previous_team_scores = self.team_scores.copy()
-        self.previous_outcome = self.outcome
+        self.previous_game_team_scores = self.round_team_scores.copy()
+        self.previous_game_outcomes = self.game_outcomes[:]
 
         # reset game info
-        self.outcome = ""
+        self.round_outcome = ""
         self.round_timer = 0
-        self.round_number += 1
-        self.team_scores *= 0
+        self.round_team_scores *= 0
 
         # make sure we force a repaint of the map
         self._needs_repaint = True
@@ -1038,6 +1055,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.game_counter += 1
         self.round_number = 0
 
+        self.game_team_scores *= 0
+        self.game_outcomes = []
+
         # assign random public_ids
         ids = list(range(self.n_players))
         if self.scenario.randomize_ids:
@@ -1121,7 +1141,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # show current scores
         for team in range(3):
-            length = max(0, int(self.team_scores[team] * 10))
+            length = max(0, int(self.round_team_scores[team] * 10))
             frame[0:100, team, team] = 50
             frame[0:length, team, team] = 255
 
@@ -1164,12 +1184,13 @@ class RTG_Log():
         """
         if not os.path.exists(self.filename):
             with open(self.filename, "w") as f:
-                f.write("env_name, epoch, game_counter, game_length, score_red, score_green, score_blue, " +
-                        "stats_player_hit, stats_deaths, stats_kills, " +
-                        "stats_general_shot, stats_general_moved, stats_general_hidden, "
-                        "stats_tree_harvested, stats_actions, " +
-                        "player_count, result, wall_time, date_time" +
-                        "\n")
+                f.write(
+                    "env_name, epoch, game_counter, round_counter, game_length, score_red, score_green, score_blue, " +
+                    "stats_player_hit, stats_deaths, stats_kills, " +
+                    "stats_general_shot, stats_general_moved, stats_general_hidden, "
+                    "stats_tree_harvested, stats_actions, " +
+                    "player_count, result, wall_time, date_time" +
+                    "\n")
 
         with open(self.filename, "a+") as f:
             for output_string in self.buffer:

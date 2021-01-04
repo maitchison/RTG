@@ -461,7 +461,13 @@ class DeceptionModel(BaseModel):
 
         # prediction of each role, in public_id order
         self.role_prediction_head = nn.Linear(self.encoder_output_features, (self.n_players * self.n_roles))
-        # prediction of each observation in public_id order
+        if self.predict in ['full']:
+            # prediction of other players prediction of our own role, in public_id order
+            self.role_backwards_prediction_head = nn.Linear(self.encoder_output_features, (self.n_players * self.n_roles))
+        else:
+            self.role_backwards_prediction_head = None
+
+            # prediction of each observation in public_id order
         h, w, c = self.obs_shape
 
         self.n_predictions = n_predictions
@@ -520,6 +526,12 @@ class DeceptionModel(BaseModel):
             [N, B, self.n_players, self.n_roles])
         role_prediction = torch.log_softmax(unnormalized_role_predictions, dim=-1)
         result['role_prediction'] = role_prediction
+
+        if self.role_backwards_prediction_head is not None:
+            unnormalized_role_backwards_predictions = self.role_backwards_prediction_head(encoder_output).reshape(
+                [N, B, self.n_players, self.n_roles])
+            role_backwards_prediction = torch.log_softmax(unnormalized_role_backwards_predictions, dim=-1)
+            result['role_backwards_prediction'] = role_backwards_prediction
 
         # ------------------------------
         # obs forward prediction
@@ -625,11 +637,14 @@ class PolicyModel(BaseModel):
         :param rnn_states:
         :param roles: Roles for each agent at each timestep (tensor) [N, B]
         :param terminals:
-        :return:
+        :return: results dictionary, and updated rnn_states
         """
 
         N, B, *obs_shape = obs.shape
         encoder_output, new_rnn_states = self._forward_sequence(obs, rnn_states, terminals)
+
+        if roles is not None:
+            assert roles.shape == (N, B), f"Expected roles to be shape {(N,B)} but found {roles.shape}"
 
         policy_outputs = self.policy_head(encoder_output).reshape(N, B, self.roles, self.n_actions)
         log_policy = torch.log_softmax(policy_outputs, dim=-1)
