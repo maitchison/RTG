@@ -457,6 +457,8 @@ def learn(agent: MarlAlgorithm, step_counter, max_steps, verbose=True):
 
     sub_epoch = 0
 
+    last_log_save = 0
+
     while step_counter < max_steps:
 
         global CURRENT_EPOCH
@@ -479,6 +481,10 @@ def learn(agent: MarlAlgorithm, step_counter, max_steps, verbose=True):
                 print(f" -FPS: {C.OKGREEN}{fps:.0f}{C.ENDC} .", end='', flush=True)
             elif sub_epoch > 1:
                 print(".", end='', flush=True)
+
+        if time.time() - last_log_save > 5*60:
+            # save logs every 5 minutes
+            agent.save_logs(config.log_folder)
 
         # this is needed to stop a memory leak
         gc.collect()

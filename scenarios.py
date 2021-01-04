@@ -151,19 +151,20 @@ class RescueTheGeneralScenario():
         },
 
         "wolf_sheep": {
-            "description": "A wolf amoung the sheep ",
-            "map_width": 48,
-            "map_height": 48,
+            "description": "A wolf among the sheep ",
+            "map_width": 32,
+            "map_height": 32,
             "team_counts": (1, 3, 0),
             "n_trees": 10,
             "randomize_ids": True,
             "reward_per_tree": 1,
             "hidden_roles": "all",
-            "max_view_distance": 5,  # makes thins a bit faster
-            "team_view_distance": (5, 5, 5),  # no bonus vision for red
+            "max_view_distance": 5,            # makes thins a bit faster
+            "team_view_distance": (5, 5, 5),   # no bonus vision for red
             "team_shoot_range": (4, 4, 4),
             "starting_locations": "together",  # random start locations
             "team_shoot_timeout": (2, 5, 5),
+            "general_initial_health": 9999,    # general will not be killed
             "points_for_kill": np.asarray((    # loose a point for self kill, gain one for other team kill
                 (-1, +1, +1),
                 (+1, -1, +1),

@@ -64,6 +64,9 @@ class MarlAlgorithm():
     def learn(self, total_timesteps, reset_num_timesteps=True):
         raise NotImplemented()
 
+    def save_logs(self, base_path):
+        raise NotImplemented()
+
     @staticmethod
     def load(filename, env):
         raise NotImplemented()
@@ -557,11 +560,12 @@ class PMAlgorithm(MarlAlgorithm):
         believed_policy_rnn_states = believed_policy_rnn_states.to(device=self.policy_model.device)
 
         # first get policy output for predicted observations, the output will include policy for each role
-        pred_policy_out, new_rnn_states = self.policy_model.forward_sequence(
-            player_observation_prediction_predictions.reshape(1, B * n_players, *self.obs_shape),
-            rnn_states=believed_policy_rnn_states.reshape((B * n_players, 2, self.policy_memory_units)),
-            terminals=terminals.reshape(1, B * n_players)
-        )
+        with torch.no_grad():
+            pred_policy_out, new_rnn_states = self.policy_model.forward_sequence(
+                player_observation_prediction_predictions.reshape(1, B * n_players, *self.obs_shape),
+                rnn_states=believed_policy_rnn_states.reshape((B * n_players, 2, self.policy_memory_units)),
+                terminals=terminals.reshape(1, B * n_players)
+            )
 
         # this will be [1, B*n_players, n_roles, n_actions], so drop first dim, and reshape
         n_roles = 3
@@ -662,6 +666,8 @@ class PMAlgorithm(MarlAlgorithm):
                     player_obs_predictions = torch.clamp(model_out["obs_prediction"].cpu().detach() * 255, 0, 255).to(
                         torch.uint8)
                     self.batch_player_obs_predictions[t] = player_obs_predictions
+
+                if self.prediction_mode == "both" and "action_prediction" in model_out:
                     # again for actions...
                     player_action_predictions = model_out["action_prediction"].cpu().detach()
                     self.batch_player_action_predictions[t] = player_action_predictions
@@ -702,7 +708,7 @@ class PMAlgorithm(MarlAlgorithm):
                     # there are two ways of doing this, the predict actions method and the predict observations method
                     deception_bonus = np.zeros_like(int_rewards)
 
-                    if self.prediction_type in ["observation", "both"]:
+                    if self.prediction_type in ["action", "both"]:
                         db_actions = self.calculate_deception_bonus_from_actions(
                             player_action_prediction_predictions=model_out["action_backwards_prediction"],
                             prior_role_belief=model_out["role_backwards_prediction"],
@@ -711,7 +717,7 @@ class PMAlgorithm(MarlAlgorithm):
                             actions=torch.from_numpy(actions)
                         )
                         deception_bonus += db_actions.cpu().detach().numpy()
-                    if self.prediction_type in ["action", "both"]:
+                    if self.prediction_type in ["observation", "both"]:
                         expanded_terminals = torch.from_numpy(
                             duplicate_to_public_order(prev_terminals)).to(device=self.policy_model.device)
                         obs_backwards_predictions = model_out["obs_backwards_prediction"]
