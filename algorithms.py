@@ -866,29 +866,27 @@ class PMAlgorithm(MarlAlgorithm):
         if self.normalize_advantages:
             self.batch_advantage = (self.batch_advantage - self.batch_advantage.mean()) / (self.batch_advantage.std() + 1e-8)
 
-
         self.log.watch_mean("adv_mean", np.mean(self.batch_advantage), display_width=0 if self.normalize_advantages else 10)
         self.log.watch_mean("adv_std", np.std(self.batch_advantage), display_width=0 if self.normalize_advantages else 10)
         self.log.watch_mean("adv_max", np.max(self.batch_advantage), display_width=0 if self.normalize_advantages else 0)
         self.log.watch_mean("adv_min", np.min(self.batch_advantage), display_width=0 if self.normalize_advantages else 0)
-        self.log.watch_mean("batch_reward_ext", np.mean(self.batch_ext_rewards), display_name="rew_ext", display_width=0)
-        self.log.watch_mean("batch_return_ext", np.mean(self.batch_ext_returns), display_name="ret_ext")
+        self.watch_per_team("batch_reward_ext", self.batch_ext_rewards, display_name="rew_ext", display_width=0)
+        self.watch_per_team("batch_return_ext", self.batch_ext_returns, display_name="ret_ext")
         self.log.watch_mean("batch_return_ext_std", np.std(self.batch_ext_returns), display_name="ret_ext_std",
                             display_width=0)
-        self.log.watch_mean("value_est_ext", np.mean(self.batch_ext_value), display_name="est_v_ext")
+        self.watch_per_team("value_est_ext", self.batch_ext_value, display_name="est_v_ext")
         self.log.watch_mean("value_est_ext_std", np.std(self.batch_ext_value), display_name="est_v_ext_std", display_width=0)
         self.log.watch_mean("ev_ext", utils.explained_variance(self.batch_ext_value.ravel(), self.batch_ext_returns.ravel()))
 
         if self.deception_bonus is not None:
 
             # log intrinsic rewards per team
-            self.watch_per_team("batch_reward_int", np.mean(self.batch_int_rewards), display_name="rew_int", display_width=0)
-            self.log.watch_mean("batch_reward_int_std", np.std(self.batch_int_rewards), display_name="rew_int_std",
-                                display_width=0)
-            self.log.watch_mean("batch_return_int", np.mean(self.batch_int_returns), display_name="ret_int")
+            self.watch_per_team("batch_reward_int", self.batch_int_rewards, display_name="rew_int", display_width=0)
+            self.log.watch_mean("batch_reward_int_std", np.std(self.batch_int_rewards), display_name="rew_int_std", display_width=0)
+            self.watch_per_team("batch_return_int", self.batch_int_returns, display_name="ret_int")
             self.log.watch_mean("batch_return_int_std", np.std(self.batch_int_returns), display_name="ret_int_std")
 
-            self.log.watch_mean("value_est_int", np.mean(self.batch_int_value), display_name="est_v_int")
+            self.watch_per_team("value_est_int", self.batch_int_value, display_name="est_v_int")
             self.log.watch_mean("value_est_int_std", np.std(self.batch_int_value), display_name="est_v_int_std")
             self.log.watch_mean("ev_int", utils.explained_variance(self.batch_int_value.ravel(), self.batch_int_returns.ravel()))
 
@@ -1166,11 +1164,11 @@ class PMAlgorithm(MarlAlgorithm):
         # get clean roll_loss for each team, this is used for debugging only
         if self.deception_batch_counter % 10 == 0:
             with torch.no_grad():
-                for team in range(3):
-                    team_filter = data["roles"] == team
+                for team_id, team_name in ((0, 'red'), (1, 'green'), (2, 'blue')):
+                    team_filter = data["roles"] == team_id
                     nll = calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"], team_filter)
                     if nll is not None:
-                        self.log.watch_mean(f"role_nll_{team}", nll, display_width=0)
+                        self.log.watch_mean(f"{team_name}_role_nll", nll, display_width=0)
 
         if "role_backwards_prediction" in model_out:
             role_backwards_targets = data["player_role_predictions"].reshape(N*B*n_players, n_roles)

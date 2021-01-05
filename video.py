@@ -98,6 +98,10 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             role_predictions = model_output["role_prediction"].detach().cpu().numpy()
             _display_role_prediction(frame, orig_width, 10, role_predictions, env)
 
+        if "role_backwards_prediction" in model_output:
+            backwards_role_predictions = model_output["role_backwards_prediction"].detach().cpu().numpy()
+            _display_role_prediction(frame, orig_width + (n_players+2) * 8, 10, backwards_role_predictions, env)
+
         if "obs_prediction" in model_output:
             # ground truth
             for i in range(n_players):
@@ -128,22 +132,45 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                         np.asarray(obs_pp[i, j] * 255, dtype=np.uint8).swapaxes(0, 1)
 
         if "action_prediction" in model_output:
-            action_predictions = model_output["action_prediction"].detach().cpu().numpy()
-            action_predictions = np.exp(action_predictions)
+            action_predictions = np.exp(model_output["action_prediction"].detach().cpu().numpy())
+            action_prediction_predictions = np.exp(model_output["action_backwards_prediction"].detach().cpu().numpy())
+            true_policy = model_output["role_log_policy"]
+
+            _, _, n_roles, n_actions = action_predictions.shape
+
             # these come out as n_players, n_players, n_roles, n_actions ?
 
-            # todo: add true actions, and backwards predictions
-            _, _, n_roles, n_actions = action_predictions.shape
+            # true policy
+            for i in range(n_players):
+                dx = 0 * (n_actions+1)
+                dy = orig_height + i * (n_roles+1)
+                for r in range(n_roles):
+                    # i's belief about j's actions if they were role r
+                    for a in range(n_actions):
+                        frame[dy + r, dx + a, :] = 64
+                        frame[dy + r, dx + a, r] = int(255*true_policy[i, r, a])
+
+            # predicted policy
             for i in range(n_players):
                 for j in range(n_players):
                     dx = (j+1) * (n_actions+1)
-                    dy = i * (n_roles+1)
+                    dy = orig_height + i * (n_roles+1)
                     for r in range(n_roles):
                         # i's belief about j's actions if they were role r
                         for a in range(n_actions):
                             frame[dy + r, dx + a, :] = 64
                             frame[dy + r, dx + a, r] = int(255*action_predictions[i, j, r, a])
 
+            # predictions of other players predictions of our own policy
+            for i in range(n_players):
+                for j in range(n_players):
+                    dx = (n_players+j+2) * (n_actions+1)
+                    dy = orig_height + i * (n_roles+1)
+                    for r in range(n_roles):
+                        # i's belief about j's actions if they were role r
+                        for a in range(n_actions):
+                            frame[dy + r, dx + a, :] = 64
+                            frame[dy + r, dx + a, r] = int(255*action_prediction_predictions[i, j, r, a])
 
 
         # for some reason cv2 wants BGR instead of RGB
