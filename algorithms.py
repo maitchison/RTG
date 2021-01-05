@@ -121,7 +121,7 @@ class PMAlgorithm(MarlAlgorithm):
             ppo_epsilon=0.2,
             max_grad_norm=5.0,
             lstm_mode="residual",
-            deception_bonus=(0,0,0),            # scale of deception bonus for each team (requires deception module to be enabled)
+            deception_bonus: tuple = (0,0,0),            # scale of deception bonus for each team (requires deception module to be enabled)
 
             # ------ deception module settings ----------------
 

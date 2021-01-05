@@ -783,7 +783,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         observer = self.players[observer_id] if (observer_id != -1) else None
 
-        # paint general if they are visibile
+        # paint general if they are visible
         if observer is None or observer.in_vision(
                 self.general_location[0], self.general_location[1],
                 min(

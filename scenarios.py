@@ -356,7 +356,7 @@ class RescueTheGeneralScenario():
         self.randomize_ids = True # randomize the starting ID colors each reset
         # enables team colors on agents local observation. This can be useful if one policy plays all 3 teams,
         # however it could cause problems if you want to infer what a different team would have done in that situation
-        self.local_team_colors = False
+        self.local_team_colors = True
 
         # how many point a player gets for killing a player
         # ordered as points_for_kill[shooting_player_team, killed_player_team]

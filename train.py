@@ -56,7 +56,7 @@ class Config():
         self.test_epochs = int()
         self.save_model = str()
         self.prediction_mode = str()
-        self.deception_bonus = str()
+        self.deception_bonus = tuple()
 
         self.verbose = int()
 
@@ -106,11 +106,11 @@ class Config():
 
         if type(self.deception_bonus) == str:
             self.deception_bonus = literal_eval(str(self.deception_bonus))
-            if type(self.deception_bonus) in [float, int]:
-                self.deception_bonus = tuple([self.deception_bonus] * 3)
             if type(self.deception_bonus) in [list]:
                 self.deception_bonus = tuple(self.deception_bonus)
-            assert type(self.deception_bonus) == tuple
+
+        if type(self.deception_bonus) in [float, int]:
+            self.deception_bonus = tuple([self.deception_bonus] * 3)
 
         # setup the scenarios... these are a bit complex now due to the scripted players
         args.eval_scenarios = args.eval_scenarios or args.train_scenarios
@@ -616,7 +616,7 @@ def main():
     parser.add_argument('mode', type=str, help="[benchmark|train|test|evaluate]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
     parser.add_argument('--device', type=str, help="[CPU|AUTO|CUDA|CUDA:n]", default="auto")
-    parser.add_argument('--deception_bonus', type=str, help="Bonus to give agents for applying deception (per team)", default=None)
+    parser.add_argument('--deception_bonus', type=str, help="Bonus to give agents for applying deception (per team)", default=0)
 
     parser.add_argument('--train_scenarios', type=str, default="full",
         help="Scenario settings for training. Can be a single scenario name e.g. 'red2' or for a mixed training setting "
