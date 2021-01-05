@@ -56,7 +56,6 @@ class Config():
         self.test_epochs = int()
         self.save_model = str()
         self.prediction_mode = str()
-        self.prediction_type = str()
         self.deception_bonus = str()
 
         self.verbose = int()
@@ -106,10 +105,12 @@ class Config():
             config.device = "cuda" if torch.has_cuda else "cpu"
 
         if type(self.deception_bonus) == str:
-            self.deception_bonus = literal_eval(self.deception_bonus)
+            self.deception_bonus = literal_eval(str(self.deception_bonus))
             if type(self.deception_bonus) in [float, int]:
-                self.deception_bonus = [self.deception_bonus] * 3
-            assert type(self.deception_bonus) in [list]
+                self.deception_bonus = tuple([self.deception_bonus] * 3)
+            if type(self.deception_bonus) in [list]:
+                self.deception_bonus = tuple(self.deception_bonus)
+            assert type(self.deception_bonus) == tuple
 
         # setup the scenarios... these are a bit complex now due to the scripted players
         args.eval_scenarios = args.eval_scenarios or args.train_scenarios
@@ -336,7 +337,6 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
     algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, export_rollout=config.export_rollout,
                             micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
                             prediction_mode=config.prediction_mode,
-                            prediction_type=config.prediction_type,
                             deception_bonus=config.deception_bonus,
                             verbose=config.verbose >= 2, **algo_params)
 
@@ -646,8 +646,7 @@ def main():
     parser.add_argument('--export_rollout', type=str2bool, nargs='?', const=True, default=False,
                         help="Exports rollout to disk, very large")
 
-    parser.add_argument('--prediction_mode', type=str, default="off", help="off|self|others|both")
-    parser.add_argument('--prediction_type', type=str, default="both", help="action|observation|both")
+    parser.add_argument('--prediction_mode', type=str, default="off", help="off|action|observation|both")
 
     parser.add_argument('--micro_batch_size', type=str, default="auto",
                         help="Number of samples per micro-batch, reduce if GPU ram is exceeded.")

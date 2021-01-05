@@ -83,6 +83,11 @@ class PMAlgorithm(MarlAlgorithm):
     Handles rollout generation and training on rollout data.
     """
 
+    DM_OFF = "off"
+    DM_ACTION = "action"
+    DM_OBSERVATION = "observation"
+    DM_BOTH = "both"
+
     def __init__(
             self,
             vec_env:MultiAgentVecEnv,  # the environment this agent acts in
@@ -97,8 +102,8 @@ class PMAlgorithm(MarlAlgorithm):
             policy_memory_units=128,
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
-            prediction_mode="both",   # off|self|others|both
-            prediction_type="both",   # action|observation|both
+            # the type of prediction to use for deception.  Observation is much slower to process
+            prediction_mode="off",   # off|action|observation|both
 
             # ------ long list of parameters to algorithm ------------
             n_steps=32,
@@ -116,7 +121,7 @@ class PMAlgorithm(MarlAlgorithm):
             ppo_epsilon=0.2,
             max_grad_norm=5.0,
             lstm_mode="residual",
-            deception_bonus=None,           # scale of deception bonus for each team (requires deception module to be enabled)
+            deception_bonus=(0,0,0),            # scale of deception bonus for each team (requires deception module to be enabled)
 
             # ------ deception module settings ----------------
 
@@ -132,8 +137,12 @@ class PMAlgorithm(MarlAlgorithm):
             dm_loss_scale=0.1,
         ):
 
-        assert prediction_mode in ["off", "self", "others", "both"]
-        assert prediction_type in ["action", "observation", "both"]
+        if type(deception_bonus) in [float, int]:
+            deception_bonus = (deception_bonus, deception_bonus, deception_bonus)
+
+        assert prediction_mode in [self.DM_OFF, self.DM_ACTION, self.DM_OBSERVATION, self.DM_BOTH]
+        if min(deception_bonus) == max(deception_bonus) != 0:
+            assert prediction_mode != self.DM_OFF, "You must set prediction_mode"
 
         A = vec_env.total_agents
         N = n_steps
@@ -152,8 +161,10 @@ class PMAlgorithm(MarlAlgorithm):
         self.dm_loss_scale = dm_loss_scale
         self.dm_kl_factor = dm_kl_factor
         self.deception_batch_counter = 0
-        self.prediction_mode = prediction_mode  # self|others|both
-        self.prediction_type = prediction_type  # action|observation|both
+
+        # the type of prediction to use for deception off|action|observation|both
+        self.prediction_mode = prediction_mode
+
         self.dm_vision_filter = dm_vision_filter
 
         if device == "data_parallel":
@@ -166,19 +177,19 @@ class PMAlgorithm(MarlAlgorithm):
                             data_parallel=data_parallel, out_features=policy_memory_units,
                             lstm_mode=lstm_mode)
 
-        if self.prediction_mode in ["self", "others", "both"]:
+        if self.uses_deception_model:
             self.deception_model = DeceptionModel(
                 vec_env,
-                n_predictions=1 if self.prediction_mode == "self" else vec_env.max_players,
+                n_predictions=vec_env.max_players,
                 device=device,
                 memory_units=dm_memory_units,
                 out_features=dm_out_features,
                 model=model_name,
                 data_parallel=data_parallel,
                 lstm_mode=self.dm_lstm_mode,
-                predict='full' if self.prediction_mode == "both" else 'forward',
-                predict_observations=self.prediction_type in ["both", "observation"],
-                predict_actions=self.prediction_type in ["both", "action"],
+                predict='full',
+                predict_observations=self.prediction_mode in ["both", "observation"],
+                predict_actions=self.prediction_mode in ["both", "action"],
             )
         else:
             self.deception_model = None
@@ -186,7 +197,6 @@ class PMAlgorithm(MarlAlgorithm):
         super().__init__(n_steps, A, model)
 
         assert self.obs_shape[-1] == 3, f"Model assumes RGB 3-channel input, but found {self.obs_shape}"
-        assert deception_bonus is not None or prediction_mode == "both", "To enable deception bonus prediction mode must be 'both'."
 
         if self.uses_deception_model:
             # to handle the deception rnn states just concatenate the h,c states together
@@ -292,21 +302,15 @@ class PMAlgorithm(MarlAlgorithm):
             # which players this player can see, all in public_id order
             self.batch_player_visible = np.zeros([N, A, vec_env.max_players], dtype=np.bool)
 
-            if self.prediction_mode in ["both", "others"]:
-                # all player observations at time t for given game recorded for all agents, in public_id order
-                if self.prediction_type in ["both", "observation"]:
-                    self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
+            ...
+            # all player observations at time t for given game recorded for all agents, in public_id order
+            self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
 
-            if self.prediction_mode == "both":
-                # each players prediction about the roles of all other players, as a log prob.
-                self.batch_player_role_predictions = np.zeros([N, A, vec_env.max_players, R], dtype=np.float32)
-                # all player predictions at time t for given game recorded for all agents, in public_id order
-                if self.prediction_type in ["both", "observation"]:
-                    self.batch_player_obs_predictions = np.zeros([N, A, vec_env.max_players, *self.obs_shape],
-                                                                 dtype=np.uint8)
-                if self.prediction_type in ["both", "action"]:
-                    self.batch_player_action_predictions = np.zeros([N, A, vec_env.max_players, R, *self.policy_shape],
-                                                             dtype=np.float32)
+            # each players prediction about the roles of all other players, as a log prob.
+            self.batch_player_role_predictions = np.zeros([N, A, vec_env.max_players, R], dtype=np.float32)
+            # all player predictions at time t for given game recorded for all agents, in public_id order
+            self.batch_player_obs_predictions = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
+            self.batch_player_action_predictions = np.zeros([N, A, vec_env.max_players, R, *self.policy_shape], dtype=np.float32)
 
             self.replay_buffer = []
 
@@ -335,7 +339,15 @@ class PMAlgorithm(MarlAlgorithm):
 
     @property
     def uses_deception_model(self):
-        return self.prediction_mode != "off"
+        return self.prediction_mode != self.DM_OFF
+
+    @property
+    def predicts_actions(self):
+        return self.prediction_mode in [self.DM_ACTION, self.DM_BOTH]
+
+    @property
+    def predicts_observations(self):
+        return self.prediction_mode in [self.DM_OBSERVATION, self.DM_BOTH]
 
     def save_logs(self, base_path):
         with open(os.path.join(base_path, "checkpoint_log.dat"), "wb") as f:
@@ -626,8 +638,7 @@ class PMAlgorithm(MarlAlgorithm):
                     model_out, new_agent_rnn_state = self.forward(
                         self.agent_obs,
                         self.agent_rnn_state,
-                        roles=roles,
-                        disable_deception=self.prediction_mode != "both" # only both requires predictions as targets
+                        roles=roles
                     )
                 self.agent_rnn_state[:] = new_agent_rnn_state
 
@@ -635,7 +646,7 @@ class PMAlgorithm(MarlAlgorithm):
                 log_policy = model_out["log_policy"].detach().cpu().numpy()
                 ext_value = model_out["ext_value"].detach().cpu().numpy()
 
-                if self.prediction_mode != "off":
+                if self.uses_deception_model:
                     # get order for observations
                     # we must predict these in public_id order, otherwise team is known
                     # however ground truth observations will be in index order, so we need to reorder them
@@ -661,13 +672,13 @@ class PMAlgorithm(MarlAlgorithm):
                     # predictions of other players observations
                     self.batch_player_obs[t] = duplicate_to_public_order(prev_obs)
 
-                if self.prediction_mode == "both" and "obs_prediction" in model_out:
+                if self.predicts_observations:
                     # organise prediction predictions
                     player_obs_predictions = torch.clamp(model_out["obs_prediction"].cpu().detach() * 255, 0, 255).to(
                         torch.uint8)
                     self.batch_player_obs_predictions[t] = player_obs_predictions
 
-                if self.prediction_mode == "both" and "action_prediction" in model_out:
+                if self.predicts_actions:
                     # again for actions...
                     player_action_predictions = model_out["action_prediction"].cpu().detach()
                     self.batch_player_action_predictions[t] = player_action_predictions
@@ -688,7 +699,7 @@ class PMAlgorithm(MarlAlgorithm):
                 int_value = model_out["int_value"].detach().cpu().numpy()
                 int_rewards = np.zeros_like(ext_rewards)
 
-                if self.deception_bonus is not None and self.prediction_mode in ["others", "both"]:
+                if self.uses_deception_model:
 
                     # generate a mask that assigns bonus only for deceiving enemy players (or players thought to be
                     # enemies.
@@ -708,7 +719,7 @@ class PMAlgorithm(MarlAlgorithm):
                     # there are two ways of doing this, the predict actions method and the predict observations method
                     deception_bonus = np.zeros_like(int_rewards)
 
-                    if self.prediction_type in ["action", "both"]:
+                    if self.predicts_actions:
                         db_actions = self.calculate_deception_bonus_from_actions(
                             player_action_prediction_predictions=model_out["action_backwards_prediction"],
                             prior_role_belief=model_out["role_backwards_prediction"],
@@ -717,7 +728,7 @@ class PMAlgorithm(MarlAlgorithm):
                             actions=torch.from_numpy(actions)
                         )
                         deception_bonus += db_actions.cpu().detach().numpy()
-                    if self.prediction_type in ["observation", "both"]:
+                    if self.predicts_observations:
                         expanded_terminals = torch.from_numpy(
                             duplicate_to_public_order(prev_terminals)).to(device=self.policy_model.device)
                         obs_backwards_predictions = model_out["obs_backwards_prediction"]
@@ -1142,21 +1153,6 @@ class PMAlgorithm(MarlAlgorithm):
             self.log.watch_mean("loss_role_bp", loss_backwards_role)
 
         # -------------------------------------------------------------------------
-        # Calculate self prediction loss
-        # -------------------------------------------------------------------------
-
-        if self.prediction_mode == "self" and "obs_prediction" in model_out:
-            # in this case we make targets our own observations
-            pred_self = model_out["obs_prediction"][:, :, 0]  # [N, B, 1, *obs_shape]
-            pred_true = data["prev_obs"].float() / 255  # [N, B, *obs_shape]
-            pred_self_loss = F.mse_loss(pred_self, pred_true)
-            pred_self_score = -np.log10(pred_self_loss.cpu().detach().numpy())
-            pred_self_loss *= self.dm_loss_scale
-            self.log.watch_mean("pred_self_loss", pred_self_loss, display_width=0)
-            self.log.watch_mean("pred_self_score", pred_self_score, display_width=10, display_precision=2)
-            loss += pred_self_loss
-
-        # -------------------------------------------------------------------------
         # Calculate action prediction loss
         # -------------------------------------------------------------------------
 
@@ -1178,7 +1174,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Calculate observation prediction loss
         # -------------------------------------------------------------------------
 
-        if self.prediction_mode in ["others", "both"] and "obs_prediction" in model_out:
+        if self.predicts_observations:
             obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape] (in public_id order)
             obs_truth = data["player_obs"].float() / 255 # [N, B, n_players, *obs_shape] (in public_id order)
 
@@ -1249,7 +1245,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Prediction prediction error
         # -------------------------------------------------------------------------
 
-        if self.prediction_mode == "both" and "obs_backwards_prediction" in model_out:
+        if self.predicts_observations:
             n_players = self.vec_env.max_players
             pred_predictions = model_out["obs_backwards_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape] (in public_id order)
             true_predictions = data["player_obs_predictions"].float()/255
