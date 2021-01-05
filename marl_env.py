@@ -127,25 +127,6 @@ class MultiAgentVecEnv(SubprocVecEnv):
         roles = [player.team for player in self.players]
         return np.asarray(roles, dtype=np.int64)
 
-    def get_roles_expanded(self):
-        """
-        Returns numpy array containing roles for each player in game for each agent in environment ordered by
-        public_id.
-        :return: tensor of dims [n_agents, n_players]
-        """
-
-        # note, this might not work with scripted environments?
-        roles = []
-        for game in self.games:
-            game_players = [(player.public_id, player.team) for player in game.players]
-            game_players.sort()
-            game_players = [team for id, team in game_players]
-
-            for _ in game.players:
-                roles.append(game_players)
-
-        return np.asarray(roles, dtype=np.int64)
-
     def get_alive(self):
         """
         Returns numpy array containing alive status for each player

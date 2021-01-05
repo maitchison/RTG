@@ -60,9 +60,7 @@ class RTG_Player():
 
     def __init__(self, index, scenario: RescueTheGeneralScenario):
         # the player's index, this is fixed and used to index into the players array, i.e. self.players[id]
-        self.index = index
-        # this is the id number used to identify which player this is. These id values are randomized each round
-        self.public_id = 0
+        self.index = index        
         # position of player
         self.x, self.y = int(), int()
 
@@ -80,7 +78,7 @@ class RTG_Player():
 
     @property
     def id_color(self):
-        return RescueTheGeneralEnv.ID_COLOR[self.public_id]
+        return RescueTheGeneralEnv.ID_COLOR[self.index]
 
     @property
     def is_dead(self):
@@ -233,14 +231,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.blue_rewards_for_winning = int()
         self.location_encoding = location_encoding
 
-        # create players and assign teams
+        # create players
         self.players = [RTG_Player(index, self.scenario) for index in range(self.n_players)]
-        teams = [self.TEAM_RED] * self.scenario.team_counts[0] + \
-                [self.TEAM_GREEN] * self.scenario.team_counts[1] + \
-                [self.TEAM_BLUE] * self.scenario.team_counts[2]
-
-        for index, team in enumerate(teams):
-            self.players[index].team = team
 
         self.round_outcome = str()  # outcome of round
         self.game_outcomes = []     # list of outcomes for each round
@@ -347,15 +339,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # count actions
         for player in self.players:
             self.stats_actions[player.team, player.action] += 1
-
-        # count predictions (if given)
-        # todo... (requires player.prediction to be set)
-        # for player in self.living_players:
-        #     for target_player in self.players:
-        #         if player.prediction[target_player.id] == target_player.team:
-        #             self.stats_predictions_correct[player.team] += 1
-        #         else:
-        #             self.stats_predictions_wrong[player.team] += 1
 
         # apply actions, we process actions in the following order..
         # shooting
@@ -537,42 +520,29 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                         # this makes rewards total to ~10
                         rewards[index] += 10 / bonus_count
 
+        # record who is left
+        living_red_players = sum(not player.is_dead for player in self.players if player.team == self.TEAM_RED)
+        living_green_players = sum(not player.is_dead for player in self.players if player.team == self.TEAM_GREEN)
+        living_blue_players = sum(not player.is_dead for player in self.players if player.team == self.TEAM_BLUE)
+
         if self.scenario.battle_royale:
-
-            # battle royal has very different rewards
-
-            # gain points for killing enemy players
-            team_rewards[self.TEAM_RED] += red_team_good_kills
-            team_rewards[self.TEAM_BLUE] += blue_team_good_kills
-
-            # loose points for  deaths
-            for team in range(3):
-                team_rewards[team] -= team_deaths[team]
-
-            # loose a lot of points if non-one wins
-            if result_game_timeout:
-                team_rewards[self.TEAM_RED] -= 5
-                team_rewards[self.TEAM_GREEN] += 5
-                team_rewards[self.TEAM_BLUE] -= 5
-
-            # gain some points if all enemy players are eliminated
-            red_players = sum(not player.is_dead for player in self.players if player.team == self.TEAM_RED)
-            green_players = sum(not player.is_dead for player in self.players if player.team == self.TEAM_GREEN)
-            blue_players = sum(not player.is_dead for player in self.players if player.team == self.TEAM_BLUE)
-
-            if red_players > 0 and blue_players == 0:
-                team_rewards[self.TEAM_RED] += 10
+            # green has the extra condition that the must finish harvesting the remaining trees
+            # otherwise they are disavantages for killing any hidden red players
+            if living_red_players > 0 and living_green_players == living_blue_players == 0:
                 result_red_victory = True
-            if blue_players > 0 and red_players == 0:
-                team_rewards[self.TEAM_BLUE] += 10
+            if living_green_players > 0 and \
+                    living_red_players == living_blue_players == 0 and \
+                    green_tree_harvest_counter == self.scenario.n_trees:
+                result_green_victory = True
+            if living_blue_players > 0 and living_red_players == living_green_players == 0:
                 result_blue_victory = True
-
-        if result_general_killed:
-            team_rewards[self.TEAM_RED] += 10
-            team_rewards[self.TEAM_BLUE] -= 10
-        elif result_general_rescued:
-            team_rewards[self.TEAM_RED] -= 10
-            team_rewards[self.TEAM_BLUE] += self.blue_rewards_for_winning
+        else:
+            if result_general_killed:
+                team_rewards[self.TEAM_RED] += 10
+                team_rewards[self.TEAM_BLUE] -= 10
+            elif result_general_rescued:
+                team_rewards[self.TEAM_RED] -= 10
+                team_rewards[self.TEAM_BLUE] += self.blue_rewards_for_winning
 
         # ----------------------------------------
         # assign team rewards
@@ -1008,6 +978,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             start_locations = []
             for dx in range(-3, 3+1):
                 for dy in range(-3, 3+1):
+                    # todo, fix the +dx, +dy warning
                     x, y = start_location_center[0]+dx, start_location_center[1]+dy
                     if 0 <= x < self.scenario.map_width:
                         if 0 <= y < self.scenario.map_height:
@@ -1058,13 +1029,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.game_team_scores *= 0
         self.game_outcomes = []
 
-        # assign random public_ids
-        ids = list(range(self.n_players))
-        if self.scenario.randomize_ids:
-            np.random.shuffle(ids)
-
-        for id, player in zip(ids, self.players):
-            player.public_id = id
+        # assign random teams
+        teams = [self.TEAM_RED] * self.scenario.team_counts[0] + \
+                [self.TEAM_GREEN] * self.scenario.team_counts[1] + \
+                [self.TEAM_BLUE] * self.scenario.team_counts[2]
+        np.random.shuffle(teams)
+        for index, team in enumerate(teams):
+            self.players[index].team = team
 
         return self.soft_reset()
 
@@ -1120,19 +1091,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         frame = np.zeros((gw+pw*grid_width, max(gh, ph*grid_height), 3), np.uint8)
         self._draw(frame, 0, 0, global_frame)
 
-        # this just puts players in id order, so we can keep track of which color learns which strategies
-        ids = []
-        for player in self.players:
-            ids.append((player.public_id, player.index))
-        ids = sorted(ids)
-        index_order = [index for id, index in ids]
-
         i = 0
         for x in range(grid_width):
             for y in range(grid_height):
                 # draw a darker version of player observations so they don't distract too much
                 if i < len(player_frames):
-                    self._draw(frame, gw + pw*x, ph*y, player_frames[index_order[i]] * 0.75)
+                    self._draw(frame, gw + pw*x, ph*y, player_frames[i] * 0.75)
                 i = i + 1
 
         # add video padding
@@ -1149,12 +1113,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         return frame
 
-    def render(self, mode='human', **kwargs):
+    def render(self, mode='human'):
         """ render environment """
         if mode == 'human':
             return self._render_human()
         elif mode == 'rgb_array':
-            return self._render_rgb(**kwargs)
+            return self._render_rgb()
         else:
             raise ValueError(f"Invalid render mode {mode}")
 

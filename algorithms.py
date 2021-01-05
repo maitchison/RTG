@@ -287,30 +287,34 @@ class PMAlgorithm(MarlAlgorithm):
         self.batch_player_action_predictions = None
         self.batch_player_role_predictions = None
 
-        # ground truth observations for each player in public_id order,
+        # ground truth observations for each player
         # this is so when we take a random sample we always have the information we need.
         # It's a bit wasteful with memory though, especially with high player counts.
         if self.uses_deception_model:
             # the true role of each player in the game that agent a is playing
             self.batch_player_roles = np.zeros([N, A, vec_env.max_players], dtype=np.int64)
-            # policies for each player for each role at time t for given game recorded for all agents, in public_id order
+            # policies for each player for each role at time t for given game recorded for all agents
             self.batch_player_role_policy = np.zeros([N, A, vec_env.max_players, R, *self.policy_shape], dtype=np.float32)
-            # all policies at time t for given game recorded for all agents, in public_id order
+            # all policies at time t for given game recorded for all agents
             self.batch_player_policy = np.zeros([N, A, vec_env.max_players, *self.policy_shape], dtype=np.float32)
-            # all terminals at time t for given game recorded for all agents, in public_id order
+            # all terminals at time t for given game recorded for all agents
             self.batch_player_terminals = np.zeros([N, A, vec_env.max_players], dtype=np.float32)
-            # which players this player can see, all in public_id order
+            # which players this player can see
             self.batch_player_visible = np.zeros([N, A, vec_env.max_players], dtype=np.bool)
 
-            ...
-            # all player observations at time t for given game recorded for all agents, in public_id order
-            self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
+            if self.predicts_observations:
+                # all player observations at time t for given game recorded for all agents
+                self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
+                # all player predictions at time t for given game recorded for all agents
+                self.batch_player_obs_predictions = np.zeros([N, A, vec_env.max_players, *self.obs_shape],
+                                                             dtype=np.uint8)
+
+            if self.predicts_actions:
+                self.batch_player_action_predictions = np.zeros([N, A, vec_env.max_players, R, *self.policy_shape],
+                                                                dtype=np.float32)
 
             # each players prediction about the roles of all other players, as a log prob.
             self.batch_player_role_predictions = np.zeros([N, A, vec_env.max_players, R], dtype=np.float32)
-            # all player predictions at time t for given game recorded for all agents, in public_id order
-            self.batch_player_obs_predictions = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
-            self.batch_player_action_predictions = np.zeros([N, A, vec_env.max_players, R, *self.policy_shape], dtype=np.float32)
 
             self.replay_buffer = []
 
@@ -606,16 +610,25 @@ class PMAlgorithm(MarlAlgorithm):
         :return: Nothing
         """
 
-        def duplicate_to_public_order(x):
-            """ returns a copy of data in public id order
+        def duplicate_players(x):
+            """ Returns a copy of data with players duplicated.
+                If input is
+
+                [A1, B1, C1, A2, B2, C2]
+
+                output will be
+
+                [[A1, B1, C1], [A1, B1, C1], [A1, B1, C1],
+                 [A2, B2, C2], [A2, B2, C2], [A2, B2, C2]]
+
+                This means that each row contains all the required information about each other player in their game.
+
                 x: [n_games*n_players, *data_shape]
                 returns [n_games*n_players, n_players, *data_shape]
             """
+            # todo: make sure this works... stub:
             data_shape = x.shape[1:]
             x = x.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *data_shape)
-            # todo: find a faster way of doing this...
-            for i in range(len(x)):
-                x[i, :] = x[i, orderings[i]]
             x = x.repeat(self.vec_env.max_players, axis=0)
             return x
 
@@ -623,6 +636,8 @@ class PMAlgorithm(MarlAlgorithm):
         believed_other_rnn_states = torch.zeros(
             [self.n_agents, n_players, 2, self.policy_memory_units], dtype=torch.float32
         )
+
+        B = len(self.vec_env.players)
 
         with torch.no_grad():
 
@@ -652,41 +667,35 @@ class PMAlgorithm(MarlAlgorithm):
                 ext_value = model_out["ext_value"].detach().cpu().numpy()
 
                 if self.uses_deception_model:
-                    # get order for observations
-                    # we must predict these in public_id order, otherwise team is known
-                    # however ground truth observations will be in index order, so we need to reorder them
-                    orderings = []
+
+                    # calculate who is visible [B, n_players]
                     players_visible = []
+
                     for game in self.vec_env.games:
-                        game_players = [(player.public_id, player.index) for player in game.players]
-                        game_players.sort()
-                        order = [index for public_id, index in game_players]
-                        orderings.append(order)
                         for player in game.players:
-                            vision = [player.in_vision(game.players[index].x, game.players[index].y) for index in order]
+                            vision = [player.in_vision(other_player.x, other_player.y) for other_player in game.players]
                             players_visible.append(vision)
+                    players_visible = np.asarray(players_visible)
+
                     # role prediction
-                    player_roles = self.vec_env.get_roles_expanded()  # batch_roles is [A, n_players]
+                    player_roles = duplicate_players(self.vec_env.get_roles())  # batch_roles is [A, n_players]
                     self.batch_player_roles[t] = player_roles
-                    self.batch_player_policy[t] = duplicate_to_public_order(log_policy)
-                    self.batch_player_role_policy[t] = duplicate_to_public_order(role_log_policies)
-                    self.batch_player_terminals[t] = duplicate_to_public_order(prev_terminals)
+                    self.batch_player_policy[t] = duplicate_players(log_policy)
+                    self.batch_player_role_policy[t] = duplicate_players(role_log_policies)
+                    self.batch_player_terminals[t] = duplicate_players(prev_terminals)
                     self.batch_player_visible[t] = players_visible
 
-                if self.batch_player_obs is not None:
-                    # predictions of other players observations
-                    self.batch_player_obs[t] = duplicate_to_public_order(prev_obs)
+                    if self.predicts_observations:
+                        # predictions of other players observations
+                        self.batch_player_obs[t] = duplicate_players(prev_obs)
+                        # organise prediction predictions
+                        player_obs_predictions = image_to_uint8(model_out["obs_prediction"].detach().cpu())
+                        self.batch_player_obs_predictions[t] = player_obs_predictions
 
-                if self.predicts_observations:
-                    # organise prediction predictions
-                    player_obs_predictions = torch.clamp(model_out["obs_prediction"].cpu().detach() * 255, 0, 255).to(
-                        torch.uint8)
-                    self.batch_player_obs_predictions[t] = player_obs_predictions
-
-                if self.predicts_actions:
-                    # again for actions...
-                    player_action_predictions = model_out["action_prediction"].cpu().detach()
-                    self.batch_player_action_predictions[t] = player_action_predictions
+                    if self.predicts_actions:
+                        # again for actions...
+                        player_action_predictions = model_out["action_prediction"].cpu().detach()
+                        self.batch_player_action_predictions[t] = player_action_predictions
 
                 if self.batch_player_role_predictions is not None:
                     # record role predictions
@@ -710,14 +719,14 @@ class PMAlgorithm(MarlAlgorithm):
                     # enemies.
 
                     bonus_mask = np.ones((len(int_rewards), n_players), dtype=np.float32)
-                    public_ids = np.asarray([player.public_id for player in self.vec_env.players])
+                    indexes = np.asarray([player.index for player in self.vec_env.players])
 
                     # we don't try and deceive ourselves
-                    bonus_mask[range(len(bonus_mask)), public_ids] = 0
+                    bonus_mask[range(len(bonus_mask)), indexes] = 0
                     # don't get a bonus for deceiving players on our own team
                     # note, this leaks a little team information, but just during training...
                     # to fix this we'd need to mask the mask with who knows who's identities
-                    same_team_mask = roles[:, np.newaxis] == self.vec_env.get_roles_expanded()
+                    same_team_mask = roles[:, np.newaxis] == duplicate_players(self.vec_env.get_roles())
                     bonus_mask *= (1-same_team_mask)
                     bonus_mask = torch.from_numpy(bonus_mask)
 
@@ -736,9 +745,8 @@ class PMAlgorithm(MarlAlgorithm):
 
                     if self.predicts_observations:
                         expanded_terminals = torch.from_numpy(
-                            duplicate_to_public_order(prev_terminals)).to(device=self.policy_model.device)
-                        obs_backwards_predictions = model_out["obs_backwards_prediction"]
-                        obs_backwards_predictions = torch.clamp(obs_backwards_predictions * 255, 0, 255).to(dtype=torch.uint8)
+                            duplicate_players(prev_terminals)).to(device=self.policy_model.device)
+                        obs_backwards_predictions = image_to_uint8(model_out["obs_backwards_prediction"])
                         db_observations, believed_other_rnn_states = self.calculate_deception_bonus_from_observations(
                             player_observation_prediction_predictions=obs_backwards_predictions,
                             prior_role_belief=model_out["role_backwards_prediction"],
@@ -1181,8 +1189,8 @@ class PMAlgorithm(MarlAlgorithm):
         # -------------------------------------------------------------------------
 
         if self.predicts_observations:
-            obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape] (in public_id order)
-            obs_truth = data["player_obs"].float() / 255 # [N, B, n_players, *obs_shape] (in public_id order)
+            obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape]
+            obs_truth = image_to_float(data["player_obs"]) # [N, B, n_players, *obs_shape]
 
             # remove from prediction other players we are not visible
             if self.dm_vision_filter >= 1:
@@ -1253,8 +1261,8 @@ class PMAlgorithm(MarlAlgorithm):
 
         if self.predicts_observations:
             n_players = self.vec_env.max_players
-            pred_predictions = model_out["obs_backwards_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape] (in public_id order)
-            true_predictions = data["player_obs_predictions"].float()/255
+            pred_predictions = model_out["obs_backwards_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape]
+            true_predictions = image_to_float(data["player_obs_predictions"])
             pred_back_mse = F.mse_loss(pred_predictions, true_predictions)
             self.log.watch_mean("pred_back_mse", pred_back_mse, display_width=0)
             loss += pred_back_mse * self.dm_loss_scale
@@ -1582,6 +1590,15 @@ def test_filter_visible():
     assert test_2.shape == (2*4*3-1, 1)
     assert 12 not in test_2
 
+def image_to_float(x):
+    """ Convert image from uint8 to float, scaled to 0..1. """
+    assert x.dtype == torch.uint8
+    return x.float() * (1/255.0)
+
+def image_to_uint8(x):
+    """ Convert image from float in range [0..1] to uint8. """
+    assert x.dtype == torch.float32
+    return torch.clamp(x * 255.0, 0, 255).to(torch.uint8)
 
 def calculate_action_prediction_loss(pred: torch.Tensor, true: torch.Tensor):
     """

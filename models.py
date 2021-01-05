@@ -459,15 +459,15 @@ class DeceptionModel(BaseModel):
         assert predict in ['off', 'forward', 'full']
         self.predict = predict
 
-        # prediction of each role, in public_id order
+        # prediction of each role
         self.role_prediction_head = nn.Linear(self.encoder_output_features, (self.n_players * self.n_roles))
         if self.predict in ['full']:
-            # prediction of other players prediction of our own role, in public_id order
+            # prediction of other players prediction of our own role
             self.role_backwards_prediction_head = nn.Linear(self.encoder_output_features, (self.n_players * self.n_roles))
         else:
             self.role_backwards_prediction_head = None
 
-            # prediction of each observation in public_id order
+            # prediction of each observation
         h, w, c = self.obs_shape
 
         self.n_predictions = n_predictions

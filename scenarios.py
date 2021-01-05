@@ -164,7 +164,8 @@ class RescueTheGeneralScenario():
             "team_shoot_range": (4, 3, 3),     # green shoots slower and has less range
             "starting_locations": "together",  # random start locations
             "team_shoot_timeout": (2, 5, 5),
-            "general_initial_health": 9999,    # general will not be killed
+            "battle_royale": True,             # removes general, and ends game if all green players are killed, or
+                                               # if green eliminates red players and harvests all trees
             "points_for_kill": np.asarray((    # loose a point for self kill, gain one for other team kill
                 (-1, +3.33, +1),
                 (+1, -1, +1),
@@ -315,6 +316,11 @@ class RescueTheGeneralScenario():
             "n_trees": 0,
             "hidden_roles": "all",
             "battle_royale": True,
+            "points_for_kill": np.asarray((  # loose a point for self kill, gain one for other team kill
+                (-1, +1, +1),
+                (+1, -1, +1),
+                (+1, +1, -1),
+            )),
             "reveal_team_on_death": True
         }
     }
@@ -340,7 +346,7 @@ class RescueTheGeneralScenario():
         self.general_always_visible = False
         self.general_initial_health = 10
         self.player_initial_health = 10
-        self.battle_royale = False   # removes general from game, and adds kill rewards
+        self.battle_royale = False   # removes general from game, and teams can win by eliminating all others teams
         self.bonus_actions = False   # provides small reward for taking an action that is indicated on agents local
                                      # observation some time after the signal appeared
         self.bonus_actions_one_at_a_time = False

@@ -23,12 +23,7 @@ def _display_role_prediction(frame: np.ndarray, dx: int, dy: int, raw_prediction
     n_players = len(raw_predictions)
 
     # format the role predictions
-    # role predictions are in public_id order so that they change each round, we need to put them back
-    # into index order.
-    role_predictions = np.zeros_like(raw_predictions)
-    for i in range(n_players):
-        for j in range(n_players):
-            role_predictions[i, j] = np.exp(raw_predictions[i, env.players[j].public_id])
+    role_predictions = np.exp(raw_predictions)
 
     block_size = 8
     for i in range(n_players):
