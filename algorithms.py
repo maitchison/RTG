@@ -223,8 +223,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.max_grad_norm = max_grad_norm
         self.deception_bonus = deception_bonus
 
-        # these are not used yet
-        self.intrinsic_reward_propagation = False,
+        self.intrinsic_reward_propagation = False
         self.normalize_intrinsic_rewards = False
         self.extrinsic_reward_scale = 1.0
         self.intrinsic_reward_scale = 1.0
@@ -825,7 +824,7 @@ class PMAlgorithm(MarlAlgorithm):
             mask = self.batch_roles == team_id
             data = values[mask]
             if len(data) > 0:
-                self.log.watch_mean(f"{team_name}_var_name", reduction(data), **kwargs)
+                self.log.watch_mean(f"{team_name}_{var_name}", reduction(data), **kwargs)
 
     def calculate_returns(self):
         """
@@ -840,7 +839,7 @@ class PMAlgorithm(MarlAlgorithm):
             self.batch_terminals, self.terminals, self.gamma, self.gae_lambda)
         self.batch_ext_returns = ext_advantage + self.batch_ext_value
 
-        # calculate the intrinsic returns, but let returns propagate through terminal states.
+        # calculate the intrinsic returns
         if self.normalize_intrinsic_rewards:
             # normalize returns using EMS
             for t in range(self.n_steps):
@@ -855,9 +854,10 @@ class PMAlgorithm(MarlAlgorithm):
             self.intrinsic_reward_norm_scale = 1
             scaled_int_rewards = self.batch_int_rewards
 
+        # optionaly let returns propagate through terminal states.
         int_advantage = calculate_gae(scaled_int_rewards, self.batch_int_value, self.int_final_value_estimate,
-                                           self.batch_terminals * self.intrinsic_reward_propagation,  # let rewards through
-                                           self.terminals * self.intrinsic_reward_propagation,
+                                           self.batch_terminals * (not self.intrinsic_reward_propagation),
+                                           self.terminals * (not self.intrinsic_reward_propagation),
                                            self.gamma_int, self.gae_lambda)
         self.batch_int_returns = int_advantage + self.batch_int_value
 

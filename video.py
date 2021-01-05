@@ -134,7 +134,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         if "action_prediction" in model_output:
             action_predictions = np.exp(model_output["action_prediction"].detach().cpu().numpy())
             action_prediction_predictions = np.exp(model_output["action_backwards_prediction"].detach().cpu().numpy())
-            true_policy = model_output["role_log_policy"]
+            true_policy = np.exp(model_output["role_log_policy"].detach().cpu().numpy())
 
             _, _, n_roles, n_actions = action_predictions.shape
 

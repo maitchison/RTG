@@ -423,6 +423,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         general_is_closer_to_edge = False
         for player in self.living_players:
 
+            if self.scenario.battle_royale:
+                # no general in this mode.
+                continue
+
             if player.action != ACTION_ACT:
                 continue
 
