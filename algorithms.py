@@ -498,7 +498,17 @@ class PMAlgorithm(MarlAlgorithm):
         :return: The bonus for each player summed over other players, tensor of dims [B],
         """
 
+        device = self.deception_model.device
+
+        # upload everything to correct device, and get dtype right
+        player_action_prediction_predictions = player_action_prediction_predictions.to(device)
+        prior_role_belief = prior_role_belief.to(device)
+        true_role = true_role.to(device)
+        mask = mask.to(device)
+        actions = actions.to(device).to(torch.long)
+
         B, n_players, *role_policy_shape = player_action_prediction_predictions.shape
+        n_roles = 3
 
         # [B, n_players, n_roles, n_actions]
         role_policy = torch.exp(player_action_prediction_predictions)
@@ -506,23 +516,18 @@ class PMAlgorithm(MarlAlgorithm):
 
         # next calculate the B_ji, which is agent j's belief about agent i's role being the true role if we take
         # action a
-        # (actually this is not the posterior belief, it's the likeliehood ratio)
-        likeliehood_true_role = torch.zeros([B, n_players])
+        # (actually this is not the posterior belief, it's the likelihood ratio)
+        likelihood_true_role = torch.zeros([B, n_players], device=device)
 
-        # todo: vectorize this
-        # todo: calculate this using logs
-        for i in range(B):
-            a = actions[i]
-            for j in range(n_players):
-                role_sum = 0
-                for role in range(3):
-                    # policy of my prediction of their prediction of my current state, times prior belief
-                    role_sum += role_policy[i, j, role, a] * prior_role_belief[i, j, role]
-                likeliehood_true_role[i, j] = role_policy[i, j, true_role[i], a] / role_sum
+        for j in range(n_players):
+            role_sum = torch.zeros([B], device=device)
+            for role in range(n_roles):
+                role_sum += role_policy[range(B), j, role, actions] * prior_role_belief[:, j, role]
+            likelihood_true_role[:, j] = role_policy[range(B), j, true_role, actions] / role_sum
 
         # bonus is just neg log likelihood, and sum over other players we are trying to deceive
-        bonus = -torch.log(likeliehood_true_role)
-        bonus *= mask
+        bonus = -torch.log(likelihood_true_role)
+        bonus = bonus * mask
         bonus = torch.sum(bonus, dim=-1) # sum over players
         return bonus
 
@@ -723,11 +728,12 @@ class PMAlgorithm(MarlAlgorithm):
                         db_actions = self.calculate_deception_bonus_from_actions(
                             player_action_prediction_predictions=model_out["action_backwards_prediction"],
                             prior_role_belief=model_out["role_backwards_prediction"],
-                            true_role=roles,
+                            true_role=torch.from_numpy(roles),
                             mask=bonus_mask,           # for the moment don't mask non-visible players
                             actions=torch.from_numpy(actions)
                         )
                         deception_bonus += db_actions.cpu().detach().numpy()
+
                     if self.predicts_observations:
                         expanded_terminals = torch.from_numpy(
                             duplicate_to_public_order(prev_terminals)).to(device=self.policy_model.device)
@@ -738,7 +744,7 @@ class PMAlgorithm(MarlAlgorithm):
                             prior_role_belief=model_out["role_backwards_prediction"],
                             believed_policy_rnn_states=believed_other_rnn_states,
                             terminals=expanded_terminals,
-                            true_role=roles,
+                            true_role=torch.from_numpy(roles),
                             mask=bonus_mask,           # for the moment don't mask non-visible players
                             actions=torch.from_numpy(actions)
                         )
