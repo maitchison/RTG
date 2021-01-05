@@ -763,7 +763,8 @@ class PMAlgorithm(MarlAlgorithm):
                     else:
                         deception_bonus = deception_bonus * np.asarray([self.deception_bonus[r] for r in roles])
 
-                    int_rewards += deception_bonus
+                    # scale deception bonus to be, by default, roughly the same as ext rewards
+                    int_rewards += deception_bonus * 0.1
 
                 # save raw rewards for monitoring the agents progress
                 raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
@@ -804,6 +805,27 @@ class PMAlgorithm(MarlAlgorithm):
                 self.int_final_value_estimate = model_out["int_value"].detach().cpu().numpy()
 
         self.calculate_returns()
+
+    def watch_per_team(self, var_name, values, reduction=np.mean, **kwargs):
+        """
+        Logs a variable with per team values
+        :param var_name:
+        :param values: np.array of dims [N, B]
+        :param reduction:
+        :param kwargs:
+        :return:
+        """
+
+        assert values.shape == self.batch_roles.shape
+
+        # log the variable
+        self.log.watch_mean(var_name, reduction(values), **kwargs)
+        kwargs["display_width"] = 0
+        for team_id, team_name in ((0, 'red'), (1, 'green'), (2, 'blue')):
+            mask = self.batch_roles == team_id
+            data = values[mask]
+            if len(data) > 0:
+                self.log.watch_mean(f"{team_name}_var_name", reduction(data), **kwargs)
 
     def calculate_returns(self):
         """
@@ -858,17 +880,13 @@ class PMAlgorithm(MarlAlgorithm):
         self.log.watch_mean("ev_ext", utils.explained_variance(self.batch_ext_value.ravel(), self.batch_ext_returns.ravel()))
 
         if self.deception_bonus is not None:
-            self.log.watch_mean("batch_reward_int", np.mean(self.batch_int_rewards), display_name="rew_int", display_width=0)
+
+            # log intrinsic rewards per team
+            self.watch_per_team("batch_reward_int", np.mean(self.batch_int_rewards), display_name="rew_int", display_width=0)
             self.log.watch_mean("batch_reward_int_std", np.std(self.batch_int_rewards), display_name="rew_int_std",
                                 display_width=0)
             self.log.watch_mean("batch_return_int", np.mean(self.batch_int_returns), display_name="ret_int")
             self.log.watch_mean("batch_return_int_std", np.std(self.batch_int_returns), display_name="ret_int_std")
-            # self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.batch_int_returns_raw),
-            #                     display_name="ret_int_raw_mu",
-            #                     display_width=0)
-            # self.log.watch_mean("batch_return_int_raw_std", np.std(self.batch_int_returns_raw),
-            #                     display_name="ret_int_raw_std",
-            #                     display_width=0)
 
             self.log.watch_mean("value_est_int", np.mean(self.batch_int_value), display_name="est_v_int")
             self.log.watch_mean("value_est_int_std", np.std(self.batch_int_value), display_name="est_v_int_std")

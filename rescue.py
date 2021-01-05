@@ -33,6 +33,8 @@ import time
 from marl_env import MultiAgentEnv
 from scenarios import RescueTheGeneralScenario
 
+from typing import Tuple, List
+
 CELL_SIZE = 3
 SIN_CHANNELS = 10 # 10 channels gets a frequencies of 2^5, which suits maps around 32 tiles in width/height
 DAMAGE_PER_SHOT = 5 # this means it takes 2 shots to kill
@@ -958,7 +960,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.map[:, :] = 1
         self.player_lookup[:, :] = -1
 
-        all_locations = list(itertools.product(range(self.scenario.map_width), range(self.scenario.map_height)))
+        all_locations:List[Tuple[int, int]] = [(x,y) for (x,y) in
+            itertools.product(range(self.scenario.map_width), range(self.scenario.map_height))
+        ]
+
         idxs = np.random.choice(len(all_locations), size=self.scenario.n_trees, replace=False)
         for loc in [all_locations[idx] for idx in idxs]:
             self.map[loc] = 2
