@@ -112,7 +112,8 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
         if "role_backwards_prediction" in model_output:
             backwards_role_predictions = model_output["role_backwards_prediction"].detach().cpu().numpy()
-            _display_role_prediction(frame, orig_width + (n_players+2) * 8, 10, backwards_role_predictions, env)
+            backwards_role_predictions_transposed = backwards_role_predictions.swapaxes(0, 1)
+            _display_role_prediction(frame, orig_width + (n_players+2) * 8, 10, backwards_role_predictions_transposed, env)
 
         if "obs_prediction" in model_output:
             # ground truth
@@ -141,7 +142,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                     dy = orig_height + i * obs_size
                     # we transpose as rescue is x,y instead of y,x
                     frame[dy:dy + obs_size, dx:dx + obs_size] = \
-                        np.asarray(obs_pp[i, j] * 255, dtype=np.uint8).swapaxes(0, 1)
+                        np.asarray(obs_pp[j, i] * 255, dtype=np.uint8).swapaxes(0, 1)
 
         if "action_prediction" in model_output:
             action_predictions = np.exp(model_output["action_prediction"].detach().cpu().numpy())
@@ -182,7 +183,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                         # i's belief about j's actions if they were role r
                         for a in range(n_actions):
                             frame[dy + r, dx + a, :] = 64
-                            frame[dy + r, dx + a, r] = int(255*action_prediction_predictions[i, j, r, a])
+                            frame[dy + r, dx + a, r] = int(255*action_prediction_predictions[j, i, r, a])
 
 
         # for some reason cv2 wants BGR instead of RGB

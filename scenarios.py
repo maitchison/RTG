@@ -152,6 +152,8 @@ class RescueTheGeneralScenario():
             "n_trees": 9,
             "reward_per_tree": 1,
             "hidden_roles": "all",
+            "timeout_mean": 250,               # make sure games don't last too long, 250 is plenty of time for green
+                                               # to harvest all the trees
             "max_view_distance": 5,            # makes thins a bit faster
             "team_view_distance": (5, 5, 5),   # no bonus vision for red
             "team_shoot_range": (4, 3, 3),     # green shoots slower and has less range

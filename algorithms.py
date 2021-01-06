@@ -230,7 +230,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.intrinsic_reward_propagation = False
         self.normalize_intrinsic_rewards = True
         self.extrinsic_reward_scale = 1.0
-        self.intrinsic_reward_scale = 1.0
+        self.intrinsic_reward_scale = max(deception_bonus)
         self.log_folder = "."
 
         self.policy_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=learning_rate, eps=adam_epsilon)
@@ -796,8 +796,7 @@ class PMAlgorithm(MarlAlgorithm):
                     else:
                         deception_bonus = deception_bonus * np.asarray([self.deception_bonus[r] for r in roles])
 
-                    # scale deception bonus to be, by default, roughly the same as ext rewards
-                    int_rewards += deception_bonus * 0.1
+                    int_rewards += deception_bonus
 
                 # save raw rewards for monitoring the agents progress
                 raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
@@ -880,10 +879,8 @@ class PMAlgorithm(MarlAlgorithm):
                 self.ems_norm = 0.99 * self.ems_norm + self.batch_int_rewards[t, :]
                 self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
             # normalize the intrinsic rewards
-            # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4,
-            # which is approximately where normalized returns will sit.
             self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
-            scaled_int_rewards = self.batch_int_rewards / self.intrinsic_reward_norm_scale * 0.4
+            scaled_int_rewards = self.batch_int_rewards / self.intrinsic_reward_norm_scale
         else:
             self.intrinsic_reward_norm_scale = 1
             scaled_int_rewards = self.batch_int_rewards
@@ -1104,6 +1101,10 @@ class PMAlgorithm(MarlAlgorithm):
     @profiler.record_function("deception_back")
     def forward_deception_mini_batch(self, data, loss_scale=1):
 
+        # these help to make sure the deception module losses are all roughly the same order of magnitude
+        rp_coef = 1
+        ap_coef = 0.1
+
         def calculate_kl(obs_predictions):
             """
             Calculates KL between policy of true observation and policy of predicted observation
@@ -1190,7 +1191,6 @@ class PMAlgorithm(MarlAlgorithm):
             role_predictions = role_predictions.transpose(1, 2)
             return F.nll_loss(role_predictions, role_targets)
 
-        rp_coef = 0.1  # this is just to make sure that role_prediction doesn't clip gradients.
         loss_role = rp_coef * calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"])
         loss += loss_role
         self.log.watch_mean("loss_role", loss_role)
@@ -1223,14 +1223,14 @@ class PMAlgorithm(MarlAlgorithm):
         if "action_prediction" in model_out:
             pred = model_out["action_prediction"]
             true = data["player_role_policy"]
-            ap_loss = calculate_action_prediction_loss(pred, true)
+            ap_loss = ap_coef * calculate_action_prediction_loss(pred, true)
             self.log.watch_mean("ap_loss", ap_loss, display_width=10, display_precision=5)
             loss += ap_loss
 
         if "action_backwards_prediction" in model_out:
             pred = model_out["action_backwards_prediction"]
             true = data["player_action_predictions"]
-            bap_loss = calculate_action_prediction_loss(pred, true)
+            bap_loss = ap_coef * calculate_action_prediction_loss(pred, true)
             self.log.watch_mean("bap_loss", bap_loss, display_width=10, display_precision=5)
             loss += bap_loss
 
