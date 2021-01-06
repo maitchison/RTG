@@ -614,6 +614,29 @@ class PMAlgorithm(MarlAlgorithm):
         :return: Nothing
         """
 
+        def swap_prediction_targets(x: Union[torch.Tensor, np.ndarray]):
+            """
+            Takes a tensor [n_games * n_players, n_players, ...] containing rows of the ith players predictions
+            and transposes so that each row now contains other players predictions of the ith player.
+            :param x: Tensor of dims [n_games * n_players, n_players, ...]
+            :return: Tensor of dims [n_games * n_players, n_players, ...]
+            """
+
+            b, n_players, *data_shape = x.shape
+            assert b % n_players == 0
+            n_games = b // n_players
+
+            x = x.reshape(n_games, n_players, n_players, *data_shape)
+            if type(x) is torch.Tensor:
+                # torch v1.8 has swap axes, but I'm on 1.7.1
+                # np.transpose != torch.transpose, so we really need to use swap axes.
+                x = x.transpose(1, 2)
+            else:
+                x = x.swapaxes(1, 2)
+            x = x.reshape(n_games * n_players, n_players, *data_shape)
+            return x
+
+
         def duplicate_players(x):
             """ Returns a copy of data with players duplicated.
                 If input is
@@ -635,12 +658,14 @@ class PMAlgorithm(MarlAlgorithm):
             x = x.repeat(self.vec_env.max_players, axis=0)
             return x
 
+        n_roles = self.vec_env.max_roles
         n_players = self.vec_env.max_players
+        n_games = len(self.vec_env.games)
+        assert n_games * n_players == len(self.vec_env.players)
+
         believed_other_rnn_states = torch.zeros(
             [self.n_agents, n_players, 2, self.policy_memory_units], dtype=torch.float32
         )
-
-        B = len(self.vec_env.players)
 
         with torch.no_grad():
 
@@ -693,17 +718,22 @@ class PMAlgorithm(MarlAlgorithm):
                         self.batch_player_obs[t] = duplicate_players(prev_obs)
                         # organise prediction predictions
                         player_obs_predictions = image_to_uint8(model_out["obs_prediction"].detach().cpu())
-                        self.batch_player_obs_predictions[t] = player_obs_predictions
+                        self.batch_player_obs_predictions[t] = swap_prediction_targets(player_obs_predictions)
 
                     if self.predicts_actions:
                         # again for actions...
                         player_action_predictions = model_out["action_prediction"].cpu().detach()
-                        self.batch_player_action_predictions[t] = player_action_predictions
+                        self.batch_player_action_predictions[t] = swap_prediction_targets(player_action_predictions)
 
                 if self.batch_player_role_predictions is not None:
                     # record role predictions
+                    # role_predictions come out as n_games*n_players, n_players, n_roles,
+                    # we reshape it to [n_games, n_players, n_player, n_roles] then swap the n_players axis
+                    # if we index in as [n, i, j, r] then we are making it so that the row [n, :, ...] records
+                    # all other players predictions of this players role. (which are the targets we need)
+                    # record role predictions
                     player_role_predictions = model_out["role_prediction"].detach().cpu().numpy()
-                    self.batch_player_role_predictions[t] = player_role_predictions
+                    self.batch_player_role_predictions[t] = swap_prediction_targets(player_role_predictions)
 
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
