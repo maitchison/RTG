@@ -141,7 +141,7 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
         with torch.no_grad():
             roles = vec_env.get_roles()
             model_output, new_rnn_states = algorithm.forward(env_obs, rnn_states, roles)
-            rnn_states[:] = new_rnn_states[:]
+            rnn_states[:] = new_rnn_states
 
             log_policy = model_output["log_policy"].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(log_policy)

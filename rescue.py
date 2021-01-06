@@ -175,7 +175,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     DEAD_COLOR = np.asarray([0, 0, 0], dtype=np.uint8)
 
     ID_COLOR = np.asarray(
-        [np.asarray(plt.cm.get_cmap("tab20")(i)[:3])*255 for i in range(20)]
+        # we mute the id colors a little so the team color stands out more
+        [np.asarray(plt.cm.get_cmap("tab20")(i)[:3])*200 for i in range(20)]
     , dtype=np.uint8)
 
     TEAM_COLOR = np.asarray([
@@ -423,10 +424,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         general_is_closer_to_edge = False
         for player in self.living_players:
 
-            if self.scenario.battle_royale:
-                # no general in this mode.
-                continue
-
             if player.action != ACTION_ACT:
                 continue
 
@@ -439,7 +436,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self._needs_repaint = True
                 continue
 
-            if general_has_been_moved:
+            # disable general moving if they have been moved, or if battle royale is enabled
+            if general_has_been_moved or self.scenario.battle_royale:
                 continue
 
             # move general by one tile if we are standing next to them
@@ -666,23 +664,20 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :return:
         """
 
+        team_color = self.TEAM_COLOR[player.team] if team_colors else self.NEUTRAL_COLOR
+        id_color = player.id_color
+
         if player.is_dead:
-            if team_colors:
-                inner_color = (self.TEAM_COLOR[player.team] // 3 + self.DEAD_COLOR // 2)
-            else:
-                inner_color = self.DEAD_COLOR
-        else:
-            inner_color = self.TEAM_COLOR[player.team] if team_colors else self.NEUTRAL_COLOR
+            id_color = id_color // 3
+            team_color = team_color // 3
 
         if highlight:
-            inner_color = inner_color//2 + self.HIGHLIGHT_COLOR //2
-
-        ring_color = player.id_color
+            id_color = id_color // 2 + self.HIGHLIGHT_COLOR //2
 
         draw_x, draw_y = (player.x+padding[0]) * CELL_SIZE + 1, (player.y+padding[1]) * CELL_SIZE + 1
 
-        obs[draw_x - 1:draw_x + 2, draw_y - 1:draw_y + 2] = inner_color
-        obs[draw_x - 1:draw_x + 2, draw_y] = ring_color
+        obs[draw_x - 1:draw_x + 2, draw_y - 1:draw_y + 2] = id_color
+        obs[draw_x, draw_y] = team_color
 
         if player.action in SHOOT_ACTIONS:
             index = player.action - ACTION_SHOOT_UP
@@ -855,10 +850,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 obs[:, -pixels_to_blank_out:] = color
 
             blank_edges(obs, cells_to_blank_out * CELL_SIZE, [32, 32, 32])
-            if self.scenario.local_team_colors:
-                blank_edges(obs, 3, observer.team_color // 2)
-            else:
-                blank_edges(obs, 3, [128, 128, 128])
+            blank_edges(obs, 3, [128, 128, 128])
             obs[3:-3, :3] = observer.id_color
 
             blank_edges(obs, 1, 0)

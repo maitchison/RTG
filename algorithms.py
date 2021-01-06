@@ -224,7 +224,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.deception_bonus = deception_bonus
 
         self.intrinsic_reward_propagation = False
-        self.normalize_intrinsic_rewards = False
+        self.normalize_intrinsic_rewards = True
         self.extrinsic_reward_scale = 1.0
         self.intrinsic_reward_scale = 1.0
         self.log_folder = "."
@@ -323,6 +323,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.ext_final_value_estimate = np.zeros([A], dtype=np.float32)
         self.int_final_value_estimate = np.zeros([A], dtype=np.float32)
 
+        self.ems_norm = 0
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
 
         if utils.try_cast_to_int(micro_batch_size) is not None:
@@ -498,7 +499,7 @@ class PMAlgorithm(MarlAlgorithm):
         :param actions: Actions for each agent
             Tensor of dims [B] of type long
 
-        :return: The bonus for each player summed over other players, tensor of dims [B],
+        :return: The bonus for each player summed over otpher players, tensor of dims [B],
         """
 
         device = self.deception_model.device
@@ -625,7 +626,6 @@ class PMAlgorithm(MarlAlgorithm):
                 x: [n_games*n_players, *data_shape]
                 returns [n_games*n_players, n_players, *data_shape]
             """
-            # todo: make sure this works... stub:
             data_shape = x.shape[1:]
             x = x.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *data_shape)
             x = x.repeat(self.vec_env.max_players, axis=0)
@@ -1138,7 +1138,7 @@ class PMAlgorithm(MarlAlgorithm):
             :param role_predictions: Prediction of role for each player
                 i.e, at timestep N, player B's prediction about n_players role.
                 log probabilities for each player, float32 tensor of dims [N, B, n_players, n_roles]
-            :param role_targets: true roles, int64 tensor of dims [N, B]
+            :param role_targets: true roles, int64 tensor of dims [N, B, n_players]
             :param filter: (optional) boolean tensor indicating which items in batch to use of dims [N, B]
             :return:
             """
@@ -1569,7 +1569,7 @@ def test_calculate_returns():
 def filter_visible(x, visible):
     """
     Note: once filtered reshaping back to [N, B] is no longer viable (as different N's have different B's)
-    :param x: Input is in form [N, B, n_players, *] with players in public order
+    :param x: Input is in form [N, B, n_players, *]
     :param visible: [N, B, n_players] indicating if player is visible
     :return: flatened filtered results (N*B*n_players <filtered>, *]
     """

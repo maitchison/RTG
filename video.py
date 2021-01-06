@@ -43,6 +43,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     """
 
     scale = 8
+    n_roles = 3
 
     # make a new environment so we don't mess the settings up on the one used for training.
     # it also makes sure that results from the video are not included in the log
@@ -58,9 +59,16 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     # work out our height
     height, width, channels = frame.shape
     orig_height, orig_width = height, width
+
     if algorithm.uses_deception_model:
-        height = height + n_players * obs_size
+        # make room for role predictions
         width = max(width, (n_players * 2 + 1) * obs_size)
+        # make room for other predictions
+        if algorithm.predicts_observations:
+            height = height + n_players * obs_size
+        if algorithm.predicts_actions:
+            height = height + n_players * 1 * (n_roles+1) + 8
+
     scaled_width = (width * scale) // 4 * 4  # make sure these are multiples of 4
     scaled_height = (height * scale) // 4 * 4
 
@@ -73,8 +81,12 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
     rnn_state = algorithm.get_initial_rnn_state(len(env.players))
 
+    last_outcome = ""
+
     # play the game...
-    while env.round_outcome == "":
+    while last_outcome == "":
+
+        last_outcome = env.round_outcome
 
         with torch.no_grad():
             roles = vec_env.get_roles()
@@ -136,13 +148,13 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             action_prediction_predictions = np.exp(model_output["action_backwards_prediction"].detach().cpu().numpy())
             true_policy = np.exp(model_output["role_log_policy"].detach().cpu().numpy())
 
-            _, _, n_roles, n_actions = action_predictions.shape
+            _, _, _, n_actions = action_predictions.shape
 
             # these come out as n_players, n_players, n_roles, n_actions ?
 
             # true policy
             for i in range(n_players):
-                dx = 0 * (n_actions+1)
+                dx = 0 * (n_actions+1) + 4
                 dy = orig_height + i * (n_roles+1)
                 for r in range(n_roles):
                     # i's belief about j's actions if they were role r
@@ -153,7 +165,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             # predicted policy
             for i in range(n_players):
                 for j in range(n_players):
-                    dx = (j+1) * (n_actions+1)
+                    dx = (j+1) * (n_actions+1) + 8
                     dy = orig_height + i * (n_roles+1)
                     for r in range(n_roles):
                         # i's belief about j's actions if they were role r
@@ -164,7 +176,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             # predictions of other players predictions of our own policy
             for i in range(n_players):
                 for j in range(n_players):
-                    dx = (n_players+j+2) * (n_actions+1)
+                    dx = (n_players+(j+1)) * (n_actions+1) + 12
                     dy = orig_height + i * (n_roles+1)
                     for r in range(n_roles):
                         # i's belief about j's actions if they were role r
@@ -186,7 +198,8 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         video_out.write(frame)
 
         # step environment
-        env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
+        if last_outcome == "":
+            env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
 
     video_out.release()
 

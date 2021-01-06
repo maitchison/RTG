@@ -51,7 +51,6 @@ class RescueTheGeneralScenario():
             "timeout_mean": 500,
             "timeout_rnd": 0.1,                 # a little variation on the timeouts so games are out of sync
             "starting_locations": "together",   # players start together, rather than randomly spread out.
-            "randomize_ids": True,              # public id's rather than teams are randomized
             "local_team_colors": True,          # show team colors on local observation
             "rounds": 4,                        # number of rounds before reset
         },
@@ -76,7 +75,6 @@ class RescueTheGeneralScenario():
             "map_height": 48,
             "team_counts": (2, 2, 0),
             "n_trees": 10,
-            "randomize_ids": False,             # makes life simpler, see if sepecialization develops
             "reward_per_tree": 1,
             "hidden_roles": "none",
             "max_view_distance": 5,             # makes thins a bit faster
@@ -87,12 +85,11 @@ class RescueTheGeneralScenario():
         },
 
         "r2g2_rp": {
-            "description": "Smaller version of r2g2 with randomized ids, used for testing role prediction",
+            "description": "Smaller version of r2g2, used for testing role prediction",
             "map_width": 24,
             "map_height": 24,
             "team_counts": (2, 2, 0),
             "n_trees": 10,
-            "randomize_ids": True,
             "reward_per_tree": 1,
             "hidden_roles": "none",
             "max_view_distance": 5,  # makes thins a bit faster
@@ -103,12 +100,11 @@ class RescueTheGeneralScenario():
         },
 
         "r2g2_hrp": {
-            "description": "Smaller version of r2g2 with randomized ids, used for testing role prediction with hidden roles",
+            "description": "Smaller version of r2g2, used for testing role prediction with hidden roles",
             "map_width": 24,
             "map_height": 24,
             "team_counts": (2, 2, 0),
             "n_trees": 10,
-            "randomize_ids": True,
             "reward_per_tree": 1,
             "hidden_roles": "default",
             "max_view_distance": 5,  # makes thins a bit faster
@@ -124,7 +120,6 @@ class RescueTheGeneralScenario():
             "map_height": 48,
             "team_counts": (2, 3, 0),
             "n_trees": 10,
-            "randomize_ids": False,  # makes life simpler, see if sepecialization develops
             "reward_per_tree": 1,
             "hidden_roles": "none",
             "max_view_distance": 5,  # makes thins a bit faster
@@ -140,7 +135,6 @@ class RescueTheGeneralScenario():
             "map_height": 48,
             "team_counts": (2, 4, 0),
             "n_trees": 10,
-            "randomize_ids": False,  # makes life simpler, see if sepecialization develops
             "reward_per_tree": 1,
             "hidden_roles": "none",
             "max_view_distance": 5,  # makes thins a bit faster
@@ -156,7 +150,6 @@ class RescueTheGeneralScenario():
             "map_height": 32,
             "team_counts": (1, 3, 0),
             "n_trees": 9,
-            "randomize_ids": True,
             "reward_per_tree": 1,
             "hidden_roles": "all",
             "max_view_distance": 5,            # makes thins a bit faster
@@ -353,7 +346,6 @@ class RescueTheGeneralScenario():
         self.bonus_actions_delay = 10
         self.enable_signals = False
         self.starting_locations = "together"
-        self.randomize_ids = True # randomize the starting ID colors each reset
         # enables team colors on agents local observation. This can be useful if one policy plays all 3 teams,
         # however it could cause problems if you want to infer what a different team would have done in that situation
         self.local_team_colors = True
