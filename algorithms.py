@@ -104,6 +104,7 @@ class PMAlgorithm(MarlAlgorithm):
             micro_batch_size: Union[str, int] = "auto",
             # the type of prediction to use for deception.  Observation is much slower to process
             prediction_mode="off",   # off|action|observation|both
+            split_policy=False,         # uses separate models for each role (slower)
 
             # ------ long list of parameters to algorithm ------------
             n_steps=32,
@@ -173,7 +174,10 @@ class PMAlgorithm(MarlAlgorithm):
         else:
             data_parallel = False
 
-        model = PolicyModel(vec_env, device=device, memory_units=policy_memory_units, model=model_name,
+        self.split_policy = split_policy
+        policy_fn = SplitPolicyModel if self.split_policy else PolicyModel
+
+        model = policy_fn(vec_env, device=device, memory_units=policy_memory_units, model=model_name,
                             data_parallel=data_parallel, out_features=policy_memory_units,
                             lstm_mode=lstm_mode)
 
@@ -441,11 +445,11 @@ class PMAlgorithm(MarlAlgorithm):
 
         # working this out will be complex
         # maybe can assume that 12GB gives us 4096 with AMP and 2048 without
-        if type(self.policy_model._encoder) is DefaultEncoder:
+        if self.policy_model.encoder_type is DefaultEncoder:
             micro_batch_size = 4096
-        elif type(self.policy_model._encoder) is LargeEncoder:
+        elif self.policy_model.encoder_type is LargeEncoder:
             micro_batch_size = 4096
-        elif type(self.policy_model._encoder) is FastEncoder:
+        elif self.policy_model.encoder_type is FastEncoder:
             micro_batch_size = 8192
         else:
             micro_batch_size = 1024 # just a guess

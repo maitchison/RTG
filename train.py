@@ -57,6 +57,7 @@ class Config():
         self.save_model = str()
         self.prediction_mode = str()
         self.deception_bonus = tuple()
+        self.split_policy = bool()
 
         self.verbose = int()
 
@@ -334,11 +335,17 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
 
     algo_params["model_name"] = model_name or config.model
 
-    algorithm = PMAlgorithm(vec_env, device=config.device, amp=config.amp, export_rollout=config.export_rollout,
-                            micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
-                            prediction_mode=config.prediction_mode,
-                            deception_bonus=config.deception_bonus,
-                            verbose=config.verbose >= 2, **algo_params)
+    algorithm = PMAlgorithm(
+        vec_env,
+        device=config.device,
+        amp=config.amp,
+        export_rollout=config.export_rollout,
+        micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
+        prediction_mode=config.prediction_mode,
+        deception_bonus=config.deception_bonus,
+        split_policy=config.split_policy,
+        verbose=config.verbose >= 2, **algo_params
+    )
 
     algorithm.log_folder = config.log_folder
 
@@ -651,7 +658,8 @@ def main():
     parser.add_argument('--micro_batch_size', type=str, default="auto",
                         help="Number of samples per micro-batch, reduce if GPU ram is exceeded.")
 
-
+    parser.add_argument('--split_policy', type=str2bool, nargs='?', const=True, default=False,
+                        help="Uses separate models for each role (slower).")
 
     args = parser.parse_args()
     config.setup(args)

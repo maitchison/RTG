@@ -317,7 +317,7 @@ class BaseModel(nn.Module):
         self.lstm = torch.nn.LSTM(input_size=self.encoder_features, hidden_size=self.memory_units, num_layers=1,
                                   batch_first=False, dropout=0)
 
-        self._encoder = self.encoder # the encoder before and data_parallel was applied
+        self.encoder_type = type(self.encoder) # the type of encoder before and data_parallel was applied
         if data_parallel:
             # enable multi gpu :)
             print(f" -enabling {utils.Color.OKGREEN}Multi-GPU{utils.Color.ENDC} support")
@@ -583,7 +583,6 @@ class DeceptionModel(BaseModel):
 
         return result, new_rnn_states
 
-
 class PolicyModel(BaseModel):
 
     """
@@ -661,6 +660,7 @@ class PolicyModel(BaseModel):
             """
             Input is N, B, R, *shape
             """
+            # todo: make this vectorized?
             N, B, R, *shape = x.shape
             parts = []
             for n in range(N):
@@ -676,3 +676,88 @@ class PolicyModel(BaseModel):
             result['int_value'] = extract_roles(int_value, roles)
 
         return result, new_rnn_states
+
+class SplitPolicyModel(nn.Module):
+    """
+    Separate model for each role.
+    This is quite inefficient. A better solution would be to assign different models (or scripts) to the environment
+    directly. That way each observation is processed once (not once per model as is the case here).
+    """
+    def __init__(
+            self,
+            env: MultiAgentVecEnv,
+            device="cpu",
+            dtype=torch.float32,
+            memory_units=128,
+            out_features=128,
+            model="default",
+            data_parallel=False,
+            roles=3,    # number of policies / value_estimates to output
+            lstm_mode="residual",
+    ):
+
+        super().__init__()
+        self.n_roles = roles
+
+        self.models = [
+            PolicyModel(
+                env=env,
+                device=device,
+                dtype=dtype,
+                memory_units=memory_units,
+                out_features=out_features,
+                model=model,
+                data_parallel=data_parallel,
+                roles=roles,    # for compatability we have each model generate policies for all roles
+                lstm_mode=lstm_mode
+            ) for _ in range(self.n_roles)]
+
+        # this allows Module to pick up on the models
+        # it's a bit of a hack
+        assert roles == 3
+        self.model_0 = self.models[0]
+        self.model_1 = self.models[1]
+        self.model_2 = self.models[2]
+
+        # setup variables so as to look like a normal PolicyModel
+        self.input_dims = env.observation_space.shape
+        self.n_actions = env.action_space.n
+        self.device = device
+        self.dtype = dtype
+        self.lstm_mode = lstm_mode
+        self.n_agents = env.total_agents
+        self.n_players = env.max_players
+        self.obs_shape = env.observation_space.shape
+        self.memory_units = memory_units
+        self.encoder_output_features = self.models[0].encoder_output_features
+        self.encoder_features = self.models[0].encoder_features
+        self.encoder_type = self.models[0].encoder_type
+
+    def forward_sequence(self, obs, rnn_states, roles=None, terminals=None):
+
+        assert roles is not None, "split model requires roles to be specified at all times. "
+
+        new_rnn_states = torch.zeros_like(rnn_states)
+
+        result = {}
+
+
+        for team_id, model in enumerate(self.models):
+            # forward through model dedicated to this role
+            # ideally we'd filter, but that is not possible as one segment may contain multiple roles (i.e
+            # if it was reset half-way through
+            # because of this we are duplicating the work 3 times
+            results_part, rnn_states_part = model.forward_sequence(obs, rnn_states, roles, terminals)
+
+            mask = (roles == team_id)
+
+            for k, v in results_part.items():
+                if k not in result: result[k] = torch.zeros_like(v)
+                result[k][mask, ...] = v[mask, ...]
+
+            rnn_mask = roles[-1] == team_id # use role of final transition
+            new_rnn_states[rnn_mask] = rnn_states_part[rnn_mask]
+
+        return result, new_rnn_states
+
+
