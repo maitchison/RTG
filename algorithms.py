@@ -503,7 +503,7 @@ class PMAlgorithm(MarlAlgorithm):
         :param actions: Actions for each agent
             Tensor of dims [B] of type long
 
-        :return: The bonus for each player summed over otpher players, tensor of dims [B],
+        :return: The bonus for each player summed over other players, tensor of dims [B],
         """
 
         device = self.deception_model.device
@@ -607,6 +607,96 @@ class PMAlgorithm(MarlAlgorithm):
             actions=actions
         ), new_rnn_states
 
+    def _duplicate_players(self, x, n_players):
+        """ Returns a copy of data with players duplicated.
+            If input is
+
+            [A1, B1, C1, A2, B2, C2]
+
+            output will be
+
+            [[A1, B1, C1], [A1, B1, C1], [A1, B1, C1],
+             [A2, B2, C2], [A2, B2, C2], [A2, B2, C2]]
+
+            This means that each row contains all the required information about each other player in their game.
+
+            x: [n_games*n_players, *data_shape]
+            returns [n_games*n_players, n_players, *data_shape]
+        """
+        data_shape = x.shape[1:]
+        assert len(x) % n_players == 0
+        x = x.copy().reshape(len(x)//n_players, n_players, *data_shape)
+        x = x.repeat(n_players, axis=0)
+        return x
+
+
+    @profiler.record_function("calculate_deception")
+    def calculate_deception_bonus(self, model_out: dict, actions: np.ndarray, env: MultiAgentVecEnv,
+                                  believed_other_rnn_states=None, prev_terminals=None):
+        """
+        Calculate deception bonus for all players
+        :param model_out:
+        :param actions:
+        :param env:
+        :param believed_other_rnn_states:
+        :param prev_terminals:
+        :return: np array of dims [B] containing deception bonus for each agent
+        """
+
+        B = len(actions) # number of agents in batch.
+        n_players = env.max_players
+        deception_bonus = np.zeros([B], dtype=np.float)
+        roles = env.get_roles()
+
+        # generate a mask that assigns bonus only for deceiving enemy players (or players thought to be
+        # enemies.
+
+        bonus_mask = np.ones((B, n_players), dtype=np.float32)
+        indexes = np.asarray([player.index for player in env.players])
+
+        # we don't try and deceive ourselves
+        bonus_mask[range(len(bonus_mask)), indexes] = 0
+        # don't get a bonus for deceiving players on our own team
+        # note, this leaks a little team information, but just during training...
+        # to fix this we'd need to mask the mask with who knows who's identities
+        same_team_mask = roles[:, np.newaxis] == self._duplicate_players(env.get_roles(), n_players)
+        bonus_mask *= (1 - same_team_mask)
+        bonus_mask = torch.from_numpy(bonus_mask)
+
+        # there are two ways of doing this, the predict actions method and the predict observations method
+        if self.predicts_actions:
+            db_actions = self.calculate_deception_bonus_from_actions(
+                player_action_prediction_predictions=model_out["action_backwards_prediction"],
+                prior_role_belief=model_out["role_backwards_prediction"],
+                true_role=torch.from_numpy(roles),
+                mask=bonus_mask,  # for the moment don't mask non-visible players
+                actions=torch.from_numpy(actions)
+            )
+            deception_bonus += db_actions.cpu().detach().numpy()
+
+        if self.predicts_observations:
+            expanded_terminals = torch.from_numpy(
+                self._duplicate_players(prev_terminals, n_players)).to(device=self.policy_model.device)
+            obs_backwards_predictions = image_to_uint8(model_out["obs_backwards_prediction"])
+            db_observations, new_believed_other_rnn_states = self.calculate_deception_bonus_from_observations(
+                player_observation_prediction_predictions=obs_backwards_predictions,
+                prior_role_belief=model_out["role_backwards_prediction"],
+                believed_policy_rnn_states=believed_other_rnn_states,
+                terminals=expanded_terminals,
+                true_role=torch.from_numpy(roles),
+                mask=bonus_mask,  # for the moment don't mask non-visible players
+                actions=torch.from_numpy(actions)
+            )
+            believed_other_rnn_states[:] = new_believed_other_rnn_states[:] # copy accross new state
+            deception_bonus += db_observations.cpu().detach().numpy()
+
+        if self.deception_bonus is float:
+            deception_bonus = deception_bonus * self.deception_bonus
+        else:
+            deception_bonus = deception_bonus * np.asarray([self.deception_bonus[r] for r in roles])
+
+        return deception_bonus
+
     @profiler.record_function("generate_rollout")
     def generate_rollout(self):
         """
@@ -634,28 +724,6 @@ class PMAlgorithm(MarlAlgorithm):
             else:
                 x = x.swapaxes(1, 2)
             x = x.reshape(n_games * n_players, n_players, *data_shape)
-            return x
-
-
-        def duplicate_players(x):
-            """ Returns a copy of data with players duplicated.
-                If input is
-
-                [A1, B1, C1, A2, B2, C2]
-
-                output will be
-
-                [[A1, B1, C1], [A1, B1, C1], [A1, B1, C1],
-                 [A2, B2, C2], [A2, B2, C2], [A2, B2, C2]]
-
-                This means that each row contains all the required information about each other player in their game.
-
-                x: [n_games*n_players, *data_shape]
-                returns [n_games*n_players, n_players, *data_shape]
-            """
-            data_shape = x.shape[1:]
-            x = x.copy().reshape(len(self.vec_env.games), self.vec_env.max_players, *data_shape)
-            x = x.repeat(self.vec_env.max_players, axis=0)
             return x
 
         n_roles = self.vec_env.max_roles
@@ -706,16 +774,16 @@ class PMAlgorithm(MarlAlgorithm):
                     players_visible = np.asarray(players_visible)
 
                     # role prediction
-                    player_roles = duplicate_players(self.vec_env.get_roles())  # batch_roles is [A, n_players]
+                    player_roles = self._duplicate_players(self.vec_env.get_roles(), n_players)  # batch_roles is [A, n_players]
                     self.batch_player_roles[t] = player_roles
-                    self.batch_player_policy[t] = duplicate_players(log_policy)
-                    self.batch_player_role_policy[t] = duplicate_players(role_log_policies)
-                    self.batch_player_terminals[t] = duplicate_players(prev_terminals)
+                    self.batch_player_policy[t] = self._duplicate_players(log_policy, n_players)
+                    self.batch_player_role_policy[t] = self._duplicate_players(role_log_policies, n_players)
+                    self.batch_player_terminals[t] = self._duplicate_players(prev_terminals, n_players)
                     self.batch_player_visible[t] = players_visible
 
                     if self.predicts_observations:
                         # predictions of other players observations
-                        self.batch_player_obs[t] = duplicate_players(prev_obs)
+                        self.batch_player_obs[t] = self._duplicate_players(prev_obs, n_players)
                         # organise prediction predictions
                         player_obs_predictions = image_to_uint8(model_out["obs_prediction"].detach().cpu())
                         self.batch_player_obs_predictions[t] = swap_prediction_targets(player_obs_predictions)
@@ -747,56 +815,11 @@ class PMAlgorithm(MarlAlgorithm):
                 int_rewards = np.zeros_like(ext_rewards)
 
                 if self.uses_deception_model:
-
-                    # generate a mask that assigns bonus only for deceiving enemy players (or players thought to be
-                    # enemies.
-
-                    bonus_mask = np.ones((len(int_rewards), n_players), dtype=np.float32)
-                    indexes = np.asarray([player.index for player in self.vec_env.players])
-
-                    # we don't try and deceive ourselves
-                    bonus_mask[range(len(bonus_mask)), indexes] = 0
-                    # don't get a bonus for deceiving players on our own team
-                    # note, this leaks a little team information, but just during training...
-                    # to fix this we'd need to mask the mask with who knows who's identities
-                    same_team_mask = roles[:, np.newaxis] == duplicate_players(self.vec_env.get_roles())
-                    bonus_mask *= (1-same_team_mask)
-                    bonus_mask = torch.from_numpy(bonus_mask)
-
-                    # there are two ways of doing this, the predict actions method and the predict observations method
-                    deception_bonus = np.zeros_like(int_rewards)
-
-                    if self.predicts_actions:
-                        db_actions = self.calculate_deception_bonus_from_actions(
-                            player_action_prediction_predictions=model_out["action_backwards_prediction"],
-                            prior_role_belief=model_out["role_backwards_prediction"],
-                            true_role=torch.from_numpy(roles),
-                            mask=bonus_mask,           # for the moment don't mask non-visible players
-                            actions=torch.from_numpy(actions)
-                        )
-                        deception_bonus += db_actions.cpu().detach().numpy()
-
-                    if self.predicts_observations:
-                        expanded_terminals = torch.from_numpy(
-                            duplicate_players(prev_terminals)).to(device=self.policy_model.device)
-                        obs_backwards_predictions = image_to_uint8(model_out["obs_backwards_prediction"])
-                        db_observations, believed_other_rnn_states = self.calculate_deception_bonus_from_observations(
-                            player_observation_prediction_predictions=obs_backwards_predictions,
-                            prior_role_belief=model_out["role_backwards_prediction"],
-                            believed_policy_rnn_states=believed_other_rnn_states,
-                            terminals=expanded_terminals,
-                            true_role=torch.from_numpy(roles),
-                            mask=bonus_mask,           # for the moment don't mask non-visible players
-                            actions=torch.from_numpy(actions)
-                        )
-                        deception_bonus += db_observations.cpu().detach().numpy()
-
-                    if self.deception_bonus is float:
-                        deception_bonus = deception_bonus * self.deception_bonus
-                    else:
-                        deception_bonus = deception_bonus * np.asarray([self.deception_bonus[r] for r in roles])
-
-                    int_rewards += deception_bonus
+                    int_rewards += self.calculate_deception_bonus(
+                        model_out, actions, self.vec_env,
+                        believed_other_rnn_states if self.predicts_observations else None,
+                        prev_terminals if self.predicts_observations else None
+                    )
 
                 # save raw rewards for monitoring the agents progress
                 raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],

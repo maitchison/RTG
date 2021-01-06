@@ -12,7 +12,7 @@ from train import make_env
 from algorithms import PMAlgorithm
 from utils import draw_pixel
 
-def _display_role_prediction(frame: np.ndarray, dx: int, dy: int, raw_predictions, env:RescueTheGeneralEnv):
+def display_role_prediction(frame: np.ndarray, dx: int, dy: int, raw_predictions, env:RescueTheGeneralEnv):
     """
     :param dx: draw location
     :param dy: draw location
@@ -36,6 +36,41 @@ def _display_role_prediction(frame: np.ndarray, dx: int, dy: int, raw_prediction
         for j in range(n_players):
             c = [int(x * 255) for x in role_predictions[i, j]]
             draw_pixel(frame, dy + (i + 1) * block_size, dx + (j + 1) * block_size, c=c, size=block_size)
+
+def display_policy(frame: np.ndarray, dx:int, dy:int, policy: np.ndarray):
+    """
+    :param frame:
+    :param dx:
+    :param dy:
+    :param policy: nd array of dims [n_roles, n_actions] as probability distribution (0..1)
+    :return:
+    """
+    n_roles, n_actions = policy.shape
+
+    base_colors = np.asarray([
+        (0.2, 0.2, 0.2),  # no-op
+        (0.1, 0.1, 0.1),  # move
+        (0.1, 0.1, 0.1),  # move
+        (0.1, 0.1, 0.1),  # move
+        (0.1, 0.1, 0.1),  # move
+        (0.2, 0.2, 0.2),  # shoot
+        (0.2, 0.2, 0.2),  # shoot
+        (0.2, 0.2, 0.2),  # shoot
+        (0.2, 0.2, 0.2),  # shoot
+        (0.1, 0.1, 0.1),  # act
+    ])
+
+    for r in range(n_roles):
+        on_color = np.asarray((0.0, 0.0, 0.0))
+        on_color[r] = 1.0
+        for a in range(n_actions):
+            weight = policy[r, a]
+            c = weight * on_color
+            frame[dy + r, dx + a] = (c*255).astype(np.uint8)
+
+    for a in range(n_actions):
+        # show markers at bottom indicating what is what
+        frame[dy + n_roles, dx + a] = (base_colors[a] * 255).astype(np.uint8)
 
 def export_video(filename, algorithm: PMAlgorithm, scenario):
     """
@@ -98,6 +133,14 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             log_policy = model_output["log_policy"].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(log_policy)
 
+            # note: note sure, these bonus indicators could be off by one frame?
+            if algorithm.uses_deception_model and not algorithm.predicts_observations:
+                # show bonus, only works on actions at the moment (but that's fine I'm dropping observations)
+                bonus = algorithm.calculate_deception_bonus(model_output, actions, vec_env)
+            else:
+                bonus = None
+
+
         # generate frames from global perspective
         frame = env.render("rgb_array")
 
@@ -108,12 +151,12 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         # add additional parts based on the output of the model
         if "role_prediction" in model_output:
             role_predictions = model_output["role_prediction"].detach().cpu().numpy()
-            _display_role_prediction(frame, orig_width, 10, role_predictions, env)
+            display_role_prediction(frame, orig_width, 10, role_predictions, env)
 
         if "role_backwards_prediction" in model_output:
             backwards_role_predictions = model_output["role_backwards_prediction"].detach().cpu().numpy()
             backwards_role_predictions_transposed = backwards_role_predictions.swapaxes(0, 1)
-            _display_role_prediction(frame, orig_width + (n_players+2) * 8, 10, backwards_role_predictions_transposed, env)
+            display_role_prediction(frame, orig_width + (n_players + 2) * 8, 10, backwards_role_predictions_transposed, env)
 
         if "obs_prediction" in model_output:
             # ground truth
@@ -148,7 +191,6 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             action_predictions = np.exp(model_output["action_prediction"].detach().cpu().numpy())
             action_prediction_predictions = np.exp(model_output["action_backwards_prediction"].detach().cpu().numpy())
             true_policy = np.exp(model_output["role_log_policy"].detach().cpu().numpy())
-
             _, _, _, n_actions = action_predictions.shape
 
             # these come out as n_players, n_players, n_roles, n_actions ?
@@ -157,34 +199,38 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             for i in range(n_players):
                 dx = 0 * (n_actions+1) + 4
                 dy = orig_height + i * (n_roles+1)
-                for r in range(n_roles):
-                    # i's belief about j's actions if they were role r
-                    for a in range(n_actions):
-                        frame[dy + r, dx + a, :] = 64
-                        frame[dy + r, dx + a, r] = int(255*true_policy[i, r, a])
+                display_policy(frame, dx, dy, true_policy[i])
 
             # predicted policy
             for i in range(n_players):
                 for j in range(n_players):
                     dx = (j+1) * (n_actions+1) + 8
                     dy = orig_height + i * (n_roles+1)
-                    for r in range(n_roles):
-                        # i's belief about j's actions if they were role r
-                        for a in range(n_actions):
-                            frame[dy + r, dx + a, :] = 64
-                            frame[dy + r, dx + a, r] = int(255*action_predictions[i, j, r, a])
+                    display_policy(frame, dx, dy, action_predictions[i, j])
 
             # predictions of other players predictions of our own policy
             for i in range(n_players):
                 for j in range(n_players):
                     dx = (n_players+(j+1)) * (n_actions+1) + 12
                     dy = orig_height + i * (n_roles+1)
-                    for r in range(n_roles):
-                        # i's belief about j's actions if they were role r
-                        for a in range(n_actions):
-                            frame[dy + r, dx + a, :] = 64
-                            frame[dy + r, dx + a, r] = int(255*action_prediction_predictions[j, i, r, a])
+                    display_policy(frame, dx, dy, action_prediction_predictions[i, j])
 
+        # add deception bonus indicators (on top of role prediction)
+        if bonus is not None:
+            for i in range(n_players):
+                dx = orig_width + 3
+                dy = 10 + (i+1) * 8 + 3
+
+                factor = bonus[i]
+                if factor > 0:
+                    c = np.asarray((factor, factor / 10, 0))
+                else:
+                    c = np.asarray((0, factor / 10, factor))
+
+                factor = abs(bonus[i])
+                c = np.clip(c * 255, 0, 255).astype(np.uint8)
+                # stub:
+                frame[dy-1:dy+1, dx-1:dx+1] = c
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
