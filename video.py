@@ -54,9 +54,6 @@ def display_policy(frame: np.ndarray, dx:int, dy:int, policy: np.ndarray):
         (0.1, 0.1, 0.1),  # move
         (0.1, 0.1, 0.1),  # move
         (0.2, 0.2, 0.2),  # shoot
-        (0.2, 0.2, 0.2),  # shoot
-        (0.2, 0.2, 0.2),  # shoot
-        (0.2, 0.2, 0.2),  # shoot
         (0.1, 0.1, 0.1),  # act
     ])
 

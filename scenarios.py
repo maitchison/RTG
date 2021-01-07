@@ -156,9 +156,9 @@ class RescueTheGeneralScenario():
                                                # to harvest all the trees
             "max_view_distance": 5,            # makes thins a bit faster
             "team_view_distance": (5, 5, 5),   # no bonus vision for red
-            "team_shoot_range": (4, 3, 3),     # green shoots slower and has less range
+            "team_shoot_range": (3, 0, 0),
             "starting_locations": "together",  # random start locations
-            "team_shoot_timeout": (2, 5, 5),
+            "team_shoot_timeout": (10, 0, 0),
             "battle_royale": True,             # removes general, and ends game if all green players are killed, or
                                                # if green eliminates red players and harvests all trees
             "points_for_kill": np.asarray((    # loose a point for self kill, gain one for other team kill

@@ -32,6 +32,7 @@ import time
 
 from marl_env import MultiAgentEnv
 from scenarios import RescueTheGeneralScenario
+from utils import draw_pixel, draw_line
 
 from typing import Tuple, List
 
@@ -44,17 +45,13 @@ ACTION_MOVE_UP = 1
 ACTION_MOVE_DOWN = 2
 ACTION_MOVE_LEFT = 3
 ACTION_MOVE_RIGHT = 4
-ACTION_SHOOT_UP = 5
-ACTION_SHOOT_DOWN = 6
-ACTION_SHOOT_LEFT = 7
-ACTION_SHOOT_RIGHT = 8
-ACTION_ACT = 9
-ACTION_SIGNAL_UP = 10
-ACTION_SIGNAL_DOWN = 11
-ACTION_SIGNAL_LEFT = 12
-ACTION_SIGNAL_RIGHT = 13
+ACTION_SHOOT = 5
+ACTION_ACT = 6
+ACTION_SIGNAL_UP = 7
+ACTION_SIGNAL_DOWN = 8
+ACTION_SIGNAL_LEFT = 9
+ACTION_SIGNAL_RIGHT = 10
 
-SHOOT_ACTIONS = {ACTION_SHOOT_UP, ACTION_SHOOT_DOWN, ACTION_SHOOT_LEFT, ACTION_SHOOT_RIGHT}
 SIGNAL_ACTIONS = {ACTION_SIGNAL_UP, ACTION_SIGNAL_DOWN, ACTION_SIGNAL_LEFT, ACTION_SIGNAL_RIGHT}
 MOVE_ACTIONS = {ACTION_MOVE_UP, ACTION_MOVE_DOWN, ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT}
 
@@ -87,6 +84,10 @@ class RTG_Player():
         return self.health <= 0
 
     @property
+    def pos(self):
+        return (self.x, self.y)
+
+    @property
     def is_alive(self):
         return not self.is_dead
 
@@ -116,7 +117,7 @@ class RTG_Player():
         Returns if given co-ordinates are within vision of the given player or not.
         """
         view_distance = view_distance or self.view_distance
-        return max(abs(self.x - x), abs(self.y - y)) <= view_distance
+        return max_distance(*self.pos, x, y) <= view_distance
 
     def damage(self, damage):
         """
@@ -262,6 +263,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_general_hidden = np.zeros((3,), dtype=np.int)  # which teams stood ontop of general
         self.stats_tree_harvested = np.zeros((3,), dtype=np.int)  # which teams harvested trees
 
+        self.shooting_lines = []
+
         self.stats_actions = np.zeros((3, self.action_space.n), dtype=np.int)
 
         self.observation_space = gym.spaces.Box(
@@ -319,6 +322,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         assert len(actions) == self.n_players, f"{self.name}: Invalid number of players"
         assert self.round_outcome == "", f"{self.name}: Game has concluded with result {self.round_outcome}, reset must be called."
 
+        self.shooting_lines = []
+
         green_tree_harvest_counter = 0
         team_rewards = np.zeros([3], dtype=np.float)
         team_players_alive = np.zeros([3], dtype=np.int)
@@ -336,7 +341,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
             player.action = ACTION_NOOP if player.is_dead else action
 
-            if player.action in SHOOT_ACTIONS and not player.can_shoot:
+            if player.action == ACTION_SHOOT and not player.can_shoot:
                 player.action = ACTION_NOOP
 
         # count actions
@@ -361,58 +366,67 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # combat still get to shoot this round
         for player in self.living_players:
 
-            if player.action not in SHOOT_ACTIONS:
+            if player.action != ACTION_SHOOT:
                 continue
-
-            index = player.action - ACTION_SHOOT_UP
-            x = player.x
-            y = player.y
 
             player.turns_until_we_can_shoot = player.shooting_timeout
 
-            for _ in range(player.shoot_range):
-                # check location
+            # look for a target to shoot, this will update so dead players can not be shot twice.
+            potential_targets = []
+            for target in self.living_players:
+                # must be not us, not known to be on our team, and living
+                if target == player:
+                    continue
+                if self.can_see_role(player, target) and player.team == target.team:
+                    continue
+                distance = max_distance(*player.pos, *target.pos)
+                if distance <= player.shoot_range:
+                    potential_targets.append((distance, -target.index, target))
 
-                x += self.DX[index]
-                y += self.DY[index]
+            if len(potential_targets) == 0:
 
-                if x < 0 or x >= self.scenario.map_width or y < 0 or y >= self.scenario.map_height:
-                    break
+                general_distance = max_distance(*player.pos, *self.general_location)
 
-                # check other players
-                other_player = self.player_at_pos(x, y)
-                if other_player is not None:
-                    # a soldier was hit...
-                    other_player.damage(DAMAGE_PER_SHOT)
-                    if other_player.is_dead:
-                        # we killed the target player
-                        self.stats_deaths[other_player.team] += 1
-                        self.stats_kills[player.team] += 1
-                        team_deaths[other_player.team] += 1
-
-                        if player.team == other_player.team:
-                            team_self_kills[player.team] += 1
-
-                        if player.team == self.TEAM_RED and other_player.team == self.TEAM_BLUE:
-                            red_team_good_kills += 1
-                        elif player.team == self.TEAM_BLUE and other_player.team == self.TEAM_RED:
-                            blue_team_good_kills += 1
-
-                        self.player_lookup[other_player.x, other_player.y] = -1 # remove player from lookup
-
-                        # issue points for kills
-                        team_rewards[player.team] += self.scenario.points_for_kill[player.team, other_player.team]
-
-                    self.stats_player_hit[player.team, other_player.team] += 1
-                    break
-
-                # check general
-                if not self.scenario.battle_royale and ((x, y) == self.general_location):
+                # no targets, check for general
+                if not self.scenario.battle_royale and general_distance <= player.shoot_range and player.team != self.TEAM_BLUE:
                     # general was hit
                     self.general_health -= DAMAGE_PER_SHOT
                     self.stats_general_shot[player.team] += 1
                     self._needs_repaint = True
-                    break
+                    self.shooting_lines.append((*player.pos, *self.general_location.pos))
+
+                continue
+
+            # sort close to far, in index order
+            potential_targets.sort(reverse=True)
+
+            _, _, target = potential_targets[0]
+
+            # now that we have a target damage them
+            target.damage(DAMAGE_PER_SHOT)
+            if target.is_dead:
+                # we killed the target player
+                self.stats_deaths[target.team] += 1
+                self.stats_kills[player.team] += 1
+                team_deaths[target.team] += 1
+
+                if player.team == target.team:
+                    team_self_kills[player.team] += 1
+
+                if player.team == self.TEAM_RED and target.team == self.TEAM_BLUE:
+                    red_team_good_kills += 1
+                elif player.team == self.TEAM_BLUE and target.team == self.TEAM_RED:
+                    blue_team_good_kills += 1
+
+                self.player_lookup[target.x, target.y] = -1 # remove player from lookup
+
+                # issue points for kills
+                team_rewards[player.team] += self.scenario.points_for_kill[player.team, target.team]
+
+                self.stats_player_hit[player.team, target.team] += 1
+
+                # display the shot
+                self.shooting_lines.append((*player.pos, *target.pos))
 
         # perform update
         for player in self.players:
@@ -441,11 +455,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 continue
 
             # move general by one tile if we are standing next to them
-            player_distance_from_general = abs(player.x - self.general_location[0]) + abs(player.y - self.general_location[1])
+            player_distance_from_general = l1_distance(*player.pos, *self.general_location)
 
             if player_distance_from_general == 1:
                 previous_general_location = self.general_location
-                self.general_location = (player.x, player.y)
+                self.general_location = player.pos
                 # moving the general is a once per turn thing
                 general_has_been_moved = True
                 self._needs_repaint = True
@@ -501,7 +515,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         blue_player_standing_next_to_general = False
         for player in self.living_players:
             if player.team == self.TEAM_BLUE:
-                if abs(player.x - self.general_location[0]) + abs(player.y - self.general_location[1]) == 1:
+                if l1_distance(*player.pos, *self.general_location) == 1:
                     blue_player_standing_next_to_general = True
 
         if blue_player_standing_next_to_general and not self.blue_has_stood_next_to_general:
@@ -781,6 +795,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         obs = self._get_map()
 
         observer = self.players[observer_id] if (observer_id != -1) else None
+
+        # paint shooting lines
+        for x1, y1, x2,y2 in self.shooting_lines:
+            draw_line(obs, x1*3+1, y1*3+1, x2*3+1, y2*3+1, [255, 255, 0])
 
         # paint general if they are visible
         if observer is None or observer.in_vision(
@@ -1171,6 +1189,14 @@ def flush_logs():
     """
     for k, v in LOGS.items():
         v.write_to_disk()
+
+def l1_distance(x1, y1, x2, y2):
+    """ Returns l1 (manhattan) distance."""
+    return abs(x1-x2) + (y1-y2)
+
+def max_distance(x1, y1, x2, y2):
+    """ Returns max(abs(dx), abs(dy))."""
+    return max(abs(x1-x2), (y1-y2))
 
 # shared log files
 LOGS = dict()
