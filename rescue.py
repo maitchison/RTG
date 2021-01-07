@@ -782,37 +782,47 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
     def _draw_voting_screen(self, obs, who_called: RTG_Player = None):
         """
-        Overlay the voting screen ontop of observation
-        :param obs:
+        Overlay the voting screen on top of observation. Voting info will be centred.
+
+        :param obs: nd array of dims [W, H, 3] and type uint8
         :return:
         """
+
+        W, H, _ = obs.shape
 
         req_width = (self.n_players + 1) * 3
         req_height = (self.n_players + 2) * 3
 
+        dx = (W - req_width) // 2
+        dy = (H - req_height) // 2
+
         # background color indicates who called vote
         if who_called is not None:
-            call_color = who_called.id_color
+            obs[3:-3, 3:-3] = who_called.id_color
         else:
-            call_color = (0,0,0)
-        obs[0:req_height, 0:req_width] = call_color
+            obs[3:-3, 3:-3] //= 4
+
+
+        obs[dx:dx+req_width, dy:dy+req_height] = 0
 
         # display a matrix indicating who is voting for who
         for player in self.players:
             c = player.id_color
             if player.is_dead:
-                c //= 2
+                c = c // 2
             # going down we have each player
-            draw_pixel(obs, 0, (player.index + 1) * 3, c, size=3)
+            draw_pixel(obs, dx, dy + (player.index + 1) * 3, c, size=3)
             # going across we have who is being voted for
-            draw_pixel(obs, (player.index + 1) * 3, 0, c, size=3)
+            draw_pixel(obs, dx + (player.index + 1) * 3, dy, c, size=3)
             # now display the vote
             vote = self.current_vote[player.index]
-            if vote > 0:
-                draw_pixel(obs, (vote + 1) * 3, (player.index + 1) * 3, c, size=3)
+            if vote >= 0 and vote < self.n_players:
+                draw_pixel(obs, dx + (vote + 1) * 3, dy + (player.index + 1) * 3, [128, 128, 128], size=3)
 
         # display a countdown
-        obs[-3:, 0:int(self.vote_timer/10 * req_width)] = [255, 255, 0]
+        # stub:
+        self.vote_timer = 5
+        obs[dx:dx+int(self.vote_timer/10 * req_width), dy+req_height-3:dy+req_height, :] = [255, 255, 0]
 
     def _get_player_observation(self, observer_id):
         """
@@ -949,8 +959,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self.draw_tile(obs, dx + 1, dy + 1, self.GENERAL_COLOR)
 
         # overlay the voting screen (if we are voting)
-        if self.vote_timer > 0:
-            self._draw_voting_screen(obs)
+        # stub: always draw voting screen
+        #if self.vote_timer > 0:
+        self._draw_voting_screen(obs)
 
 
         if observer_id >= 0:

@@ -224,6 +224,9 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
                     frame[dy+scale+1:dy+8-scale-1, dx+scale+1:dx+8-scale-1] = c
 
+        # write time stamp
+        utils.draw_numbers(frame, width-4*5, height-6, str(env.round_timer), [255, 255, 255], zero_pad=4)
+
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]
 
