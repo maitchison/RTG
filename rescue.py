@@ -30,6 +30,8 @@ import math
 import gym.spaces
 import time
 
+from typing import Union
+
 from marl_env import MultiAgentEnv
 from scenarios import RescueTheGeneralScenario
 from utils import draw_line, draw_pixel
@@ -46,10 +48,14 @@ ACTION_MOVE_LEFT = 3
 ACTION_MOVE_RIGHT = 4
 ACTION_SHOOT = 5
 ACTION_ACT = 6
-ACTION_SIGNAL_UP = 7
-ACTION_SIGNAL_DOWN = 8
-ACTION_SIGNAL_LEFT = 9
-ACTION_SIGNAL_RIGHT = 10
+ACTION_CALL_VOTE = 7
+ACTION_SIGNAL_UP = 8
+ACTION_SIGNAL_DOWN = 9
+ACTION_SIGNAL_LEFT = 10
+ACTION_SIGNAL_RIGHT = 11
+
+# just indicates how many actions there normally are
+NORMAL_ACTIONS = 8
 
 SIGNAL_ACTIONS = {ACTION_SIGNAL_UP, ACTION_SIGNAL_DOWN, ACTION_SIGNAL_LEFT, ACTION_SIGNAL_RIGHT}
 MOVE_ACTIONS = {ACTION_MOVE_UP, ACTION_MOVE_DOWN, ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT}
@@ -218,10 +224,17 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.log_file = log_file
         self._needs_repaint = True
 
-        self.action_space = gym.spaces.Discrete(7+4 if self.scenario.enable_signals else 7)
+        number_of_actions = NORMAL_ACTIONS
+        if self.scenario.enable_voting:
+            number_of_actions = NORMAL_ACTIONS + 1
+        if self.scenario.enable_signals:
+            number_of_actions = NORMAL_ACTIONS + 5
+
+        self.action_space = gym.spaces.Discrete(number_of_actions)
 
         self.vote_timer = 0             # >0 indicates a vote is taking place
         self.current_vote = np.zeros([self.n_players], dtype=np.int) # who is voting for who (-1 = pass)
+        self.who_called_vote: Union[RTG_Player, None] = None # who called the vote.
         self.name = name
         self.round_timer = 0            # the timer tick for current round
         self.round_timeout = 0          # timeout for current round
@@ -263,6 +276,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_general_moved = np.zeros((3,), dtype=np.int)  # which teams moved general
         self.stats_general_hidden = np.zeros((3,), dtype=np.int)  # which teams stood ontop of general
         self.stats_tree_harvested = np.zeros((3,), dtype=np.int)  # which teams harvested trees
+        self.stats_votes = 0  # number of votes in game
+        self.stats_voted_off = np.zeros((3,), dtype=np.int)  # number of players from this team who were killed by vote
 
         self.shooting_lines = []
 
@@ -313,15 +328,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             player.x = new_x
             player.y = new_y
 
-    def step(self, actions):
-        """
-        Perform game step
-        :param actions: np array of actions of dims [n_players]
-        :return: observations, rewards, dones, infos
-        """
-        assert self.game_counter > 0, "Must call reset before step."
-        assert len(actions) == self.n_players, f"{self.name}: Invalid number of players"
-        assert self.round_outcome == "", f"{self.name}: Game has concluded with result {self.round_outcome}, reset must be called."
+    def _step_main(self, actions):
 
         self.shooting_lines = []
 
@@ -332,11 +339,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         rewards = np.zeros([self.n_players], dtype=np.float)
         dones = np.zeros([self.n_players], dtype=np.bool)
         infos = [{} for _ in range(self.n_players)]
-
-        # special logic for voting (don't apply actions, instead use them as a vote
-        # stub: just set votes for the moment.
-        for action, player in zip(actions, self.players):
-            self.current_vote[player.index] = action - 1
 
         # assign actions to players / remove invalid actions
         for action, player, info in zip(actions, self.players, infos):
@@ -437,6 +439,22 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # perform update
         for player in self.players:
             player.update()
+
+        # -------------------------
+        # call vote button
+        for player in self.living_players:
+            if player.action != ACTION_CALL_VOTE:
+                continue
+
+            # to call a vote player must be alive, and clost to a dead body
+            near_a_body = False
+            for target in self.players:
+                if target.is_dead and max_distance(*player.pos, *target.pos) <= 2:
+                    near_a_body = True
+
+            if near_a_body:
+                self.vote_timer = 1
+                self.who_called_vote = player
 
         # -------------------------
         # action button
@@ -551,7 +569,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         if self.scenario.battle_royale:
             # green has the extra condition that the must finish harvesting the remaining trees
-            # otherwise they are disavantages for killing any hidden red players
+            # otherwise they are disadvantages for killing any hidden red players
             if living_red_players > 0 and living_green_players == living_blue_players == 0:
                 result_red_victory = True
             if living_green_players > 0 and \
@@ -637,6 +655,69 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         rewards *= self.REWARD_SCALE
         rewards = np.asarray(rewards)
         dones = np.asarray(dones)
+
+        return rewards, dones, infos
+
+    def _step_vote(self, actions):
+        """ Logic for voting system"""
+
+        self.vote_timer += 1
+
+        # special logic for voting (don't apply actions, instead use them as a vote)
+        # on step 5 the votes are locked in
+        if self.vote_timer <= 5:
+            for action, player in zip(actions, self.players):
+                # action 0 is pass, action 1..n is that player number -1, all remaining actions are pass.
+                # also, only living players can vote
+                if player.is_alive and action >= 0 and action < self.n_players:
+                    self.current_vote[player.index] = action - 1
+                else:
+                    self.current_vote[player.index] = -1
+
+        rewards = np.zeros([self.n_players], dtype=np.float)
+        dones = np.zeros([self.n_players], dtype=np.bool)
+        infos = [{} for _ in range(self.n_players)]
+
+        # on step 10 we implement vote and end the voting session
+        if self.vote_timer >= 10:
+
+            living_players = len(self.living_players)
+            votes_needed = math.ceil(living_players / 2)
+
+            self.stats_votes += 1
+
+            for target in self.players:
+                votes_for_this_player = sum(self.current_vote == target.index)
+
+                if votes_for_this_player >= votes_needed:
+                    self.stats_voted_off[target.team] += 1
+
+                    self.player_lookup[target.x, target.y] = -1  # remove player from lookup
+
+                    # issue points for kill
+                    for player in self.players:
+                        rewards[player.index] += self.scenario.points_for_kill[player.team, target.team]
+
+            # reset voting
+            self.vote_timer = 0
+            self.who_called_vote = None
+
+        return rewards, dones, infos
+
+    def step(self, actions):
+        """
+        Perform game step
+        :param actions: np array of actions of dims [n_players]
+        :return: observations, rewards, dones, infos
+        """
+        assert self.game_counter > 0, "Must call reset before step."
+        assert len(actions) == self.n_players, f"{self.name}: Invalid number of players"
+        assert self.round_outcome == "", f"{self.name}: Game has concluded with result {self.round_outcome}, reset must be called."
+
+        if self.vote_timer > 0:
+            rewards, dones, infos = self._step_vote(actions)
+        else:
+            rewards, dones, infos = self._step_main(actions)
 
         self.round_timer += 1
         obs = self._get_observations()
@@ -758,6 +839,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.stats_general_hidden,
             self.stats_tree_harvested,
             self.stats_actions,
+            self.stats_votes,
+            self.stats_voted_off,
             np.asarray(self.scenario.team_counts, dtype=np.int)
         ]
 
@@ -820,9 +903,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 draw_pixel(obs, dx + (vote + 1) * 3, dy + (player.index + 1) * 3, [128, 128, 128], size=3)
 
         # display a countdown
-        # stub:
-        self.vote_timer = 5
-        obs[dx:dx+int(self.vote_timer/10 * req_width), dy+req_height-3:dy+req_height, :] = [255, 255, 0]
+        obs[dx:dx+int(1-(self.vote_timer/10) * req_width), dy+req_height-3:dy+req_height, :] = [255, 255, 0]
 
     def _get_player_observation(self, observer_id):
         """
@@ -960,9 +1041,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # overlay the voting screen (if we are voting)
         # stub: always draw voting screen
-        #if self.vote_timer > 0:
-        self._draw_voting_screen(obs)
-
+        if self.vote_timer > 0:
+            self._draw_voting_screen(obs)
 
         if observer_id >= 0:
             assert obs.shape == self.observation_space.shape, \
@@ -993,6 +1073,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.round_team_scores *= 0
 
         self.vote_timer = 0
+        self.who_called_vote = None
         self.current_vote *= 0
 
         # make sure we force a repaint of the map
@@ -1088,6 +1169,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.stats_general_hidden *= 0
         self.stats_tree_harvested *= 0
         self.stats_actions *= 0
+        self.stats_voted_off *= 0
+        self.stats_votes *= 0
 
         return np.asarray(self._get_observations())
 
@@ -1227,6 +1310,7 @@ class RTG_Log():
                     "stats_player_hit, stats_deaths, stats_kills, " +
                     "stats_general_shot, stats_general_moved, stats_general_hidden, "
                     "stats_tree_harvested, stats_actions, " +
+                    "stats_votes, stats_voted_off" +
                     "player_count, result, wall_time, date_time" +
                     "\n")
 

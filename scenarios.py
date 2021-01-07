@@ -159,6 +159,7 @@ class RescueTheGeneralScenario():
             "team_shoot_range": (3, 0, 0),
             "starting_locations": "together",  # random start locations
             "team_shoot_timeout": (10, 0, 0),
+            "enable_voting": True,
             "battle_royale": True,             # removes general, and ends game if all green players are killed, or
                                                # if green eliminates red players and harvests all trees
             "points_for_kill": np.asarray((    # loose a point for self kill, gain one for other team kill
@@ -334,6 +335,7 @@ class RescueTheGeneralScenario():
         self.team_shoot_range = (4, 0, 0)
         self.team_counts = (4, 4, 4)
         self.team_shoot_timeout = (3, 3, 3)  # number of turns between shooting
+        self.enable_voting = False      # enables the voting system
 
         self.timeout_mean = 500
         self.timeout_rnd = 0.1      # this helps make sure games are not always in sync, which can happen if lots of
