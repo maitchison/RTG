@@ -32,13 +32,12 @@ import time
 
 from marl_env import MultiAgentEnv
 from scenarios import RescueTheGeneralScenario
-from utils import draw_pixel, draw_line
+from utils import draw_line
 
 from typing import Tuple, List
 
 CELL_SIZE = 3
-SIN_CHANNELS = 10 # 10 channels gets a frequencies of 2^5, which suits maps around 32 tiles in width/height
-DAMAGE_PER_SHOT = 5 # this means it takes 2 shots to kill
+DAMAGE_PER_SHOT = 10 # players normally have 10 health, so 1 shot kills
 
 ACTION_NOOP = 0
 ACTION_MOVE_UP = 1
@@ -219,7 +218,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.log_file = log_file
         self._needs_repaint = True
 
-        self.action_space = gym.spaces.Discrete(14 if self.scenario.enable_signals else 10)
+        self.action_space = gym.spaces.Discrete(7+4 if self.scenario.enable_signals else 7)
 
         self.name = name
         self.round_timer = 0            # the timer tick for current round
@@ -381,7 +380,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     continue
                 distance = max_distance(*player.pos, *target.pos)
                 if distance <= player.shoot_range:
-                    potential_targets.append((distance, -target.index, target))
+                    potential_targets.append((distance, target.index, target))
 
             if len(potential_targets) == 0:
 
@@ -393,12 +392,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     self.general_health -= DAMAGE_PER_SHOT
                     self.stats_general_shot[player.team] += 1
                     self._needs_repaint = True
-                    self.shooting_lines.append((*player.pos, *self.general_location.pos))
+                    self.shooting_lines.append((*player.pos, *self.general_location))
 
                 continue
 
-            # sort close to far, in index order
-            potential_targets.sort(reverse=True)
+            # sort close to far, and then by index order
+            potential_targets.sort()
 
             _, _, target = potential_targets[0]
 
@@ -693,11 +692,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         obs[draw_x - 1:draw_x + 2, draw_y - 1:draw_y + 2] = id_color
         obs[draw_x, draw_y] = team_color
 
-        if player.action in SHOOT_ACTIONS:
-            index = player.action - ACTION_SHOOT_UP
-            dx, dy = self.DX[index], self.DY[index]
-            obs[draw_x + dx, draw_y + dy] = self.FIRE_COLOR
-
         if self.scenario.enable_signals and player.action in SIGNAL_ACTIONS:
             index = player.action - ACTION_SIGNAL_UP
             dx, dy = self.DX[index], self.DY[index]
@@ -797,7 +791,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         observer = self.players[observer_id] if (observer_id != -1) else None
 
         # paint shooting lines
-        for x1, y1, x2,y2 in self.shooting_lines:
+        for x1, y1, x2, y2 in self.shooting_lines:
+            x1, y1 = x1 + self._map_padding, y1 + self._map_padding
+            x2, y2 = x2 + self._map_padding, y2 + self._map_padding
             draw_line(obs, x1*3+1, y1*3+1, x2*3+1, y2*3+1, [255, 255, 0])
 
         # paint general if they are visible
