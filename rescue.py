@@ -32,7 +32,7 @@ import time
 
 from marl_env import MultiAgentEnv
 from scenarios import RescueTheGeneralScenario
-from utils import draw_line
+from utils import draw_line, draw_pixel
 
 from typing import Tuple, List
 
@@ -220,6 +220,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.action_space = gym.spaces.Discrete(7+4 if self.scenario.enable_signals else 7)
 
+        self.vote_timer = 0             # >0 indicates a vote is taking place
+        self.current_vote = np.zeros([self.n_players], dtype=np.int) # who is voting for who (-1 = pass)
         self.name = name
         self.round_timer = 0            # the timer tick for current round
         self.round_timeout = 0          # timeout for current round
@@ -330,6 +332,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         rewards = np.zeros([self.n_players], dtype=np.float)
         dones = np.zeros([self.n_players], dtype=np.bool)
         infos = [{} for _ in range(self.n_players)]
+
+        # special logic for voting (don't apply actions, instead use them as a vote
+        # stub: just set votes for the moment.
+        for action, player in zip(actions, self.players):
+            self.current_vote[player.index] = action - 1
 
         # assign actions to players / remove invalid actions
         for action, player, info in zip(actions, self.players, infos):
@@ -773,6 +780,40 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             LOGS[self.log_file] = RTG_Log(self.log_file)
         LOGS[self.log_file].log(output_string)
 
+    def _draw_voting_screen(self, obs, who_called: RTG_Player = None):
+        """
+        Overlay the voting screen ontop of observation
+        :param obs:
+        :return:
+        """
+
+        req_width = (self.n_players + 1) * 3
+        req_height = (self.n_players + 2) * 3
+
+        # background color indicates who called vote
+        if who_called is not None:
+            call_color = who_called.id_color
+        else:
+            call_color = (0,0,0)
+        obs[0:req_height, 0:req_width] = call_color
+
+        # display a matrix indicating who is voting for who
+        for player in self.players:
+            c = player.id_color
+            if player.is_dead:
+                c //= 2
+            # going down we have each player
+            draw_pixel(obs, 0, (player.index + 1) * 3, c, size=3)
+            # going across we have who is being voted for
+            draw_pixel(obs, (player.index + 1) * 3, 0, c, size=3)
+            # now display the vote
+            vote = self.current_vote[player.index]
+            if vote > 0:
+                draw_pixel(obs, (vote + 1) * 3, (player.index + 1) * 3, c, size=3)
+
+        # display a countdown
+        obs[-3:, 0:int(self.vote_timer/10 * req_width)] = [255, 255, 0]
+
     def _get_player_observation(self, observer_id):
         """
         Generates a copy of the map with local observations given given player.
@@ -804,7 +845,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                     self.scenario.team_view_distance[observer.team]
                 )):
             self._draw_general(obs, padding=(self._map_padding, self._map_padding))
-
 
         # paint soldiers, living over dead
         for player in self.players:
@@ -908,6 +948,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 dy = min(max(dy, 0), observer.view_distance * 2)
                 self.draw_tile(obs, dx + 1, dy + 1, self.GENERAL_COLOR)
 
+        # overlay the voting screen (if we are voting)
+        if self.vote_timer > 0:
+            self._draw_voting_screen(obs)
+
+
         if observer_id >= 0:
             assert obs.shape == self.observation_space.shape, \
                 f"Invalid observation crop, found {obs.shape} expected {self.observation_space.shape}."
@@ -935,6 +980,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.round_outcome = ""
         self.round_timer = 0
         self.round_team_scores *= 0
+
+        self.vote_timer = 0
+        self.current_vote *= 0
 
         # make sure we force a repaint of the map
         self._needs_repaint = True
@@ -1188,11 +1236,11 @@ def flush_logs():
 
 def l1_distance(x1, y1, x2, y2):
     """ Returns l1 (manhattan) distance."""
-    return abs(x1-x2) + (y1-y2)
+    return abs(x1-x2) + abs(y1-y2)
 
 def max_distance(x1, y1, x2, y2):
     """ Returns max(abs(dx), abs(dy))."""
-    return max(abs(x1-x2), (y1-y2))
+    return max(abs(x1-x2), abs(y1-y2))
 
 # shared log files
 LOGS = dict()
