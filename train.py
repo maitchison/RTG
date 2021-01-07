@@ -58,6 +58,7 @@ class Config():
         self.prediction_mode = str()
         self.deception_bonus = tuple()
         self.split_policy = bool()
+        self.nan_check = bool()
 
         self.verbose = int()
 
@@ -344,7 +345,8 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
         prediction_mode=config.prediction_mode,
         deception_bonus=config.deception_bonus,
         split_policy=config.split_policy,
-        verbose=config.verbose >= 2, **algo_params
+        verbose=config.verbose >= 2, **algo_params,
+        nan_check=config.nan_check,
     )
 
     algorithm.log_folder = config.log_folder
@@ -367,7 +369,7 @@ def run_benchmarks(train=True, model=True, env=True):
         steps = 0
         start_time = time.time()
         while time.time() - start_time < 10:
-            random_actions = np.random.randint(0, 10, size=[vec_env.num_envs])
+            random_actions = np.random.randint(0, vec_env.action_space.n-1, size=[vec_env.num_envs])
             states, _, _, _ = vec_env.step(random_actions)
             steps += vec_env.num_envs
         torch.cuda.synchronize()
@@ -660,6 +662,9 @@ def main():
 
     parser.add_argument('--split_policy', type=str2bool, nargs='?', const=True, default=False,
                         help="Uses separate models for each role (slower).")
+
+    parser.add_argument('--nan_check', type=str2bool, nargs='?', const=True, default=False,
+                        help="Check for nans / extreme values in output (slower).")
 
     args = parser.parse_args()
     config.setup(args)

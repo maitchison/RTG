@@ -124,6 +124,8 @@ class PMAlgorithm(MarlAlgorithm):
             lstm_mode="residual",
             deception_bonus: tuple = (0,0,0),            # scale of deception bonus for each team (requires deception module to be enabled)
 
+            nan_check=False,                # if enabled checks for nans, and logs extreme values (slows things down)
+
             # ------ deception module settings ----------------
 
             dm_replay_buffer_multiplier=1,  # this doesn't seem to help... so keep it at 1
@@ -179,7 +181,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         model = policy_fn(vec_env, device=device, memory_units=policy_memory_units, model=model_name,
                             data_parallel=data_parallel, out_features=policy_memory_units,
-                            lstm_mode=lstm_mode)
+                            lstm_mode=lstm_mode, nan_check=nan_check)
 
         if self.uses_deception_model:
             self.deception_model = DeceptionModel(
@@ -194,6 +196,7 @@ class PMAlgorithm(MarlAlgorithm):
                 predict='full',
                 predict_observations=self.prediction_mode in ["both", "observation"],
                 predict_actions=self.prediction_mode in ["both", "action"],
+                nan_check=nan_check
             )
         else:
             self.deception_model = None
@@ -213,6 +216,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.log = Logger()
         self.vec_env = vec_env
         self.policy_memory_units = policy_memory_units
+        self.nan_check = nan_check
 
         self.normalize_advantages = normalize_advantages
         self.gamma = gamma
@@ -537,7 +541,7 @@ class PMAlgorithm(MarlAlgorithm):
             likelihood_true_role[:, j] = role_policy[range(B), j, true_role, actions] / (role_sum + 1e-6)
 
         # bonus is just neg log likelihood, and sum over other players we are trying to deceive
-        # clip it so we can't get extremely high bonus 
+        # clip it so we can't get extremely high bonus
         bonus = -torch.clip(torch.log(likelihood_true_role), -10, +10)
         bonus = bonus * mask
         bonus = torch.sum(bonus, dim=-1) # sum over players
@@ -629,7 +633,7 @@ class PMAlgorithm(MarlAlgorithm):
         """
         data_shape = x.shape[1:]
         assert len(x) % n_players == 0
-        x = x.copy().reshape(len(x)//n_players, n_players, *data_shape)
+        x = x.reshape(len(x)//n_players, n_players, *data_shape)
         x = x.repeat(n_players, axis=0)
         return x
 
@@ -664,6 +668,12 @@ class PMAlgorithm(MarlAlgorithm):
         # to fix this we'd need to mask the mask with who knows who's identities
         same_team_mask = roles[:, np.newaxis] == self._duplicate_players(roles, n_players)
         bonus_mask *= (1 - same_team_mask)
+
+        # also: don't give bonus to dead players, and don't factor in dead players beliefs
+        is_dead = np.asarray([player.is_dead for player in env.players])
+        bonus_mask[is_dead] = 0
+        bonus_mask[self._duplicate_players(is_dead, n_players)] = 0
+
         bonus_mask = torch.from_numpy(bonus_mask)
 
         # there are two ways of doing this, the predict actions method and the predict observations method
@@ -772,7 +782,7 @@ class PMAlgorithm(MarlAlgorithm):
                     players_visible = np.asarray(players_visible)
 
                     # role prediction
-                    player_roles = self._duplicate_players(self.vec_env.get_roles(), n_players)  # batch_roles is [A, n_players]
+                    player_roles = self._duplicate_players(roles, n_players)  # batch_roles is [A, n_players]
                     self.batch_player_roles[t] = player_roles
                     self.batch_player_policy[t] = self._duplicate_players(log_policy, n_players)
                     self.batch_player_role_policy[t] = self._duplicate_players(role_log_policies, n_players)
@@ -945,7 +955,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.log.watch_mean("value_est_ext_std", np.std(self.batch_ext_value), display_name="est_v_ext_std", display_width=0)
         self.log.watch_mean("ev_ext", utils.explained_variance(self.batch_ext_value.ravel(), self.batch_ext_returns.ravel()))
 
-        if self.deception_bonus is not None:
+        if self.uses_deception_model:
 
             # log intrinsic rewards per team
             self.watch_per_team("raw_deception_bonus", self.batch_raw_deception_bonus, display_width=0)

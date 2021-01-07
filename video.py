@@ -68,6 +68,10 @@ def display_policy(frame: np.ndarray, dx:int, dy:int, policy: np.ndarray):
 
     for a in range(n_actions):
         # show markers at bottom indicating what is what
+        if a < len(base_colors):
+            c = base_colors[a]
+        else:
+            c = 0
         frame[dy + n_roles, dx + a] = (base_colors[a] * 255).astype(np.uint8)
 
 def export_video(filename, algorithm: PMAlgorithm, scenario):

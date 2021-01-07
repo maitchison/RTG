@@ -154,11 +154,11 @@ class RescueTheGeneralScenario():
             "hidden_roles": "all",
             "timeout_mean": 250,               # make sure games don't last too long, 250 is plenty of time for green
                                                # to harvest all the trees
-            "max_view_distance": 5,            # makes thins a bit faster
+            "max_view_distance": 5,            # makes things a bit faster having smaller vision
             "team_view_distance": (5, 5, 5),   # no bonus vision for red
             "team_shoot_range": (3, 0, 0),
             "starting_locations": "together",  # random start locations
-            "team_shoot_timeout": (10, 0, 0),
+            "team_shoot_timeout": (20, 0, 0),
             "enable_voting": True,
             "battle_royale": True,             # removes general, and ends game if all green players are killed, or
                                                # if green eliminates red players and harvests all trees

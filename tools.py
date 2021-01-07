@@ -126,6 +126,10 @@ def load_results(path):
                     value = str(value)
                 data[name] += [value]
 
+            # fix a bug with a specific version of rescue game
+            if "stats_voted_offplayer_count" in data:
+                data["player_count"] = data["stats_voted_offplayer_count"]
+
             if player_count is None:
                 player_count = sum([int(x) for x in data["player_count"][0].split(" ")])
 
@@ -146,6 +150,18 @@ def load_results(path):
                     continue
 
                 for team, value in zip("RGB", (int(x) for x in str(data[stats_name][-1]).split(" "))):
+                    field_name = f"{team}_{stat}"
+                    data[field_name] += [value]
+
+            # convert the team stats to single columns
+            for stat in ["votes"]:
+
+                stats_name = f"stats_{stat}"
+
+                if stats_name not in data:
+                    continue
+
+                for team, value in zip("RGBT", (int(x) for x in str(data[stats_name][-1]).split(" "))):
                     field_name = f"{team}_{stat}"
                     data[field_name] += [value]
 

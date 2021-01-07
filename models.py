@@ -268,7 +268,9 @@ class BaseModel(nn.Module):
             out_features=256,
             model="default",
             data_parallel=False,
-            lstm_mode='cat'
+            lstm_mode='cat',
+            nan_check=False,
+
     ):
         assert env.observation_space.dtype == np.uint8, "Observation space should be 8bit integer"
 
@@ -292,6 +294,7 @@ class BaseModel(nn.Module):
         self.device = device
         self.dtype = dtype
         self.lstm_mode = lstm_mode
+        self.nan_check = nan_check
 
         if model.lower() == "default":
             self.encoder = DefaultEncoder(env.observation_space.shape, out_features=out_features)
@@ -325,6 +328,15 @@ class BaseModel(nn.Module):
 
     def forward_sequence(self, obs, rnn_states, terminals=None):
         raise NotImplemented()
+
+    def _check_for_nans(self, tensors_to_check):
+        for k, v in tensors_to_check:
+            has_nan = torch.any(v.isnan())
+            v_min, v_max = torch.min(v), torch.max(v)
+            if has_nan:
+                raise Exception("nan found in output")
+            if abs(v_min) > 1000 or abs(v_max) > 1000:
+                print(f"Warning, extreme values found on {k} min:{v_min}, max:{v_max}")
 
     def _forward_sequence(self, obs, rnn_states, terminals=None):
         """
@@ -452,8 +464,9 @@ class DeceptionModel(BaseModel):
             predict='full',          # off|forward|full
             predict_observations=True,
             predict_actions=True,
+            nan_check=False,
     ):
-        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode)
+        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode, nan_check)
 
 
         assert predict in ['off', 'forward', 'full']
@@ -581,6 +594,9 @@ class DeceptionModel(BaseModel):
             action_backwards_predictions = torch.log_softmax(unnormalized_action_backwards_predictions, dim=-1)
             result["action_backwards_prediction"] = action_backwards_predictions
 
+        if self.nan_check:
+            self.check_for_nans([(k,v) for k,v in result.items()] + ['rnn_states', new_rnn_states])
+
         return result, new_rnn_states
 
 class PolicyModel(BaseModel):
@@ -608,8 +624,10 @@ class PolicyModel(BaseModel):
             data_parallel=False,
             roles=3,    # number of polcies / value_estimates to output
             lstm_mode="residual",
+            nan_check=False,
     ):
-        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode=lstm_mode)
+        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode=lstm_mode,
+                         nan_check)
 
         self.roles = roles
 
@@ -640,6 +658,7 @@ class PolicyModel(BaseModel):
         """
 
         N, B, *obs_shape = obs.shape
+
         encoder_output, new_rnn_states = self._forward_sequence(obs, rnn_states, terminals)
 
         if roles is not None:
@@ -675,6 +694,9 @@ class PolicyModel(BaseModel):
             result['ext_value'] = extract_roles(ext_value, roles)
             result['int_value'] = extract_roles(int_value, roles)
 
+        if self.nan_check:
+            self.check_for_nans([(k,v) for k,v in result.items()] + ['rnn_states', new_rnn_states])
+
         return result, new_rnn_states
 
 class SplitPolicyModel(nn.Module):
@@ -709,7 +731,8 @@ class SplitPolicyModel(nn.Module):
                 model=model,
                 data_parallel=data_parallel,
                 roles=roles,    # for compatability we have each model generate policies for all roles
-                lstm_mode=lstm_mode
+                lstm_mode=lstm_mode,
+                nan_check=False,
             ) for _ in range(self.n_roles)]
 
         # this allows Module to pick up on the models
