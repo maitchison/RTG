@@ -217,20 +217,22 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
         # add deception bonus indicators (on top of role prediction)
         if bonus is not None:
+
             for i in range(n_players):
-                dx = orig_width + 3
-                dy = 10 + (i+1) * 8 + 3
+                dx = orig_width
+                dy = 10 + (i + 1) * 8
+                for scale in [0, 1, 2]:
 
-                factor = bonus[i]
-                if factor > 0:
-                    c = np.asarray((factor, factor / 10, 0))
-                else:
-                    c = np.asarray((0, factor / 10, factor))
+                    factor = bonus[i] / (10 ** (2 - scale))
 
-                factor = abs(bonus[i])
-                c = np.clip(c * 255, 0, 255).astype(np.uint8)
-                # stub:
-                frame[dy-1:dy+1, dx-1:dx+1] = c
+                    if factor > 0:
+                        c = np.asarray((factor, 0.0, 0.0), np.float)
+                    else:
+                        c = np.asarray((0.0, 0.0, -factor), np.float)
+
+                    c = np.clip(c * 255, 0, 255).astype(np.uint8)
+
+                    frame[dy+scale+1:dy+8-scale-1, dx+scale+1:dx+8-scale-1] = c
 
         # for some reason cv2 wants BGR instead of RGB
         frame[:, :, :] = frame[:, :, ::-1]

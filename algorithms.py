@@ -693,6 +693,7 @@ class PMAlgorithm(MarlAlgorithm):
         if self.deception_bonus is float:
             deception_bonus = deception_bonus * self.deception_bonus
         else:
+            # seems this must be broken?
             deception_bonus = deception_bonus * np.asarray([self.deception_bonus[r] for r in roles])
 
         return deception_bonus
