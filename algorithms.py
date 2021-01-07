@@ -294,6 +294,8 @@ class PMAlgorithm(MarlAlgorithm):
         # this is so when we take a random sample we always have the information we need.
         # It's a bit wasteful with memory though, especially with high player counts.
         if self.uses_deception_model:
+            # unmodulated deception bonus for all players at each timestep.
+            self.batch_raw_deception_bonus = np.zeros([N, A], dtype=np.float32)
             # the true role of each player in the game that agent a is playing
             self.batch_player_roles = np.zeros([N, A, vec_env.max_players], dtype=np.int64)
             # policies for each player for each role at time t for given game recorded for all agents
@@ -531,10 +533,12 @@ class PMAlgorithm(MarlAlgorithm):
             role_sum = torch.zeros([B], device=device)
             for role in range(n_roles):
                 role_sum += role_policy[range(B), j, role, actions] * prior_role_belief[:, j, role]
-            likelihood_true_role[:, j] = role_policy[range(B), j, true_role, actions] / role_sum
+            # we add 1e-6 just for stability.
+            likelihood_true_role[:, j] = role_policy[range(B), j, true_role, actions] / (role_sum + 1e-6)
 
         # bonus is just neg log likelihood, and sum over other players we are trying to deceive
-        bonus = -torch.log(likelihood_true_role)
+        # clip it so we can't get extremely high bonus 
+        bonus = -torch.clip(torch.log(likelihood_true_role), -10, +10)
         bonus = bonus * mask
         bonus = torch.sum(bonus, dim=-1) # sum over players
         return bonus
@@ -631,10 +635,10 @@ class PMAlgorithm(MarlAlgorithm):
 
 
     @profiler.record_function("calculate_deception")
-    def calculate_deception_bonus(self, model_out: dict, actions: np.ndarray, env: MultiAgentVecEnv,
+    def calculate_deception_bonus(self, model_out: dict, actions: np.ndarray, env: MultiAgentVecEnv, roles: np.ndarray,
                                   believed_other_rnn_states=None, prev_terminals=None):
         """
-        Calculate deception bonus for all players
+        Calculate (unmodulated) deception bonus for all players
         :param model_out:
         :param actions:
         :param env:
@@ -646,7 +650,6 @@ class PMAlgorithm(MarlAlgorithm):
         B = len(actions) # number of agents in batch.
         n_players = env.max_players
         deception_bonus = np.zeros([B], dtype=np.float)
-        roles = env.get_roles()
 
         # generate a mask that assigns bonus only for deceiving enemy players (or players thought to be
         # enemies.
@@ -659,7 +662,7 @@ class PMAlgorithm(MarlAlgorithm):
         # don't get a bonus for deceiving players on our own team
         # note, this leaks a little team information, but just during training...
         # to fix this we'd need to mask the mask with who knows who's identities
-        same_team_mask = roles[:, np.newaxis] == self._duplicate_players(env.get_roles(), n_players)
+        same_team_mask = roles[:, np.newaxis] == self._duplicate_players(roles, n_players)
         bonus_mask *= (1 - same_team_mask)
         bonus_mask = torch.from_numpy(bonus_mask)
 
@@ -687,14 +690,8 @@ class PMAlgorithm(MarlAlgorithm):
                 mask=bonus_mask,  # for the moment don't mask non-visible players
                 actions=torch.from_numpy(actions)
             )
-            believed_other_rnn_states[:] = new_believed_other_rnn_states[:] # copy accross new state
+            believed_other_rnn_states[:] = new_believed_other_rnn_states[:] # copy across new state
             deception_bonus += db_observations.cpu().detach().numpy()
-
-        if self.deception_bonus is float:
-            deception_bonus = deception_bonus * self.deception_bonus
-        else:
-            # seems this must be broken?
-            deception_bonus = deception_bonus * np.asarray([self.deception_bonus[r] for r in roles])
 
         return deception_bonus
 
@@ -816,11 +813,26 @@ class PMAlgorithm(MarlAlgorithm):
                 int_rewards = np.zeros_like(ext_rewards)
 
                 if self.uses_deception_model:
-                    int_rewards += self.calculate_deception_bonus(
-                        model_out, actions, self.vec_env,
+                    raw_deception_bonus = self.calculate_deception_bonus(
+                        model_out, actions, self.vec_env, roles,
                         believed_other_rnn_states if self.predicts_observations else None,
                         prev_terminals if self.predicts_observations else None
                     )
+
+                    self.batch_raw_deception_bonus[t] = raw_deception_bonus
+
+                    # modulate deception bonus
+                    # note we multiply by max(deception_bonus) later on, so normalize it to 1 here
+                    if self.deception_bonus is float:
+                        deception_bonus = raw_deception_bonus
+                    else:
+                        if max(self.deception_bonus) == 0:
+                            deception_bonus = raw_deception_bonus * 0
+                        else:
+                            deception_bonus = raw_deception_bonus * \
+                                np.asarray([self.deception_bonus[r] for r in roles]) / max(self.deception_bonus)
+
+                    int_rewards += deception_bonus
 
                 # save raw rewards for monitoring the agents progress
                 raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
@@ -936,6 +948,7 @@ class PMAlgorithm(MarlAlgorithm):
         if self.deception_bonus is not None:
 
             # log intrinsic rewards per team
+            self.watch_per_team("raw_deception_bonus", self.batch_raw_deception_bonus, display_width=0)
             self.watch_per_team("batch_reward_int", self.batch_int_rewards, display_name="rew_int", display_width=0)
             self.log.watch_mean("batch_reward_int_std", np.std(self.batch_int_rewards), display_name="rew_int_std", display_width=0)
             self.watch_per_team("batch_return_int", self.batch_int_returns, display_name="ret_int")

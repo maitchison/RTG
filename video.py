@@ -117,6 +117,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     rnn_state = algorithm.get_initial_rnn_state(len(env.players))
 
     last_outcome = ""
+    bonus = None
 
     # play the game...
     while last_outcome == "":
@@ -132,14 +133,6 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
             log_policy = model_output["log_policy"].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(log_policy)
-
-            # note: note sure, these bonus indicators could be off by one frame?
-            if algorithm.uses_deception_model and not algorithm.predicts_observations:
-                # show bonus, only works on actions at the moment (but that's fine I'm dropping observations)
-                bonus = algorithm.calculate_deception_bonus(model_output, actions, vec_env)
-            else:
-                bonus = None
-
 
         # generate frames from global perspective
         frame = env.render("rgb_array")
@@ -249,6 +242,14 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         # step environment
         if last_outcome == "":
             env_obs, env_rewards, env_dones, env_infos = vec_env.step(actions)
+
+        # calculate deception bonus
+        if algorithm.uses_deception_model and not algorithm.predicts_observations:
+            # show bonus, only works on actions at the moment
+            # this bonus is for the action we *will* take on the next frame.
+            bonus = algorithm.calculate_deception_bonus(model_output, actions, vec_env, roles)
+        else:
+            bonus = None
 
     video_out.release()
 
