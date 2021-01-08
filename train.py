@@ -419,7 +419,7 @@ def run_benchmarks(train=True, model=True, env=True):
 
     if train:
         print("Benchmarking training...")
-        for model_name in ["default", "fast", "large"]:
+        for model_name in ["default", "fast"]:
             bench_training("red2", model_name)
 
     if env:
@@ -429,7 +429,7 @@ def run_benchmarks(train=True, model=True, env=True):
 
     if model:
         print("Benchmarking models (inference)...")
-        for model_name in ["default", "fast", "large"]:
+        for model_name in ["default", "fast"]:
             bench_model(model_name)
 
 def print_scores(epoch=None):
@@ -597,7 +597,7 @@ def profile():
 
     print("Profiling model")
 
-    vec_env = make_env("red2", name="profile")
+    vec_env = make_env(scenarios=config.eval_scenarios, name="profile")
     algo = make_algo(vec_env)
     algo.learn(algo.batch_size)  # just to warm it up
 
@@ -605,9 +605,9 @@ def profile():
     with profiler.profile(profile_memory=True, record_shapes=True, use_cuda=True) as prof:
         algo.learn(algo.batch_size)
 
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
-    print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=20))
-    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=20))
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=50))
+    print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=50))
+    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=50))
 
     # get a trace
     with profiler.profile() as prof:

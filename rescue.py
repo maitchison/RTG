@@ -202,6 +202,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             log_file:str=None,
             dummy_prob=0,
             location_encoding="none",
+            channels_first=True,        # observations will be returned as CHW
             **scenario_kwargs
     ):
         """
@@ -245,6 +246,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.blue_has_stood_next_to_general = bool()
         self.blue_rewards_for_winning = int()
         self.location_encoding = location_encoding
+        self.channels_first = channels_first
 
         # create players
         self.players = [RTG_Player(index, self.scenario) for index in range(self.n_players)]
@@ -279,9 +281,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.stats_actions = np.zeros((3, self.action_space.n), dtype=np.int)
 
+        obs_height = (self.scenario.max_view_distance * 2 + 3) * CELL_SIZE
+        obs_width = (self.scenario.max_view_distance * 2 + 3) * CELL_SIZE
+
         self.observation_space = gym.spaces.Box(
             low=0, high=255,
-            shape=((self.scenario.max_view_distance * 2 + 3) * CELL_SIZE, (self.scenario.max_view_distance * 2 + 3) * CELL_SIZE, 3),
+            shape=(3, obs_height, obs_width) if self.channels_first else (obs_height, obs_width, 3),
             dtype=np.uint8
         )
 
@@ -914,7 +919,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # display a countdown
         obs[dx:dx+int((self.vote_timer/10) * req_width), dy+req_height-3:dy+req_height, :] = [255, 255, 0]
 
-    def _get_player_observation(self, observer_id):
+    def _get_player_observation(self, observer_id, force_channels_last=False):
         """
         Generates a copy of the map with local observations given given player.
         :param observer_id: player's perspective, -1 is global view
@@ -1056,7 +1061,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         if self.vote_timer > 0:
             self._draw_voting_screen(obs)
 
-        if observer_id >= 0:
+        # we render everything as channels last, but might need to convert it if channels_first is set to true.
+        if self.channels_first and not force_channels_last:
+            obs = obs.swapaxes(1, 2)
+            obs = obs.swapaxes(0, 1)
+
+        if observer_id >= 0 and not force_channels_last:
             assert obs.shape == self.observation_space.shape, \
                 f"Invalid observation crop, found {obs.shape} expected {self.observation_space.shape}."
 
@@ -1224,9 +1234,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :return:
         """
 
-        global_frame = self._get_player_observation(-1)
+        global_frame = self._get_player_observation(-1, force_channels_last=True)
 
-        player_frames = [self._get_player_observation(player_id) for player_id in range(self.n_players)]
+        player_frames = [self._get_player_observation(player_id, force_channels_last=True) for player_id in range(self.n_players)]
 
         gw, gh, _ = global_frame.shape
         pw, ph, _ = player_frames[0].shape

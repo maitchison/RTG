@@ -12,7 +12,7 @@ class BaseEncoder(nn.Module):
 
     def __init__(self, input_dims, out_features):
         """
-        :param input_dims: intended dims of input, excluding batch size (height, width, channels)
+        :param input_dims: intended dims of input, excluding batch size (channels, height, width)
         """
         super().__init__()
 
@@ -32,9 +32,9 @@ class DefaultEncoder(BaseEncoder):
         """
         super().__init__(input_dims, out_features)
 
-        self.final_dims = (64, self.input_dims[0]//2//2//2, self.input_dims[1]//2//2//2)
+        self.final_dims = (64, self.input_dims[1]//2//2//2, self.input_dims[2]//2//2//2)
 
-        self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3)
+        self.conv1 = nn.Conv2d(self.input_dims[0], 32, kernel_size=3)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.fc = nn.Linear(utils.prod(self.final_dims), self.out_features)
@@ -43,7 +43,7 @@ class DefaultEncoder(BaseEncoder):
 
     def forward(self, x):
         """
-        input float32 tensor of dims [b, h, w, c]
+        input float32 tensor of dims [b, c, h, w]
         return output tensor of dims [b, d], where d is the number of units in final layer.
         """
         assert type(x) == torch.Tensor, f"Input must be torch tensor not {type(x)}"
@@ -51,10 +51,6 @@ class DefaultEncoder(BaseEncoder):
         assert x.dtype == torch.float32, f"Datatype should be torch.float32 not {x.dtype}"
 
         b = x.shape[0]
-
-        # put in BCHW format for pytorch.
-        x = x.transpose(2, 3)
-        x = x.transpose(1, 2)
 
         x = torch.relu(self.conv1(x))
         x = torch.max_pool2d(x, 2, 2)
@@ -67,54 +63,6 @@ class DefaultEncoder(BaseEncoder):
         x = torch.relu(self.fc(x))
 
         return x
-
-class LargeEncoder(BaseEncoder):
-    """ Encodes from observation to hidden representation. """
-
-    def __init__(self, input_dims, out_features=128):
-        """
-        :param input_dims: intended dims of input, excluding batch size (height, width, channels)
-        """
-        super().__init__(input_dims, out_features)
-
-        self.final_dims = (128, self.input_dims[0]//2//2, self.input_dims[1]//2//2)
-
-        self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.conv4 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
-        self.fc = nn.Linear(utils.prod(self.final_dims), self.out_features)
-
-        print(f" -created large encoder, final dims {self.final_dims}")
-
-    def forward(self, x):
-        """
-        input float32 tensor of dims [b, h, w, c]
-        return output tensor of dims [b, d], where d is the number of units in final layer.
-        """
-        assert type(x) == torch.Tensor, f"Input must be torch tensor not {type(x)}"
-        assert x.shape[1:] == self.input_dims, f"Input dims {x.shape[1:]} must match {self.input_dims}"
-        assert x.dtype == torch.float32, f"Datatype should be torch.float32 not {x.dtype}"
-
-        b = x.shape[0]
-
-        # put in BCHW format for pytorch.
-        x = x.transpose(2, 3)
-        x = x.transpose(1, 2)
-
-        x = torch.relu(self.conv1(x))
-        x = torch.max_pool2d(x, 2, 2)
-        x = torch.relu(self.conv2(x))
-        x = torch.max_pool2d(x, 2, 2)
-        x = torch.relu(self.conv3(x))
-        x = torch.relu(self.conv4(x))
-
-        assert x.shape[1:] == self.final_dims, f"Expected final shape to be {self.final_dims} but found {x.shape[1:]}"
-        x = x.reshape((b, -1))
-        x = torch.relu(self.fc(x))
-
-        return x
-
 
 class FastEncoder(BaseEncoder):
     """ Encodes from observation to hidden representation.
@@ -127,11 +75,11 @@ class FastEncoder(BaseEncoder):
         """
         super().__init__(input_dims, out_features)
 
-        self.final_dims = (64, self.input_dims[0]//6, self.input_dims[1]//6)
+        self.final_dims = (64, self.input_dims[1]//6, self.input_dims[2]//6)
 
         # based on nature
 
-        self.conv1 = nn.Conv2d(self.input_dims[2], 32, kernel_size=3, stride=3)
+        self.conv1 = nn.Conv2d(self.input_dims[0], 32, kernel_size=3, stride=3)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.fc = nn.Linear(utils.prod(self.final_dims), self.out_features)
@@ -140,7 +88,7 @@ class FastEncoder(BaseEncoder):
 
     def forward(self, x):
         """
-        input float32 tensor of dims [b, h, w, c]
+        input float32 tensor of dims [b, c, h, w]
         return output tensor of dims [b, d], where d is the number of units in final layer.
         """
 
@@ -148,10 +96,6 @@ class FastEncoder(BaseEncoder):
         assert x.dtype == torch.float32, f"Datatype should be torch.float32 not {x.dtype}"
 
         b = x.shape[0]
-
-        # put in BCHW format for pytorch.
-        x = x.transpose(2, 3)
-        x = x.transpose(1, 2)
 
         x = torch.relu(self.conv1(x))
         x = torch.relu(self.conv2(x))
@@ -213,50 +157,6 @@ class DefaultDecoder(BaseDecoder):
         return x
 
 
-class LargeDecoder(BaseDecoder):
-    """ Decodes from hidden representation to observation. """
-
-    def __init__(self, output_dims, hidden_features=128):
-        """
-        :param output_dims: (c,h,w)
-        :param hidden_features:
-        """
-
-        initial_dims = (128, math.ceil((output_dims[1] + 2) / 4), math.ceil((output_dims[2] + 2) / 4))
-        super().__init__(output_dims, initial_dims, hidden_features)
-
-        self.fc = nn.Linear(self.hidden_features, utils.prod(self.initial_dims))
-        self.deconv1 = nn.ConvTranspose2d(128, 128, kernel_size=4, padding=2)
-        self.deconv2 = nn.ConvTranspose2d(128, 64, kernel_size=4, padding=2)
-        self.deconv3 = nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=2)
-        self.deconv4 = nn.ConvTranspose2d(32, self.output_dims[0], kernel_size=4, stride=2, padding=1)
-
-        print(f" -created large decoder, initial dims {self.initial_dims}")
-
-    def forward(self, x):
-        """
-        input tensor of dims [b, d], where d is the number of hidden features.
-        return tensor of dims [b, c, h, w]
-        """
-
-        b = x.shape[0]
-
-        x = torch.relu(self.fc(x))
-        x = x.view((b, *self.initial_dims))
-        x = torch.relu(self.deconv1(x))
-        x = torch.relu(self.deconv2(x))
-        x = torch.relu(self.deconv3(x))
-        x = torch.sigmoid(self.deconv4(x))
-
-        # the decoder doubles the size each time, edges tend not to predict well anyway due to padding
-        # so we calculate the required dims (rx,ry) and the excess (ex,ry), then take a center crop
-        rx, ry = self.output_dims[-1], self.output_dims[-2]
-        ex, ey = x.shape[-1] - rx, x.shape[-2] - ry
-        x = x[:, :, ey//2:ey//2+ry, ex//2:ex//2+rx]
-
-        return x
-
-
 class BaseModel(nn.Module):
 
     def __init__(
@@ -289,7 +189,9 @@ class BaseModel(nn.Module):
 
         super().__init__()
 
+        # environment is channels last, but we work with channels first.
         self.input_dims = env.observation_space.shape
+
         self.n_actions = env.action_space.n
         self.device = device
         self.dtype = dtype
@@ -300,8 +202,6 @@ class BaseModel(nn.Module):
             self.encoder = DefaultEncoder(env.observation_space.shape, out_features=out_features)
         elif model.lower() == "fast":
             self.encoder = FastEncoder(env.observation_space.shape, out_features=out_features)
-        elif model.lower() == "large":
-            self.encoder = LargeEncoder(env.observation_space.shape, out_features=out_features)
         else:
             raise Exception(f"Invalid model {model}, expected [default|fast|global]")
 
@@ -346,7 +246,7 @@ class BaseModel(nn.Module):
     def _forward_sequence(self, obs, rnn_states, terminals=None):
         """
         Forward a sequence of observations through model, returns dictionary of outputs.
-        :param obs: input observations, tensor of dims [N, B, observation_shape], which should be channels last. (BHWC)
+        :param obs: input observations, tensor of dims [N, B, observation_shape], which should be channels last. (BCHW)
         :param rnn_states: float32 tensor of dims [B, 2, memory_dims] containing the initial rnn h,c states
         :param terminals: (optional) tensor of dims [N, B] indicating timesteps that are terminal
         :return: lstm outputs
@@ -493,10 +393,7 @@ class DeceptionModel(BaseModel):
         if model.lower() in ["default", "fast"]:
             if model.lower() == "fast":
                 print("warning: fast decoder is not implemented, using default.")
-
             decoder_fn = DefaultDecoder
-        elif model.lower() == "large":
-            decoder_fn = LargeDecoder
         else:
             raise ValueError(f"Invalid model name {model}")
 

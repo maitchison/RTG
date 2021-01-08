@@ -209,7 +209,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         super().__init__(n_steps, A, model)
 
-        assert self.obs_shape[-1] == 3, f"Model assumes RGB 3-channel input, but found {self.obs_shape}"
+        assert self.obs_shape[0] == 3, f"Model assumes RGB 3-channel input, but found {self.obs_shape}"
 
         if self.uses_deception_model:
             # to handle the deception rnn states just concatenate the h,c states together
@@ -459,15 +459,13 @@ class PMAlgorithm(MarlAlgorithm):
         # maybe can assume that 12GB gives us 4096 with AMP and 2048 without
         if self.policy_model.encoder_type is DefaultEncoder:
             micro_batch_size = 4096
-        elif self.policy_model.encoder_type is LargeEncoder:
-            micro_batch_size = 4096
         elif self.policy_model.encoder_type is FastEncoder:
             micro_batch_size = 8192
         else:
             micro_batch_size = 1024 # just a guess
 
         if self.uses_deception_model:
-            micro_batch_size //= 4
+            micro_batch_size //= 2
 
         if self.amp:
             # amp seems to work very poorly for large batchsizes (perhaps due to the issue with adding lots of small
@@ -1154,7 +1152,8 @@ class PMAlgorithm(MarlAlgorithm):
     def forward_deception_mini_batch(self, data, loss_scale=1):
 
         # these help to make sure the deception module losses are all roughly the same order of magnitude
-        rp_coef = 1
+        # the target is ~ 0.01 for role, role_bp, ap, bap, and obs_mse
+        rp_coef = 0.1
         ap_coef = 0.1
 
         def calculate_kl(obs_predictions):
@@ -1503,7 +1502,7 @@ class PMAlgorithm(MarlAlgorithm):
                                 # only need first rnn_state for mini_batch, saves a bit of GPU memory
                                 value = value[0:1]
 
-                            mini_batch_data[key] = torch.from_numpy(value).to(device=model.device)
+                            mini_batch_data[key] = torch.from_numpy(value).to(device=model.device, non_blocking=True)
 
                         forward_func(mini_batch_data)
                         micro_batch_counter += 1
