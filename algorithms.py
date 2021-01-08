@@ -1425,6 +1425,11 @@ class PMAlgorithm(MarlAlgorithm):
             assert type(v) == np.ndarray, "batch_data input must be numpy array."
             assert v.dtype != np.float64, f"batch_data entry {k} is float64, should be float32."
 
+        # convert everything over to torch arrays
+        # note: pinning the memory here doesn't seem to help, and would double memory consumption
+        for k, v in batch_data.items():
+            batch_data[k] = torch.from_numpy(v)
+
         last_epoch = math.ceil(epochs)
 
         N, B = batch_data["prev_obs"].shape[0:2]
@@ -1466,8 +1471,6 @@ class PMAlgorithm(MarlAlgorithm):
             else:
                 mini_batches_to_process = mini_batches
 
-            #print(f"processing {mini_batches_to_process} minibatches on epoch {i} of {last_epoch} with {segments_per_micro_batch} segments")
-
             for j in range(mini_batches_to_process):
                 with autocast(enabled=self.amp):
                     for k in range(micro_batches):
@@ -1493,8 +1496,9 @@ class PMAlgorithm(MarlAlgorithm):
                             # select random sub-windows, useful if n_steps if high, but we want small segments
                             if max_window_size is not None:
                                 if enable_window_offsets:
-                                    value = np.roll(value, -offsets, axis=0)
-                                    value = value[:max_window_size]
+                                    # with numpy I could roll the data so each segment had a different start point
+                                    # but with torch in need to have them all share the same offset.
+                                    value = value[offsets[0]:offsets[0]+max_window_size]
                                 else:
                                     value = value[:max_window_size]
 
@@ -1502,7 +1506,7 @@ class PMAlgorithm(MarlAlgorithm):
                                 # only need first rnn_state for mini_batch, saves a bit of GPU memory
                                 value = value[0:1]
 
-                            mini_batch_data[key] = torch.from_numpy(value).to(device=model.device, non_blocking=True)
+                            mini_batch_data[key] = value.to(device=model.device, non_blocking=True)
 
                         forward_func(mini_batch_data)
                         micro_batch_counter += 1
