@@ -55,7 +55,7 @@ ACTION_SIGNAL_LEFT = 10
 ACTION_SIGNAL_RIGHT = 11
 
 # just indicates how many actions there normally are
-NORMAL_ACTIONS = 7
+NORMAL_ACTIONS = 8 # for the moment include call to vote as a normal action, even though it might not be used
 
 SIGNAL_ACTIONS = {ACTION_SIGNAL_UP, ACTION_SIGNAL_DOWN, ACTION_SIGNAL_LEFT, ACTION_SIGNAL_RIGHT}
 MOVE_ACTIONS = {ACTION_MOVE_UP, ACTION_MOVE_DOWN, ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT}
@@ -163,8 +163,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     Observational Space
     """
 
-    REWARD_SCALE = 1 # some algorithms work better if value is higher
-
     MAP_GRASS = 1
     MAP_TREE = 2
 
@@ -226,10 +224,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self._needs_repaint = True
 
         number_of_actions = NORMAL_ACTIONS
-        if self.scenario.enable_voting:
-            number_of_actions = NORMAL_ACTIONS + 1
         if self.scenario.enable_signals:
-            number_of_actions = NORMAL_ACTIONS + 5
+            number_of_actions = NORMAL_ACTIONS + 4
 
         self.action_space = gym.spaces.Discrete(number_of_actions)
 
@@ -642,10 +638,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self.round_number += 1
                 self.soft_reset()
 
-        rewards *= self.REWARD_SCALE
-        rewards = np.asarray(rewards)
-        dones = np.asarray(dones)
-
         return rewards, dones, infos
 
     def _step_vote(self, actions):
@@ -653,23 +645,24 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         self.vote_timer -= 1
 
+        rewards = np.zeros([self.n_players], dtype=np.float)
+        dones = np.zeros([self.n_players], dtype=np.bool)
+        infos = [{} for _ in range(self.n_players)]
+
         for player in self.players:
             player.was_hit_this_round = False
+            player.action = actions[player.index]
 
         # special logic for voting (don't apply actions, instead use them as a vote)
         # on step 5 the votes are locked in
         if self.vote_timer >= 5:
-            for action, player in zip(actions, self.players):
+            for player in self.players:
                 # action 0 is pass, action 1..n is that player number -1, all remaining actions are pass.
                 # also, only living players can vote
-                if player.is_alive and action >= 0 and action < self.n_players:
-                    self.current_vote[player.index] = action - 1
+                if player.is_alive and 0 <= player.action < self.n_players:
+                    self.current_vote[player.index] = player.action - 1
                 else:
                     self.current_vote[player.index] = -1
-
-        rewards = np.zeros([self.n_players], dtype=np.float)
-        dones = np.zeros([self.n_players], dtype=np.bool)
-        infos = [{} for _ in range(self.n_players)]
 
         team_rewards = np.zeros([3], dtype=np.float)
 
@@ -1017,7 +1010,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             blank_edges(obs, 1, 0)
 
             # status lights
-
             status_colors = [
                 (255, 255, 255), # x
                 (255, 255, 255), # y
@@ -1035,6 +1027,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             for i, (col, value) in enumerate(zip(status_colors, status_values)):
                 c = np.asarray(np.asarray(col, dtype=np.float32) * value, dtype=np.uint8)
                 obs[(i+1)*3:((i+1)*3)+3, -3:-1] = c
+
+            # show team colors
+            i = len(status_values)
+            obs[(i + 1) * 3:((i + 1) * 3) + 3, -3:-1] = player.team_color
+
 
             # if needed add a hint for 'bonus actions'
             # just for debugging
@@ -1056,9 +1053,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self.draw_tile(obs, dx + 1, dy + 1, self.GENERAL_COLOR)
 
         # overlay the voting screen (if we are voting)
-        # stub never show voting screen
-        #if self.vote_timer > 0:
-        #    self._draw_voting_screen(obs)
+        if self.vote_timer > 0:
+            self._draw_voting_screen(obs)
 
         if observer_id >= 0:
             assert obs.shape == self.observation_space.shape, \

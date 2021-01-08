@@ -131,4 +131,3 @@ if __name__ == "__main__":
     print("-" * 60)
     print()
     pool.map(run_experiment, jobs)
-    # stub: new version

@@ -36,12 +36,15 @@ from torch.cuda.amp import GradScaler, autocast
 from logger import Logger
 from typing import Union
 
+from utils import Color as C
+
 from models import *
 
 from marl_env import MultiAgentVecEnv
 import torch.autograd.profiler as profiler
 
 import platform
+
 # this enable text colors on windows
 if platform.system() == "Windows":
     import colorama
@@ -150,6 +153,9 @@ class PMAlgorithm(MarlAlgorithm):
         A = vec_env.total_agents
         N = n_steps
         R = 3 # stub locked to 3 roles for the moment
+
+        if nan_check:
+            print(f"[DEBUG: Using {C.WARNING}nan_check{C.ENDC}]")
 
         self.export_rollout = export_rollout
 
@@ -601,8 +607,7 @@ class PMAlgorithm(MarlAlgorithm):
             )
 
         # this will be [1, B*n_players, n_roles, n_actions], so drop first dim, and reshape
-        n_roles = 3
-        n_actions = self.vec_env.action_space.n
+        _, _, n_roles, n_actions = pred_policy_out["role_log_policy"].shape
         role_log_policy = pred_policy_out["role_log_policy"].reshape(B, n_players, n_roles, n_actions)
         # states need to be reshaped too
         new_rnn_states = new_rnn_states.reshape(B, n_players, 2, self.policy_memory_units)

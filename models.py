@@ -330,6 +330,11 @@ class BaseModel(nn.Module):
         raise NotImplemented()
 
     def _check_for_nans(self, tensors_to_check):
+        """
+        Checks for nans and extreme values in given tensor list
+        :param tensors_to_check: list of tuple (name, tensor)
+        :return:
+        """
         for k, v in tensors_to_check:
             has_nan = torch.any(v.isnan())
             v_min, v_max = torch.min(v), torch.max(v)
@@ -595,7 +600,7 @@ class DeceptionModel(BaseModel):
             result["action_backwards_prediction"] = action_backwards_predictions
 
         if self.nan_check:
-            self.check_for_nans([(k,v) for k,v in result.items()] + ['rnn_states', new_rnn_states])
+            self._check_for_nans([(k,v) for k,v in result.items()] + [('rnn_states', new_rnn_states)])
 
         return result, new_rnn_states
 
@@ -626,8 +631,8 @@ class PolicyModel(BaseModel):
             lstm_mode="residual",
             nan_check=False,
     ):
-        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel, lstm_mode=lstm_mode,
-                         nan_check)
+        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel,
+                         lstm_mode=lstm_mode, nan_check=nan_check)
 
         self.roles = roles
 
@@ -695,7 +700,7 @@ class PolicyModel(BaseModel):
             result['int_value'] = extract_roles(int_value, roles)
 
         if self.nan_check:
-            self.check_for_nans([(k,v) for k,v in result.items()] + ['rnn_states', new_rnn_states])
+            self._check_for_nans([(k,v) for k,v in result.items()] + [('rnn_states', new_rnn_states)])
 
         return result, new_rnn_states
 
