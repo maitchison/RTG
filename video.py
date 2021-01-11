@@ -121,6 +121,9 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     last_outcome = ""
     bonus = None
 
+    def channels_first_to_last(x):
+        return x.swapaxes(0, 1).swapaxes(1, 2)
+
     # play the game...
     while last_outcome == "":
 
@@ -162,7 +165,7 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             for i in range(n_players):
                 dx = 0
                 dy = orig_height + i * obs_size
-                frame[dy:dy + obs_size, dx:dx + obs_size] = obs_truth[i].swapaxes(0, 1)
+                frame[dy:dy + obs_size, dx:dx + obs_size] = channels_first_to_last(obs_truth[i])
 
             # predictions
             # observation frames are [n_players, n_predictions, h, w, c]
@@ -172,9 +175,8 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                 for j in range(n_predictions):
                     dx = j * obs_size + obs_size
                     dy = orig_height + i * obs_size
-                    # we transpose as rescue is x,y instead of y,x
-                    frame[dy:dy + obs_size, dx:dx + obs_size] = \
-                        np.asarray(obs_predictions[i, j] * 255, dtype=np.uint8).swapaxes(0, 1)
+                    predictions_transposed = channels_first_to_last(np.asarray(obs_predictions[i, j] * 255, dtype=np.uint8))
+                    frame[dy:dy + obs_size, dx:dx + obs_size] = predictions_transposed
 
         if "obs_backwards_prediction" in model_output:
             obs_pp = model_output["obs_backwards_prediction"].detach().cpu().numpy()
@@ -183,8 +185,8 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                     dx = j * obs_size + (obs_size * (n_players + 1))
                     dy = orig_height + i * obs_size
                     # we transpose as rescue is x,y instead of y,x
-                    frame[dy:dy + obs_size, dx:dx + obs_size] = \
-                        np.asarray(obs_pp[j, i] * 255, dtype=np.uint8).swapaxes(0, 1)
+                    predictions_transposed = channels_first_to_last(np.asarray(obs_pp[j, i] * 255, dtype=np.uint8))
+                    frame[dy:dy + obs_size, dx:dx + obs_size] = predictions_transposed
 
         if "action_prediction" in model_output:
             action_predictions = np.exp(model_output["action_prediction"].detach().cpu().numpy())

@@ -173,6 +173,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.dm_loss_scale = dm_loss_scale
         self.dm_kl_factor = dm_kl_factor
         self.deception_batch_counter = 0
+        self.policy_batch_counter = 0
 
         # the type of prediction to use for deception off|action|observation|both
         self.prediction_mode = prediction_mode
@@ -1126,10 +1127,10 @@ class PMAlgorithm(MarlAlgorithm):
         # note: this is a little odd as the input will be role dependant, but it should still give us some idea
         # of how the policies diverge
         # also, this is a little slow so we do it only on occasion
-        if self.deception_batch_counter % 10 == 9:
+        if self.policy_batch_counter % 10 == 9:
             for role_a in range(3):
                 a = data["role_log_policy"][..., role_a, :]
-                entropy = torch.sum(- torch.exp(a) * a, dim=-1)
+                entropy = torch.sum(-torch.exp(a) * a, dim=-1).mean()
                 self.log.watch_mean(f"entropy_{role_a}", entropy, display_width=0)
                 for role_b in range(3):
                     b = data["role_log_policy"][..., role_b, :]
@@ -1185,6 +1186,8 @@ class PMAlgorithm(MarlAlgorithm):
             self.log.watch_mean("s_scale", self.scaler.get_scale())
         else:
             (-loss).backward()
+
+        self.policy_batch_counter += 1
 
     @profiler.record_function("deception_back")
     def forward_deception_mini_batch(self, data, loss_scale=1):
@@ -1620,6 +1623,7 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["ext_value"] = self.batch_ext_value
         batch_data["int_value"] = self.batch_int_value
         batch_data["log_policy"] = self.batch_log_policy
+        batch_data["role_log_policy"] = self.batch_role_log_policies # only needed for debugging
         batch_data["advantages"] = self.batch_advantage
         batch_data["terminals"] = self.batch_terminals
         batch_data["rnn_states"] = self.extract_policy_rnn_states(self.batch_rnn_states)
