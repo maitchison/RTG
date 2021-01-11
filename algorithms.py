@@ -105,7 +105,7 @@ class PMAlgorithm(MarlAlgorithm):
 
             amp=False,  # automatic mixed precision
             device="cuda",
-            policy_memory_units=128,
+            policy_memory_units=512,    # >128 is required if we want to predict roles using policy module
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
             # the type of prediction to use for deception.  Observation is much slower to process
@@ -1634,15 +1634,34 @@ class PMAlgorithm(MarlAlgorithm):
         assert self.batch_size % self.mini_batches == 0
         mini_batch_size = self.batch_size // self.mini_batches
 
+        # when we use shorter windows it makes sense to run additional epochs as we are only using a portion of the data
+        # each time
+        windows_per_segment = self.n_steps // 16
+
         self._train_model(
             batch_data,
             self.policy_model,
             self.policy_optimizer,
             self.forward_policy_mini_batch,
-            epochs=self.batch_epochs,
+            epochs=(self.batch_epochs * windows_per_segment),
             mini_batch_size=mini_batch_size,
-            short_name="pol"
+            short_name="pol",
+            max_window_size=16,
+            enable_window_offsets=True
         )
+
+        # this was the old version, but I found the windowing quite useful for learning role prediction on the
+        # policy module.
+        #
+        # self._train_model(
+        #     batch_data,
+        #     self.policy_model,
+        #     self.policy_optimizer,
+        #     self.forward_policy_mini_batch,
+        #     epochs=self.batch_epochs,
+        #     mini_batch_size=mini_batch_size,
+        #     short_name="pol"
+        # )
 
 # ------------------------------------------------------------------
 # Helper functions
