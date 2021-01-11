@@ -635,6 +635,8 @@ def profile():
 
 def main():
 
+    print("CUDA:", torch.version.cuda)
+
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, help="[benchmark|train|test|evaluate]")
     parser.add_argument('--run', type=str, help="run folder", default="test")
