@@ -160,7 +160,7 @@ class RescueTheGeneralScenario():
             "starting_locations": "together",  # random start locations
             "team_shoot_timeout": (20, 0, 0),
             "enable_voting": True,
-            "frame_blanking": 0.75,             # stub: delete 75% of frames
+            #"frame_blanking": 0.75,             # stub: delete 75% of frames
             "battle_royale": True,              # removes general, and ends game if all green players are killed, or
                                                 # if green eliminates red players and harvests all trees
             "points_for_kill": np.asarray((     # loose a point for self kill, gain one for other team kill

@@ -168,9 +168,9 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
                 frame[dy:dy + obs_size, dx:dx + obs_size] = channels_first_to_last(obs_truth[i])
 
             # predictions
-            # observation frames are [n_players, n_predictions, h, w, c]
+            # observation frames are [n_players, n_predictions, c, h, w]
             obs_predictions = model_output["obs_prediction"].detach().cpu().numpy()
-            n_players, n_predictions, h, w, c = obs_predictions.shape
+            n_players, n_predictions, c, h, w = obs_predictions.shape
             for i in range(n_players):
                 for j in range(n_predictions):
                     dx = j * obs_size + obs_size

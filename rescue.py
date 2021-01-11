@@ -1034,8 +1034,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 obs[(i+1)*3:((i+1)*3)+3, -3:-1] = c
 
             # show team colors
-            i = len(status_values)
-            obs[(i + 1) * 3:((i + 1) * 3) + 3, -3:-1] = player.team_color
+            # stub: turn this off to make sure memory works during vote...
+            # i = len(status_values)
+            # obs[(i + 1) * 3:((i + 1) * 3) + 3, -3:-1] = player.team_color
 
 
             # if needed add a hint for 'bonus actions'

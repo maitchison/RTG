@@ -397,7 +397,7 @@ class DeceptionModel(BaseModel):
             self.role_backwards_prediction_head = None
 
             # prediction of each observation
-        h, w, c = self.obs_shape
+        c, h, w = self.obs_shape
 
         self.n_predictions = n_predictions
 
@@ -475,17 +475,23 @@ class DeceptionModel(BaseModel):
         # obs forward prediction
         # ------------------------------
 
+        def restack_observations(x: torch.Tensor):
+            """
+            Take input of (N*B, c, h*n_players, w) and return (N, B, n_players, c, h, w)
+            :return:
+            """
+            c, h, w = self.obs_shape
+            assert x.shape == (N*B, c, h*self.n_players, w)
+            x = x.reshape(N, B, c, self.n_players * h, w)
+            x = x.split(h, dim=3)
+            x = torch.stack(x, dim=2)
+            return x
+
         if self.observation_prediction_head is not None:
             # predictions will come out as (N*B, c, h*n_players, w)
-            # but we need (N, B, n_players, h, w, c)
+            # but we need (N, B, n_players, c, h, w)
             obs_prediction = self.observation_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
-            h, w, c = self.obs_shape
-            obs_prediction = obs_prediction.reshape(N, B, c, self.n_players * h, w)
-            obs_prediction = obs_prediction.split(h, dim=3)
-            obs_prediction = torch.stack(obs_prediction, dim=2)
-            obs_prediction = obs_prediction.transpose(-3, -1)
-            obs_prediction = obs_prediction.transpose(-3, -2)
-            result['obs_prediction'] = obs_prediction
+            result['obs_prediction'] = restack_observations(obs_prediction)
 
         # ------------------------------
         # obs backward prediction
@@ -493,13 +499,7 @@ class DeceptionModel(BaseModel):
 
         if self.observation_backwards_prediction_head is not None:
             obs_pp = self.observation_backwards_prediction_head(encoder_output.reshape(N * B, self.encoder_output_features))
-            h, w, c = self.obs_shape
-            obs_pp = obs_pp.reshape(N, B, c, self.n_predictions * h, w)
-            obs_pp = obs_pp.split(h, dim=3)
-            obs_pp = torch.stack(obs_pp, dim=2)
-            obs_pp = obs_pp.transpose(-3, -1)
-            obs_pp = obs_pp.transpose(-3, -2)
-            result["obs_backwards_prediction"] = obs_pp
+            result["obs_backwards_prediction"] = restack_observations(obs_pp)
 
         # ------------------------------
         # action forwards prediction
