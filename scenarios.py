@@ -160,9 +160,10 @@ class RescueTheGeneralScenario():
             "starting_locations": "together",  # random start locations
             "team_shoot_timeout": (20, 0, 0),
             "enable_voting": True,
-            "battle_royale": True,             # removes general, and ends game if all green players are killed, or
-                                               # if green eliminates red players and harvests all trees
-            "points_for_kill": np.asarray((    # loose a point for self kill, gain one for other team kill
+            "frame_blanking": 0.75,             # stub: delete 75% of frames
+            "battle_royale": True,              # removes general, and ends game if all green players are killed, or
+                                                # if green eliminates red players and harvests all trees
+            "points_for_kill": np.asarray((     # loose a point for self kill, gain one for other team kill
                 (-1, +3.33, +1),
                 (+1, -1, +1),
                 (+1, +1, -1),
@@ -378,6 +379,7 @@ class RescueTheGeneralScenario():
         # enables team colors on agents local observation. This can be useful if one policy plays all 3 teams,
         # however it could cause problems if you want to infer what a different team would have done in that situation
         self.local_team_colors = True
+        self.frame_blanking = 0     # fraction of frames to zero out (tests memory)
 
         # how many point a player gets for killing a player
         # ordered as points_for_kill[shooting_player_team, killed_player_team]

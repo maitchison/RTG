@@ -1070,6 +1070,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             assert obs.shape == self.observation_space.shape, \
                 f"Invalid observation crop, found {obs.shape} expected {self.observation_space.shape}."
 
+        # frame blanking
+        # note: it would be nice if this was a deterministic function of t, player_id, game_number, game_id
+        if observer is not None and np.random.rand() < self.scenario.frame_blanking and self.round_timer > 4:
+            return obs * 0
+
         return obs
 
     @property

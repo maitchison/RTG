@@ -122,7 +122,7 @@ class MultiAgentVecEnv(SubprocVecEnv):
     def get_roles(self):
         """
         Returns numpy array containing roles for each player
-        :return: tensor of dims [n_players]
+        :return: numpy array of dims [n_players]
         """
         roles = [player.team for player in self.players]
         return np.asarray(roles, dtype=np.int64)

@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from typing import Union
 
 class Color:
     """
@@ -303,3 +304,34 @@ def draw_line(frame, x0, y0, x1, y1, c):
     draw_pixel(frame, x, y, c)
 
 
+def check_tensor(
+        name: str,
+        x: torch.Tensor,
+        required_shape:Union[tuple, list, None] = None,
+        required_type: Union[tuple, list, torch.dtype, None] = None,
+        required_device=None
+    ):
+    """
+    Raises exceptions if tensor is not as specified
+    :param x:
+    :param required_shape: none for anything
+    :param required_type: dtype or tuple of dtypes
+    :param required_device:
+    :return:
+    """
+    if type(x) != torch.Tensor:
+        raise ValueError("Input {name} should be torch.Tensor, but was {x.type}")
+    if required_shape is not None:
+        for required_dim, actual_dim in zip(required_shape, x.shape):
+            if required_dim is not None and required_dim != actual_dim:
+                ValueError(f"Input {name} has dims {x.shape}, but expected {required_dim}")
+    if required_type is not None:
+        if type(required_type) is torch.dtype:
+            if x.dtype != required_type:
+                ValueError(f"Input {name} should be of type {required_type}, but was {x.dtype}")
+        else:
+            if x.dtype not in required_type:
+                ValueError(f"Input {name} should be of types {required_type}, but was {x.dtype}")
+    if required_device is not None:
+        if x.device != required_device:
+            ValueError(f"Input {name} should be on device {required_device}, but was on {x.device}")

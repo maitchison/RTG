@@ -5,6 +5,7 @@ from torch.nn import DataParallel as DP
 import math
 
 import utils
+from utils import check_tensor
 
 from marl_env import MultiAgentVecEnv
 
@@ -262,7 +263,7 @@ class BaseModel(nn.Module):
             assert tuple(terminals.shape) == (N, B)
 
         if terminals is not None and terminals.sum() == 0:
-            # just ignore terminals there aren't any (faster)
+            # just ignore terminals if there aren't any (faster)
             terminals = None
 
         obs = obs.reshape([N*B, *obs_shape])
@@ -293,8 +294,8 @@ class BaseModel(nn.Module):
 
         # copy new rnn states into a new tensor
         new_rnn_states = torch.zeros_like(rnn_states)
-        new_rnn_states[:, 0, :] = h
-        new_rnn_states[:, 1, :] = c
+        new_rnn_states[:, 0, :] = h.detach()
+        new_rnn_states[:, 1, :] = c.detach()
 
         if self.lstm_mode == 'residual':
             output = lstm_output + encoding
@@ -351,6 +352,16 @@ class BaseModel(nn.Module):
             raise Exception("Invalid dtype {} for model.".format(dtype))
 
         self.device, self.dtype = device, dtype
+
+    def forward(self, x):
+        """
+        This is just here so we can get a graph of this module.
+        :param x:
+        :return:
+        """
+        fake_memory_states = torch.zeros([x.shape[1], 2, self.memory_units], dtype=torch.float32, device=x.device)
+        results, states = self.forward_sequence(x, fake_memory_states)
+        return results['role_log_policy']
 
 
 class DeceptionModel(BaseModel):
@@ -424,9 +435,21 @@ class DeceptionModel(BaseModel):
 
     def forward_sequence(self, obs, rnn_states, terminals=None):
 
+        # check the input
+        N, B, *obs_shape = obs.shape
+        check_tensor("obs", obs, (N, B, *obs_shape), torch.uint8)
+        check_tensor("rnn_states", rnn_states, (N, B, 2, self.memory_units), torch.float)
+        if terminals is not None:
+            check_tensor("terminals", terminals, (N, B), torch.int64)
+
+        # upload to device
+        obs = obs.to(self.device)
+        rnn_states = rnn_states.to(self.device)
+        if terminals is not None:
+            terminals = terminals.to(self.device)
+
         result = {}
 
-        N, B, *obs_shape = obs.shape
         encoder_output, new_rnn_states = self._forward_sequence(
             obs,
             rnn_states,
@@ -544,7 +567,7 @@ class PolicyModel(BaseModel):
 
     def forward_sequence(self, obs, rnn_states, roles=None, terminals=None):
         """
-        Forwards sequence through model. If roles is provided returns the appropriate policy and value as
+        Forwards sequence through model. If roles are provided returns the appropriate policy and value as
             log_policy: tensor [N, B, *policy_shape]
             ext_value: tensor [N, B]
             int_value: tensor [N, B]
@@ -552,6 +575,9 @@ class PolicyModel(BaseModel):
             log_policies: tensor [N, B, R, *policy_shape]
             ext_values: tensor [N, B, R]
             int_values: tensor [N, B, R]
+
+        Tensors will be uploaded to correct device
+
         :param obs:
         :param rnn_states:
         :param roles: Roles for each agent at each timestep (tensor) [N, B]
@@ -559,12 +585,24 @@ class PolicyModel(BaseModel):
         :return: results dictionary, and updated rnn_states
         """
 
-        N, B, *obs_shape = obs.shape
+        # check the input
+        (N, B, *obs_shape), device = obs.shape, obs.device
+        check_tensor("obs", obs, (N, B, *obs_shape), torch.uint8)
+        check_tensor("rnn_states", rnn_states, (N, B, 2, self.memory_units), torch.float32)
+        if roles is not None:
+            check_tensor("roles", roles, (N, B), torch.int64)
+        if terminals is not None:
+            check_tensor("terminals", terminals, (N, B), torch.int64)
+
+        # upload to device
+        obs = obs.to(self.device)
+        rnn_states = rnn_states.to(self.device)
+        if terminals is not None:
+            terminals = terminals.to(self.device)
+        if roles is not None:
+            roles = roles.to(self.device)
 
         encoder_output, new_rnn_states = self._forward_sequence(obs, rnn_states, terminals)
-
-        if roles is not None:
-            assert roles.shape == (N, B), f"Expected roles to be shape {(N,B)} but found {roles.shape}"
 
         policy_outputs = self.policy_head(encoder_output).reshape(N, B, self.roles, self.n_actions)
         log_policy = torch.log_softmax(policy_outputs, dim=-1)
@@ -581,7 +619,6 @@ class PolicyModel(BaseModel):
             """
             Input is N, B, R, *shape
             """
-            # todo: make this vectorized?
             N, B, R, *shape = x.shape
             parts = []
             for n in range(N):
@@ -589,9 +626,6 @@ class PolicyModel(BaseModel):
             return torch.cat(parts, dim=0)
 
         if roles is not None:
-            if type(roles) is np.ndarray:
-                roles = torch.from_numpy(roles)
-            roles = roles.to(torch.int64) # required for indexing...?
             result['log_policy'] = extract_roles(log_policy, roles)
             result['ext_value'] = extract_roles(ext_value, roles)
             result['int_value'] = extract_roles(int_value, roles)
@@ -684,5 +718,3 @@ class SplitPolicyModel(nn.Module):
             new_rnn_states[rnn_mask] = rnn_states_part[rnn_mask]
 
         return result, new_rnn_states
-
-

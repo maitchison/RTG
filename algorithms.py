@@ -32,11 +32,14 @@ import gzip
 import time
 import os
 
+from torch.utils.tensorboard import SummaryWriter
+
 from torch.cuda.amp import GradScaler, autocast
 from logger import Logger
 from typing import Union
 
 from utils import Color as C
+from utils import check_tensor
 
 from models import *
 
@@ -352,6 +355,15 @@ class PMAlgorithm(MarlAlgorithm):
             raise ValueError(f"Invalid micro batch size {micro_batch_size}")
 
         self.scaler = GradScaler() if self.amp else None
+
+    def write_to_tensorboard(self, path):
+        writer = SummaryWriter(path)
+        blank_data = torch.zeros([32, 64, *self.obs_shape], dtype=torch.uint8).to(self.policy_model.device)
+        writer.add_graph(self.policy_model, blank_data)
+        #if self.uses_deception_model:
+        #    writer.add_graph(self.deception_model, blank_data)
+        writer.close()
+
 
     @property
     def mini_batches(self):
@@ -703,7 +715,7 @@ class PMAlgorithm(MarlAlgorithm):
                 mask=bonus_mask,  # for the moment don't mask non-visible players
                 actions=torch.from_numpy(actions)
             )
-            believed_other_rnn_states[:] = new_believed_other_rnn_states[:] # copy across new state
+            believed_other_rnn_states[:] = new_believed_other_rnn_states # copy across new state
             deception_bonus += db_observations.cpu().detach().numpy()
 
         return deception_bonus
@@ -763,11 +775,11 @@ class PMAlgorithm(MarlAlgorithm):
                 # forward state through model, then detach the result and convert to numpy.
                 with profiler.record_function("gr_model_step"):
                     model_out, new_agent_rnn_state = self.forward(
-                        self.agent_obs,
+                        torch.from_numpy(self.agent_obs),
                         self.agent_rnn_state,
-                        roles=roles
+                        roles=torch.from_numpy(roles)
                     )
-                self.agent_rnn_state[:] = new_agent_rnn_state
+                self.agent_rnn_state[:] = new_agent_rnn_state # we copy into the states to avoid allocating another buffer.
 
                 role_log_policies = model_out["role_log_policy"].detach().cpu().numpy()
                 log_policy = model_out["log_policy"].detach().cpu().numpy()
@@ -879,7 +891,11 @@ class PMAlgorithm(MarlAlgorithm):
                     self.batch_int_value[t] = int_value
 
             # get value estimates for final observation.
-            model_out, _ = self.forward(self.agent_obs, self.agent_rnn_state, roles=roles)
+            model_out, _ = self.forward(
+                torch.from_numpy(self.agent_obs),
+                self.agent_rnn_state,
+                roles=torch.from_numpy(roles)
+            )
 
             self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
             if "int_value" in model_out:
@@ -982,7 +998,7 @@ class PMAlgorithm(MarlAlgorithm):
         return rnn_states[..., self.policy_memory_units:]
 
     @profiler.record_function("model_forward")
-    def forward(self, obs, rnn_states, roles, disable_deception=False):
+    def forward(self, obs: torch.Tensor, rnn_states:torch.Tensor, roles: torch.Tensor, disable_deception=False):
         """
         Forwards a single observations through model for each agent
         For more advanced uses call model.forward_sequence directly.
@@ -999,6 +1015,12 @@ class PMAlgorithm(MarlAlgorithm):
             new_rnn_states          [B, 2|4, memory_dims]
 
         """
+
+        # check the input
+        (B, *obs_shape), device = obs.shape, obs.device
+        check_tensor("obs", obs, (B, *obs_shape), torch.uint8)
+        check_tensor("rnn_states", rnn_states, (B, *self.rnn_state_shape), torch.float)
+        check_tensor("roles", roles, (B,), torch.int64)
 
         # handle very large forwards by splitting batch into smaller parts
         batch_size = obs.shape[0]
@@ -1021,7 +1043,7 @@ class PMAlgorithm(MarlAlgorithm):
         result, new_rnn_states = self.policy_model.forward_sequence(
             obs=obs[np.newaxis],
             rnn_states=self.extract_policy_rnn_states(rnn_states),
-            roles=np.asarray(roles).reshape([1, len(roles)])
+            roles=roles[np.newaxis, :]
         )
 
         if self.uses_deception_model:
@@ -1097,6 +1119,22 @@ class PMAlgorithm(MarlAlgorithm):
 
         self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64, display_precision=3)
         loss += loss_clip_mean
+
+        # -------------------------------------------------
+        # calculate kl between policies, and record entropy
+        # -------------------------------------------------
+        # note: this is a little odd as the input will be role dependant, but it should still give us some idea
+        # of how the policies diverge
+        # also, this is a little slow so we do it only on occasion
+        if self.deception_batch_counter % 10 == 9:
+            for role_a in range(3):
+                a = data["role_log_policy"][..., role_a, :]
+                entropy = torch.sum(- torch.exp(a) * a, dim=-1)
+                self.log.watch_mean(f"entropy_{role_a}", entropy, display_width=0)
+                for role_b in range(3):
+                    b = data["role_log_policy"][..., role_b, :]
+                    kl = F.kl_div(a, b, reduction='batchmean', log_target=True)
+                    self.log.watch_mean(f"kl_{role_a}_{role_b}", kl, display_width=0)
 
         # -------------------------------------------------------------------------
         # Calculate loss_value

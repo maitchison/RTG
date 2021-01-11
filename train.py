@@ -6,6 +6,11 @@ Author: Matthew Aitchison
 """
 
 import torch
+
+# this dramatically reduces the CPU resourced used and makes no appreciable
+# difference to performance
+torch.set_num_threads(2)
+
 import torch.cuda
 import uuid
 import numpy as np
@@ -142,7 +147,11 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
 
         with torch.no_grad():
             roles = vec_env.get_roles()
-            model_output, new_rnn_states = algorithm.forward(env_obs, rnn_states, roles)
+            model_output, new_rnn_states = algorithm.forward(
+                torch.from_numpy(env_obs),
+                rnn_states,
+                torch.from_numpy(roles)
+            )
             rnn_states[:] = new_rnn_states
 
             log_policy = model_output["log_policy"].detach().cpu().numpy()
@@ -350,6 +359,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
     )
 
     algorithm.log_folder = config.log_folder
+    #algorithm.write_to_tensorboard(config.log_folder)
 
     print(f" -model created using batch size of {algorithm.batch_size} and mini-batch size of {algorithm.mini_batch_size}")
 
@@ -409,7 +419,11 @@ def run_benchmarks(train=True, model=True, env=True):
 
             with torch.no_grad():
                 roles = vec_env.get_roles()
-                model_output, _ = agent.forward(obs, agent.agent_rnn_state, roles)
+                model_output, _ = agent.forward(
+                    torch.from_numpy(obs),
+                    agent.agent_rnn_state,
+                    torch.from_numpy(roles)
+                )
                 log_policy = model_output["log_policy"].detach().cpu().numpy()
                 actions = utils.sample_action_from_logp(log_policy)
             steps += vec_env.num_envs

@@ -129,9 +129,13 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         with torch.no_grad():
             roles = vec_env.get_roles()
             obs_truth = env_obs.copy()
-            model_output, new_rnn_state = algorithm.forward(env_obs, rnn_state, roles)
+            model_output, new_rnn_state = algorithm.forward(
+                torch.from_numpy(env_obs),
+                rnn_state,
+                torch.from_numpy(roles)
+            )
 
-            rnn_state[:] = new_rnn_state[:]
+            rnn_state[:] = new_rnn_state
 
             log_policy = model_output["log_policy"].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(log_policy)
