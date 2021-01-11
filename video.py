@@ -122,7 +122,12 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
     bonus = None
 
     def channels_first_to_last(x):
-        return x.swapaxes(0, 1).swapaxes(1, 2)
+        """
+        Swap from chw to whc
+        :param x:
+        :return:
+        """
+        return x.swapaxes(0, 2)
 
     # play the game...
     while last_outcome == "":
@@ -154,6 +159,10 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         if "role_prediction" in model_output:
             role_predictions = model_output["role_prediction"].detach().cpu().numpy()
             display_role_prediction(frame, orig_width, 10, role_predictions, env)
+
+        if "policy_role_prediction" in model_output:
+            role_predictions = model_output["policy_role_prediction"].detach().cpu().numpy()
+            display_role_prediction(frame, orig_width, 60, role_predictions, env)
 
         if "role_backwards_prediction" in model_output:
             backwards_role_predictions = model_output["role_backwards_prediction"].detach().cpu().numpy()

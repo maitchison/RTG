@@ -1010,6 +1010,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
             blank_edges(obs, cells_to_blank_out * CELL_SIZE, [32, 32, 32])
             blank_edges(obs, 3, [128, 128, 128])
+
+            # display id color
             obs[3:-3, :3] = observer.id_color
 
             blank_edges(obs, 1, 0)
@@ -1019,14 +1021,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 (255, 255, 255), # x
                 (255, 255, 255), # y
                 (128, 255, 128), # health
-                (255, 255, 0), # timeout
+                (255, 255, 0),   # timeout
+                (255, 0, 255),   # shooting timeout
             ]
 
             status_values = [
                 player.x / self.scenario.map_width,
                 player.y / self.scenario.map_height,
                 player.health / self.scenario.player_initial_health,
-                self.round_timer / self.timeout
+                self.round_timer / self.timeout,
+                player.turns_until_we_can_shoot / player.shooting_timeout if player.shooting_timeout > 0 else 0,
             ]
 
             for i, (col, value) in enumerate(zip(status_colors, status_values)):
@@ -1034,10 +1038,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 obs[(i+1)*3:((i+1)*3)+3, -3:-1] = c
 
             # show team colors
-            # stub: turn this off to make sure memory works during vote...
-            # i = len(status_values)
-            # obs[(i + 1) * 3:((i + 1) * 3) + 3, -3:-1] = player.team_color
-
+            i = len(status_values)
+            obs[(i + 1) * 3:((i + 1) * 3) + 3, -3:-1] = player.team_color
 
             # if needed add a hint for 'bonus actions'
             # just for debugging
@@ -1115,7 +1117,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # general location
         self.general_location = (
-        np.random.randint(3, self.scenario.map_width - 2), np.random.randint(3, self.scenario.map_height - 2))
+            np.random.randint(3, self.scenario.map_width - 2), np.random.randint(3, self.scenario.map_height - 2))
         self.general_health = self.scenario.general_initial_health
         self.general_closest_tiles_from_edge = self.general_tiles_from_edge
         self.blue_has_stood_next_to_general = False

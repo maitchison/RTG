@@ -149,8 +149,8 @@ class RescueTheGeneralScenario():
             "map_width": 32,
             "map_height": 32,
             "team_counts": (1, 3, 0),
-            "n_trees": 9,
-            "reward_per_tree": 1,
+            "n_trees": 18,
+            "reward_per_tree": 0.5,
             "hidden_roles": "all",
             "timeout_mean": 250,               # make sure games don't last too long, 250 is plenty of time for green
                                                # to harvest all the trees
@@ -175,8 +175,8 @@ class RescueTheGeneralScenario():
             "map_width": 32,
             "map_height": 32,
             "team_counts": (1, 3, 0),
-            "n_trees": 9,
-            "reward_per_tree": 1,
+            "n_trees": 18,
+            "reward_per_tree": 0.5,
             "hidden_roles": "all",
             "timeout_mean": 250,  # make sure games don't last too long, 250 is plenty of time for green
             # to harvest all the trees

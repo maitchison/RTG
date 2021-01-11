@@ -143,7 +143,7 @@ class PMAlgorithm(MarlAlgorithm):
             dm_lstm_mode="residual",
             dm_kl_factor=0,                 # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
             dm_vision_filter=0.25,          # what proportion of non_visible agent pairs to train on
-            dm_loss_scale=0.1,
+            dm_loss_scale=0.1,              # loss scale for observation mse loss
         ):
 
         if type(deception_bonus) in [float, int]:
@@ -256,6 +256,8 @@ class PMAlgorithm(MarlAlgorithm):
         self.t = 0
         self.learn_steps = 0
         self.batch_size = N * A
+        n_players = self.vec_env.max_players
+        n_roles = 3
 
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
@@ -294,6 +296,7 @@ class PMAlgorithm(MarlAlgorithm):
         # return estimates (from which state though?)
         self.batch_ext_returns = np.zeros([N, A], dtype=np.float32)
         self.batch_int_returns = np.zeros([N, A], dtype=np.float32)
+        self.batch_id = np.zeros([N, A], dtype=np.int64)
 
         # role of each player at each timestep
         self.batch_roles = np.zeros([N, A], dtype=np.int64)
@@ -890,6 +893,7 @@ class PMAlgorithm(MarlAlgorithm):
                     self.batch_int_rewards[t] = int_rewards
                     self.batch_ext_value[t] = ext_value
                     self.batch_int_value[t] = int_value
+                    self.batch_id[t] = np.asarray([player.index for player in self.vec_env.players])
 
             # get value estimates for final observation.
             model_out, _ = self.forward(
@@ -992,10 +996,11 @@ class PMAlgorithm(MarlAlgorithm):
                 self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
 
     def extract_policy_rnn_states(self, rnn_states):
-        # input can be either [A, 2, memory_units], or [N, 2, memory_units]
+        # input can be [..., 2, memory_units]
         return rnn_states[..., :self.policy_memory_units]
 
     def extract_deception_rnn_states(self, rnn_states):
+        # input can be [..., 2, memory_units]
         return rnn_states[..., self.policy_memory_units:]
 
     @profiler.record_function("model_forward")
@@ -1076,7 +1081,7 @@ class PMAlgorithm(MarlAlgorithm):
         :param data: dictionary containing data for
         """
 
-        loss = torch.tensor(0, dtype=torch.float32, device=self.policy_model.device)
+        loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.policy_model.device, requires_grad=True)
 
         # -------------------------------------------------------------------------
         # Calculate loss_pg
@@ -1091,7 +1096,6 @@ class PMAlgorithm(MarlAlgorithm):
         actions = merge_down(data["actions"])
         policy_log_probs = merge_down(data["log_policy"])
         advantages = merge_down(data["advantages"])
-        # stub: put this back in
         weights = 1
 
         N, B, *obs_shape = prev_obs.shape
@@ -1101,12 +1105,13 @@ class PMAlgorithm(MarlAlgorithm):
                 obs=prev_obs,
                 rnn_states=rnn_states,
                 terminals=terminals,
-                roles = roles
+                roles=roles
             )
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
         for k, v in model_out.items():
-            model_out[k] = merge_down(v)
+            if k != "policy_role_prediction":
+                model_out[k] = merge_down(v)
 
         logps = model_out["log_policy"]
 
@@ -1119,7 +1124,30 @@ class PMAlgorithm(MarlAlgorithm):
         loss_clip_mean = (weights*loss_clip).mean()
 
         self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64, display_precision=3)
-        loss += loss_clip_mean
+        loss = loss + loss_clip_mean
+
+        # ----------------------------------------
+        # role prediction loss
+        # ----------------------------------------
+        # the policy module also makes predictions about who is who, so that the feature space contains this
+        # information and can be used for voting etc
+        # loss must be negative as we maximize loss with policy...
+
+        loss_role = -0.1 * calculate_roll_prediction_nll(
+            model_out["policy_role_prediction"],
+            data["player_roles"]
+        )
+        loss = loss + loss_role
+        self.log.watch_mean("loss_policy_role", loss_role)
+
+        # get clean roll_loss for each team, this is used for debugging only
+        if self.policy_batch_counter % 10 == 0:
+            with torch.no_grad():
+                for team_id, team_name in ((0, 'red'), (1, 'green'), (2, 'blue')):
+                    team_filter = data["roles"] == team_id
+                    nll = calculate_roll_prediction_nll(model_out["policy_role_prediction"], data["player_roles"], team_filter)
+                    if nll is not None:
+                        self.log.watch_mean(f"{team_name}_policy_role_nll", nll, display_width=0)
 
         # -------------------------------------------------
         # calculate kl between policies, and record entropy
@@ -1161,7 +1189,7 @@ class PMAlgorithm(MarlAlgorithm):
                 loss_value = -self.vf_coef * 0.5 * torch.mean(vf_losses1 * weights)
 
             self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
-            loss += loss_value
+            loss = loss + loss_value
 
         # -------------------------------------------------------------------------
         # Calculate loss_entropy
@@ -1170,7 +1198,7 @@ class PMAlgorithm(MarlAlgorithm):
         loss_entropy = -(logps.exp() * logps).sum(axis=1)
         loss_entropy = (loss_entropy * weights * self.entropy_bonus).mean()
         self.log.watch_mean("loss_ent", loss_entropy)
-        loss += loss_entropy
+        loss = loss + loss_entropy
 
         # -------------------------------------------------------------------------
         # Apply loss
@@ -1258,30 +1286,6 @@ class PMAlgorithm(MarlAlgorithm):
         # -------------------------------------------------------------------------
         # Calculate loss_role
         # -------------------------------------------------------------------------
-
-        def calculate_roll_prediction_nll(role_predictions, role_targets, filter=None):
-            """
-            Calculate KL divergence between role predictions and role targets.
-            :param role_predictions: Prediction of role for each player
-                i.e, at timestep N, player B's prediction about n_players role.
-                log probabilities for each player, float32 tensor of dims [N, B, n_players, n_roles]
-            :param role_targets: true roles, int64 tensor of dims [N, B, n_players]
-            :param filter: (optional) boolean tensor indicating which items in batch to use of dims [N, B]
-            :return:
-            """
-
-            role_targets = merge_down(role_targets)
-            role_predictions = merge_down(role_predictions)
-
-            if filter is not None:
-                filter = merge_down(filter)
-                if sum(filter) == 0:
-                    return None
-                role_predictions = role_predictions[filter]
-                role_targets = role_targets[filter]
-            # we want this in N*B, n_roles, n_players order as torch expects, (batch, class, d1,d2,d3... etc)
-            role_predictions = role_predictions.transpose(1, 2)
-            return F.nll_loss(role_predictions, role_targets)
 
         loss_role = rp_coef * calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"])
         loss += loss_role
@@ -1491,9 +1495,6 @@ class PMAlgorithm(MarlAlgorithm):
             assert mini_batch_segments % max_micro_batch_segments == 0
             micro_batches = mini_batch_segments // max_micro_batch_segments
 
-        # stub: print details
-        # print(short_name, micro_batches, mini_batches, mini_batch_segments, max_micro_batch_segments)
-
         for i in range(last_epoch):
 
             segments = list(range(B))
@@ -1616,6 +1617,7 @@ class PMAlgorithm(MarlAlgorithm):
         # put the required data into a dictionary
         batch_data = {}
         batch_data["prev_obs"] = self.batch_prev_obs
+        batch_data["id"] = self.batch_id
         batch_data["actions"] = self.batch_actions
         batch_data["roles"] = self.batch_roles
         batch_data["ext_returns"] = self.batch_ext_returns
@@ -1624,6 +1626,7 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["int_value"] = self.batch_int_value
         batch_data["log_policy"] = self.batch_log_policy
         batch_data["role_log_policy"] = self.batch_role_log_policies # only needed for debugging
+        batch_data["player_roles"] = self.batch_player_roles
         batch_data["advantages"] = self.batch_advantage
         batch_data["terminals"] = self.batch_terminals
         batch_data["rnn_states"] = self.extract_policy_rnn_states(self.batch_rnn_states)
@@ -1759,6 +1762,32 @@ def calculate_action_prediction_loss(pred: torch.Tensor, true: torch.Tensor):
     pred = pred.reshape(N * B * n_players * n_roles, n_actions)
     true = true.reshape(N * B * n_players * n_roles, n_actions)
     return F.kl_div(pred, true, reduction='batchmean', log_target=True)
+
+
+def calculate_roll_prediction_nll(role_predictions, role_targets, filter=None):
+    """
+    Calculate KL divergence between role predictions and role targets.
+    :param role_predictions: Prediction of role for each player
+        i.e, at timestep N, player B's prediction about n_players role.
+        log probabilities for each player, float32 tensor of dims [N, B, n_players, n_roles]
+    :param role_targets: true roles, int64 tensor of dims [N, B, n_players]
+    :param filter: (optional) boolean tensor indicating which items in batch to use of dims [N, B]
+    :return:
+    """
+
+
+    role_targets = merge_down(role_targets)
+    role_predictions = merge_down(role_predictions)
+
+    if filter is not None:
+        filter = merge_down(filter)
+        if sum(filter) == 0:
+            return None
+        role_predictions = role_predictions[filter]
+        role_targets = role_targets[filter]
+    # we want this in N*B, n_roles, n_players order as torch expects, (batch, class, d1,d2,d3... etc)
+    role_predictions = role_predictions.transpose(1, 2)
+    return F.nll_loss(role_predictions, role_targets)
 
 
 test_calculate_returns()

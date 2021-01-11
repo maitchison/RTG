@@ -61,7 +61,7 @@ class DefaultEncoder(BaseEncoder):
         x = torch.max_pool2d(x, 2, 2)
         assert x.shape[1:] == self.final_dims, f"Expected final shape to be {self.final_dims} but found {x.shape[1:]}"
         x = x.reshape((b, -1))
-        x = torch.relu(self.fc(x))
+        x = torch.sigmoid(self.fc(x))  # try sigmoid, see if it's any better than relu (I'm getting a lot of 0 activations...)
 
         return x
 
@@ -294,8 +294,8 @@ class BaseModel(nn.Module):
 
         # copy new rnn states into a new tensor
         new_rnn_states = torch.zeros_like(rnn_states)
-        new_rnn_states[:, 0, :] = h.detach()
-        new_rnn_states[:, 1, :] = c.detach()
+        new_rnn_states[:, 0, :] = h[0].detach()
+        new_rnn_states[:, 1, :] = c[0].detach()
 
         if self.lstm_mode == 'residual':
             output = lstm_output + encoding
@@ -562,6 +562,8 @@ class PolicyModel(BaseModel):
 
         self.local_int_value_head = nn.Linear(self.encoder_output_features, roles)
         self.local_ext_value_head = nn.Linear(self.encoder_output_features, roles)
+        # this is just here as an aux task. During voting it is important that the agent is aware of who is who
+        self.role_prediction_head = nn.Linear(self.encoder_output_features, (self.n_players * self.n_roles))
 
         self.set_device_and_dtype(self.device, self.dtype)
 
@@ -609,10 +611,15 @@ class PolicyModel(BaseModel):
         ext_value = self.local_ext_value_head(encoder_output)
         int_value = self.local_int_value_head(encoder_output)
 
+        # these will come out as [N, B, n_players * n_roles] but we need [N, B, n_players, n_roles] for normalization
+        unnormalized_role_predictions = self.role_prediction_head(encoder_output).reshape(N, B, self.n_players, self.n_roles)
+        role_prediction = torch.log_softmax(unnormalized_role_predictions, dim=-1)
+
         result = {
             'role_log_policy': log_policy,
             'role_ext_value': ext_value,
-            'role_int_value': int_value
+            'role_int_value': int_value,
+            'policy_role_prediction': role_prediction
         }
 
         def extract_roles(x, roles):
@@ -620,6 +627,7 @@ class PolicyModel(BaseModel):
             Input is N, B, R, *shape
             """
             N, B, R, *shape = x.shape
+            assert roles.shape == (N, B)
             parts = []
             for n in range(N):
                 parts.append(x[n:n+1, range(B), roles[n]])
