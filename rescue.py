@@ -177,6 +177,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     NEUTRAL_COLOR = np.asarray([96, 96, 96], dtype=np.uint8)
     GRASS_COLOR = np.asarray([0, 128, 0], dtype=np.uint8)
     TREE_COLOR = np.asarray([12, 174, 91], dtype=np.uint8)
+    BUTTON_COLOR = np.asarray([200, 200, 200], dtype=np.uint8)
     DEAD_COLOR = np.asarray([0, 0, 0], dtype=np.uint8)
 
     ID_COLOR = np.asarray(
@@ -247,6 +248,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.blue_rewards_for_winning = int()
         self.location_encoding = location_encoding
         self.channels_first = channels_first
+        self.button_location = (0, 0)
+
+        # turns until a vote can occur
+        self.vote_cooldown = 0
 
         # create players
         self.players = [RTG_Player(index, self.scenario) for index in range(self.n_players)]
@@ -430,9 +435,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # -------------------------
         # call vote button
+
+        if self.vote_cooldown > 0:
+            self.vote_cooldown -= 1
+
         for player in self.living_players:
 
-            if not self.scenario.enable_voting or player.action != ACTION_CALL_VOTE:
+            if not self.scenario.enable_voting or player.action != ACTION_CALL_VOTE or self.vote_cooldown > 0:
                 continue
 
             # to call a vote player must be alive, and close to a dead body
@@ -441,11 +450,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 if target.is_dead and max_distance(*player.pos, *target.pos) <= 2 and not target.invisible:
                     near_body = target
 
+            near_button = max_distance(*player.pos, *self.button_location) <= 1
+
             if near_body:
                 self.vote_timer = 10
+                self.vote_cooldown = 20
                 self.who_called_vote = player
-                # 'remove' the body by moving it far away
+                # 'remove' the body by make it invisible
                 near_body.invisible = True
+            elif near_button:
+                self.vote_timer = 10
+                self.vote_cooldown = 20
+                self.who_called_vote = player
 
         # -------------------------
         # action button
@@ -683,7 +699,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 if votes_for_this_player >= votes_needed:
                     self.stats_votes[target.team] += 1
 
-                    # execute kill
+                    # execute kill, and remove player
                     target.health = 0
                     target.invisible = True
 
@@ -692,9 +708,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                         team_rewards[team] += self.scenario.points_for_kill[team, target.team]
 
                     break
-            else:
-                # indicate a pass
-                self.stats_votes[-1] += 1
+
+            # record total number of votes
+            self.stats_votes[-1] += 1
 
             # reset voting
             self.vote_timer = 0
@@ -770,9 +786,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :return:
         """
 
-        if player.invisible:
-            return
-
         team_color = self.TEAM_COLOR[player.team] if team_colors else self.NEUTRAL_COLOR
         id_color = player.id_color
 
@@ -823,6 +836,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             for y in range(self.scenario.map_height):
                 if self.map[x, y] == self.MAP_TREE:
                     self.draw_tile(obs, x, y, self.TREE_COLOR)
+
+        # paint button
+        if self.scenario.voting_button:
+            self.draw_tile(obs, *self.button_location, self.BUTTON_COLOR)
 
         # padding (makes cropping easier...)
         self._map_padding = (self.scenario.max_view_distance + 1) # +1 for border
@@ -954,6 +971,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # paint soldiers, living over dead
         for player in self.players:
             player_is_visible = (observer is None) or observer.in_vision(player.x, player.y)
+
+            if player.invisible and player != observer:
+                # do not show invisible bodies (ones that have been removed from game)
+                player_is_visible = False
+
             team_colors = self.can_see_role(observer, player)
 
             if player.is_dead and player_is_visible:
@@ -970,6 +992,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             team_colors = self.can_see_role(observer, player)
             if player.index == observer_id and not self.scenario.local_team_colors:
                 team_colors = False
+
+            if player.invisible and player != observer:
+                # do not show invisible bodies (ones that have been removed from game)
+                player_is_visible = False
 
             if not player.is_dead and player_is_visible:
                 self._draw_soldier(
@@ -1123,6 +1149,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.blue_has_stood_next_to_general = False
         self.blue_rewards_for_winning = 10
 
+        self.vote_cooldown = 0
+
         # handle bonus actions
         self.bonus_actions = np.random.randint(
             low=0,
@@ -1147,6 +1175,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         for loc in [all_locations[idx] for idx in idxs]:
             self.map[loc] = 2
 
+        # default button location to center of map
+        button_location = (self.scenario.map_width//2, self.scenario.map_height//2)
+
         # initialize players location
         if self.scenario.starting_locations == "random":
             # players are placed randomly around the map
@@ -1159,6 +1190,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             assert self.n_players <= 16, "This method of initializing starting locations only works with 16 or less players."
             valid_start_locations = list(filter(general_filter, all_locations))
             start_location_center = valid_start_locations[np.random.choice(range(len(valid_start_locations)))]
+            button_location = start_location_center
             start_locations = []
             for dx in range(-3, 3+1):
                 for dy in range(-3, 3+1):
@@ -1171,12 +1203,16 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         else:
             raise Exception(f"Invalid starting location mode {self.scenario.starting_locations}")
 
+        # create a button if needed
+        self.button_location = button_location
+
         # initialize the players
         for player in self.players:
             player.x, player.y = start_locations.pop()
             player.health = self.scenario.player_initial_health
             player.turns_until_we_can_shoot = player.shooting_timeout
             player.custom_data = dict()
+            player.invisible = False
 
         # apply dummy players, we can do this by simply killing them
         players_left_alive = len(self.players)

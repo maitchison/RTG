@@ -163,11 +163,31 @@ class RescueTheGeneralScenario():
             #"frame_blanking": 0.75,             # stub: delete 75% of frames
             "battle_royale": True,              # removes general, and ends game if all green players are killed, or
                                                 # if green eliminates red players and harvests all trees
+            "voting_button": True,  # place a voting button at the start
             "points_for_kill": np.asarray((     # loose a point for self kill, gain one for other team kill
                 (-1, +3.33, +1),
                 (+1, -1, +1),
                 (+1, +1, -1),
             ))
+        },
+
+        "5p": {
+            "description": "A five player game",
+            "map_width": 32,
+            "map_height": 32,
+            "team_counts": (1, 2, 2),
+            "n_trees": 18,
+            "reward_per_tree": 0.5,
+            "hidden_roles": "all",
+            "timeout_mean": 250,  # make sure games don't last too long, 250 is plenty of time for green
+            # to harvest all the trees
+            "max_view_distance": 5,  # makes things a bit faster having smaller vision
+            "team_view_distance": (5, 5, 5),  # no bonus vision for red
+            "team_shoot_range": (3, 0, 0),
+            "starting_locations": "together",  # random start locations
+            "team_shoot_timeout": (20, 0, 0),
+            "enable_voting": True,
+            "voting_button": True,          # place a voting button at the start
         },
 
         "wolf_sheep_nv": {
@@ -376,6 +396,7 @@ class RescueTheGeneralScenario():
         self.bonus_actions_delay = 10
         self.enable_signals = False
         self.starting_locations = "together"
+        self.voting_button = False  # creates a voting button near start
         # enables team colors on agents local observation. This can be useful if one policy plays all 3 teams,
         # however it could cause problems if you want to infer what a different team would have done in that situation
         self.local_team_colors = True

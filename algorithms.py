@@ -296,7 +296,9 @@ class PMAlgorithm(MarlAlgorithm):
         # return estimates (from which state though?)
         self.batch_ext_returns = np.zeros([N, A], dtype=np.float32)
         self.batch_int_returns = np.zeros([N, A], dtype=np.float32)
+        # these are just for debugging
         self.batch_id = np.zeros([N, A], dtype=np.int64)
+        self.batch_t = np.zeros([N, A], dtype=np.int64)
 
         # role of each player at each timestep
         self.batch_roles = np.zeros([N, A], dtype=np.int64)
@@ -768,6 +770,14 @@ class PMAlgorithm(MarlAlgorithm):
 
                 self.batch_rnn_states[t, :] = self.agent_rnn_state.cpu()[:]
 
+                # get time stamps from environment
+                ts = []
+                for game in self.vec_env.games:
+                    for player in game.players:
+                        ts.append(game.round_timer)
+                ts = np.asarray(ts)
+
+
                 # ------------------------------------
                 # roles
                 roles = self.vec_env.get_roles()
@@ -894,6 +904,7 @@ class PMAlgorithm(MarlAlgorithm):
                     self.batch_ext_value[t] = ext_value
                     self.batch_int_value[t] = int_value
                     self.batch_id[t] = np.asarray([player.index for player in self.vec_env.players])
+                    self.batch_t[t] = ts
 
             # get value estimates for final observation.
             model_out, _ = self.forward(
@@ -1136,7 +1147,7 @@ class PMAlgorithm(MarlAlgorithm):
         loss_role = -0.1 * calculate_roll_prediction_nll(
             model_out["policy_role_prediction"],
             data["player_roles"]
-        )
+        ).mean()
         loss = loss + loss_role
         self.log.watch_mean("loss_policy_role", loss_role)
 
@@ -1147,7 +1158,7 @@ class PMAlgorithm(MarlAlgorithm):
                     team_filter = data["roles"] == team_id
                     nll = calculate_roll_prediction_nll(model_out["policy_role_prediction"], data["player_roles"], team_filter)
                     if nll is not None:
-                        self.log.watch_mean(f"{team_name}_policy_role_nll", nll, display_width=0)
+                        self.log.watch_mean(f"{team_name}_policy_role_nll", nll.mean(), display_width=0)
 
         # -------------------------------------------------
         # calculate kl between policies, and record entropy
@@ -1287,7 +1298,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Calculate loss_role
         # -------------------------------------------------------------------------
 
-        loss_role = rp_coef * calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"])
+        loss_role = rp_coef * calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"]).mean()
         loss += loss_role
         self.log.watch_mean("loss_role", loss_role)
 
@@ -1298,7 +1309,14 @@ class PMAlgorithm(MarlAlgorithm):
                     team_filter = data["roles"] == team_id
                     nll = calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"], team_filter)
                     if nll is not None:
-                        self.log.watch_mean(f"{team_name}_role_nll", nll, display_width=0)
+                        # stub: check if any red players were very wrong
+                        # if team_id == 0 and nll.abs().max() > 1.0:
+                        #     print("Red team had high role prediction error.")
+                        #     print(nll)
+                        #     print(data["player_roles"])
+                        #     print(data["t"])
+
+                        self.log.watch_mean(f"{team_name}_role_nll", nll.mean(), display_width=0)
 
         if "role_backwards_prediction" in model_out:
             role_backwards_targets = data["player_role_predictions"].reshape(N*B*n_players, n_roles)
@@ -1544,6 +1562,7 @@ class PMAlgorithm(MarlAlgorithm):
                                 else:
                                     value = value[:max_window_size]
 
+                            # rnn states are useful for debuging, but take a lot of v-ram.
                             if key == "rnn_states":
                                 # only need first rnn_state for mini_batch, saves a bit of GPU memory
                                 value = value[0:1]
@@ -1561,6 +1580,8 @@ class PMAlgorithm(MarlAlgorithm):
         # put the required data into a dictionary
         this_batch_data = {}
         this_batch_data["roles"] = self.batch_roles
+        this_batch_data["t"] = self.batch_t
+        this_batch_data["id"] = self.batch_id
         this_batch_data["prev_obs"] = self.batch_prev_obs
         this_batch_data["player_policy"] = self.batch_player_policy
         this_batch_data["player_terminals"] = self.batch_player_terminals
@@ -1618,6 +1639,7 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data = {}
         batch_data["prev_obs"] = self.batch_prev_obs
         batch_data["id"] = self.batch_id
+        batch_data["t"] = self.batch_t
         batch_data["actions"] = self.batch_actions
         batch_data["roles"] = self.batch_roles
         batch_data["ext_returns"] = self.batch_ext_returns
@@ -1806,7 +1828,7 @@ def calculate_roll_prediction_nll(role_predictions, role_targets, filter=None):
         role_targets = role_targets[filter]
     # we want this in N*B, n_roles, n_players order as torch expects, (batch, class, d1,d2,d3... etc)
     role_predictions = role_predictions.transpose(1, 2)
-    return F.nll_loss(role_predictions, role_targets)
+    return F.nll_loss(role_predictions, role_targets, reduction='none')
 
 
 test_calculate_returns()
