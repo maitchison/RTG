@@ -320,7 +320,13 @@ def train_model():
         elif config.save_model == "recent":
             algorithm.save(f"{config.log_folder}/model_M.pt")
         else:
-            raise ValueError("Invalid save model parameter, use [none|recent|all].")
+            try:
+                save_every = int(config.save_model)
+                if epoch % save_every == 0:
+                    algorithm.save(f"{config.log_folder}/model_{epoch:03}_M.pt")
+            except:
+                raise ValueError("Invalid save model parameter, use [none|recent|all|0..n].")
+            algorithm.save(f"{config.log_folder}/model_M.pt")
 
         step_counter = learn(algorithm, step_counter, (epoch+1)*1e6, verbose=config.verbose == 1)
         print()
@@ -656,7 +662,7 @@ def main():
     parser.add_argument('--export_video', type=str2bool, nargs='?', const=True, default=True)
     parser.add_argument('--algo_params', type=str, default="{}")
     parser.add_argument('--verbose', type=int, default=1, help="Level of logging output, 0=off, 1=normal, 2=full.")
-    parser.add_argument('--save_model', type=str, default="recent", help="Enables model saving, [all|recent|none].")
+    parser.add_argument('--save_model', type=str, default="recent", help="Enables model saving, [all|10|recent|none].")
 
     parser.add_argument('--vary_team_player_counts', type=str2bool, nargs='?', const=True,  default=False, help="Use a random number of players turning training.")
 
