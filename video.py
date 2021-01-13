@@ -7,6 +7,8 @@ import torch
 import numpy as np
 import shutil
 
+from typing import Union
+
 from rescue import RescueTheGeneralEnv
 from train import make_env
 from algorithms import PMAlgorithm
@@ -37,12 +39,13 @@ def display_role_prediction(frame: np.ndarray, dx: int, dy: int, raw_predictions
             c = [int(x * 255) for x in role_predictions[i, j]]
             draw_pixel(frame, dy + (i + 1) * block_size, dx + (j + 1) * block_size, c=c, size=block_size)
 
-def display_policy(frame: np.ndarray, dx:int, dy:int, policy: np.ndarray):
+def display_policy(frame: np.ndarray, dx:int, dy:int, policy: np.ndarray, action: Union[int, None] = None):
     """
     :param frame:
     :param dx:
     :param dy:
     :param policy: nd array of dims [n_roles, n_actions] as probability distribution (0..1)
+    :param action: (optional) the action the player took
     :return:
     """
     n_roles, n_actions = policy.shape
@@ -74,8 +77,13 @@ def display_policy(frame: np.ndarray, dx:int, dy:int, policy: np.ndarray):
         if a < len(base_colors):
             c = base_colors[a]
         else:
-            c = 0
-        frame[dy + n_roles, dx + a] = (base_colors[a] * 255).astype(np.uint8)
+            c = 0.0
+        if action is not None and a == action:
+            c = 1.0 # indicate which action the player took.
+
+        c = np.asarray(c)
+
+        frame[dy + n_roles, dx + a] = (c * 255).astype(np.uint8)
 
 def export_video(filename, algorithm: PMAlgorithm, scenario):
     """
@@ -207,26 +215,27 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             _, _, _, n_actions = action_predictions.shape
 
             # these come out as n_players, n_players, n_roles, n_actions ?
+            policy_spacing_y = (n_roles+2)
 
             # true policy
             for i in range(n_players):
                 dx = 0 * (n_actions+1) + 4
-                dy = orig_height + i * (n_roles+1)
-                display_policy(frame, dx, dy, true_policy[i])
+                dy = orig_height + i * policy_spacing_y
+                display_policy(frame, dx, dy, true_policy[i], actions[i])
 
             # predicted policy
             for i in range(n_players):
                 for j in range(n_players):
                     dx = (j+1) * (n_actions+1) + 8
-                    dy = orig_height + i * (n_roles+1)
-                    display_policy(frame, dx, dy, action_predictions[i, j])
+                    dy = orig_height + i * policy_spacing_y
+                    display_policy(frame, dx, dy, action_predictions[i, j], actions[j])
 
             # predictions of other players predictions of our own policy
             for i in range(n_players):
                 for j in range(n_players):
                     dx = (n_players+(j+1)) * (n_actions+1) + 12
-                    dy = orig_height + i * (n_roles+1)
-                    display_policy(frame, dx, dy, action_prediction_predictions[i, j])
+                    dy = orig_height + i * policy_spacing_y
+                    display_policy(frame, dx, dy, action_prediction_predictions[i, j], actions[i])
 
         # add deception bonus indicators (on top of role prediction)
         if bonus is not None:
