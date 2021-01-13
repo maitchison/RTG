@@ -550,6 +550,7 @@ class PolicyModel(BaseModel):
             roles=3,    # number of polcies / value_estimates to output
             lstm_mode="residual",
             nan_check=False,
+            predict_roles=False,
     ):
         super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel,
                          lstm_mode=lstm_mode, nan_check=nan_check)
@@ -563,7 +564,10 @@ class PolicyModel(BaseModel):
         self.local_int_value_head = nn.Linear(self.encoder_output_features, roles)
         self.local_ext_value_head = nn.Linear(self.encoder_output_features, roles)
         # this is just here as an aux task. During voting it is important that the agent is aware of who is who
-        self.role_prediction_head = nn.Linear(self.encoder_output_features, (self.n_players * self.n_roles))
+        if predict_roles:
+            self.role_prediction_head = nn.Linear(self.encoder_output_features, (self.n_players * self.n_roles))
+        else:
+            self.role_prediction_head = None
 
         self.set_device_and_dtype(self.device, self.dtype)
 
@@ -611,16 +615,18 @@ class PolicyModel(BaseModel):
         ext_value = self.local_ext_value_head(encoder_output)
         int_value = self.local_int_value_head(encoder_output)
 
-        # these will come out as [N, B, n_players * n_roles] but we need [N, B, n_players, n_roles] for normalization
-        unnormalized_role_predictions = self.role_prediction_head(encoder_output).reshape(N, B, self.n_players, self.n_roles)
-        role_prediction = torch.log_softmax(unnormalized_role_predictions, dim=-1)
-
         result = {
             'role_log_policy': log_policy,
             'role_ext_value': ext_value,
-            'role_int_value': int_value,
-            'policy_role_prediction': role_prediction
+            'role_int_value': int_value
         }
+
+        # these will come out as [N, B, n_players * n_roles] but we need [N, B, n_players, n_roles] for normalization
+        if self.role_prediction_head is not None:
+            unnormalized_role_predictions = self.role_prediction_head(encoder_output).reshape(N, B, self.n_players,
+                                                                                              self.n_roles)
+            role_prediction = torch.log_softmax(unnormalized_role_predictions, dim=-1)
+            result['policy_role_prediction'] = role_prediction
 
         def extract_roles(x, roles):
             """

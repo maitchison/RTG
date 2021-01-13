@@ -105,7 +105,7 @@ class PMAlgorithm(MarlAlgorithm):
 
             amp=False,  # automatic mixed precision
             device="cuda",
-            policy_memory_units=512,    # >128 is required if we want to predict roles using policy module
+            policy_memory_units=128,   # >128 is required if we want to predict roles using policy module
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
             # the type of prediction to use for deception.  Observation is much slower to process
@@ -1147,21 +1147,22 @@ class PMAlgorithm(MarlAlgorithm):
         # information and can be used for voting etc
         # loss must be negative as we maximize loss with policy...
 
-        loss_role = -0.1 * calculate_roll_prediction_nll(
-            model_out["policy_role_prediction"],
-            data["player_roles"]
-        ).mean()
-        loss = loss + loss_role
-        self.log.watch_mean("loss_policy_role", loss_role)
+        if "policy_role_prediction" in model_out:
+            loss_role = -0.1 * calculate_roll_prediction_nll(
+                model_out["policy_role_prediction"],
+                data["player_roles"]
+            ).mean()
+            loss = loss + loss_role
+            self.log.watch_mean("loss_policy_role", loss_role)
 
-        # get clean roll_loss for each team, this is used for debugging only
-        if self.policy_batch_counter % 10 == 0:
-            with torch.no_grad():
-                for team_id, team_name in ((0, 'red'), (1, 'green'), (2, 'blue')):
-                    team_filter = data["roles"] == team_id
-                    nll = calculate_roll_prediction_nll(model_out["policy_role_prediction"], data["player_roles"], team_filter)
-                    if nll is not None:
-                        self.log.watch_mean(f"{team_name}_policy_role_nll", nll.mean(), display_width=0)
+            # get clean roll_loss for each team, this is used for debugging only
+            if self.policy_batch_counter % 10 == 0:
+                with torch.no_grad():
+                    for team_id, team_name in ((0, 'red'), (1, 'green'), (2, 'blue')):
+                        team_filter = data["roles"] == team_id
+                        nll = calculate_roll_prediction_nll(model_out["policy_role_prediction"], data["player_roles"], team_filter)
+                        if nll is not None:
+                            self.log.watch_mean(f"{team_name}_policy_role_nll", nll.mean(), display_width=0)
 
         # -------------------------------------------------
         # calculate kl between policies, and record entropy
