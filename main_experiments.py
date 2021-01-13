@@ -4,7 +4,7 @@
 """
 
 # r2g2
-python train.py train --train_scenario="r2g2" --eval_scenarios="[]" --prediction_mode='action' --verbose=2 --device="cuda:0" --deception_bonus='[0,0,0]' --run="exp_r2g2_db0"
+python train.py train --train_scenario="r2g2" --eval_scenarios="[]" --prediction_mode='action' --verbose=2 --device="cuda:0" --deception_bonus='[0,0,0]' --run="exp_r2g2_db0" 
 python train.py train --train_scenario="r2g2" --eval_scenarios="[]" --prediction_mode='action' --verbose=2 --device="cuda:1" --deception_bonus='[3,0,0]' --run="exp_r2g2_db3"
 
 

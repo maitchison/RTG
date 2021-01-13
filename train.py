@@ -662,7 +662,7 @@ def main():
     parser.add_argument('--export_video', type=str2bool, nargs='?', const=True, default=True)
     parser.add_argument('--algo_params', type=str, default="{}")
     parser.add_argument('--verbose', type=int, default=1, help="Level of logging output, 0=off, 1=normal, 2=full.")
-    parser.add_argument('--save_model', type=str, default="recent", help="Enables model saving, [all|10|recent|none].")
+    parser.add_argument('--save_model', type=str, default="10", help="Enables model saving, [all|0..n|recent|none].")
 
     parser.add_argument('--vary_team_player_counts', type=str2bool, nargs='?', const=True,  default=False, help="Use a random number of players turning training.")
 
