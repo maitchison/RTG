@@ -201,10 +201,11 @@ class RescueTheGeneralScenario():
             "timeout_mean": 250,  # make sure games don't last too long, 250 is plenty of time for green
             # to harvest all the trees
             "max_view_distance": 5,  # makes things a bit faster having smaller vision
-            "team_view_distance": (5, 5, 5),  # no bonus vision for red
-            "team_shoot_range": (3, 0, 0),
+            "team_view_distance": (5, 5, 5),
+            "team_shoot_damage": (10, 5, 5),
+            "team_shoot_range": (5, 5, 5),
             "starting_locations": "together",  # random start locations
-            "team_shoot_timeout": (20, 0, 0),
+            "team_shoot_timeout": (20, 20, 20),
             "enable_voting": False,
             "battle_royale": True,  # removes general, and ends game if all green players are killed, or
             # if green eliminates red players and harvests all trees
@@ -377,11 +378,13 @@ class RescueTheGeneralScenario():
 
         self.max_view_distance = 7      # distance used for size of observational space, unused tiles are blanked out
         self.team_view_distance = (7, 5, 5)
+        self.team_shoot_damage = (10, 10, 10)
         self.team_general_view_distance = (3, 5, 5) # how close you need to be to the general to see him
         self.team_shoot_range = (4, 0, 0)
         self.team_counts = (4, 4, 4)
         self.team_shoot_timeout = (3, 3, 3)  # number of turns between shooting
         self.enable_voting = False      # enables the voting system
+        self.auto_shooting = False    # shooting auto targets closest player
 
         self.timeout_mean = 500
         self.timeout_rnd = 0.1      # this helps make sure games are not always in sync, which can happen if lots of

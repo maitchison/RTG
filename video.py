@@ -48,14 +48,17 @@ def display_policy(frame: np.ndarray, dx:int, dy:int, policy: np.ndarray):
     n_roles, n_actions = policy.shape
 
     base_colors = np.asarray([
-        (0.2, 0.2, 0.2),  # no-op
+        (0.3, 0.3, 0.3),  # no-op
         (0.1, 0.1, 0.1),  # move
         (0.1, 0.1, 0.1),  # move
         (0.1, 0.1, 0.1),  # move
         (0.1, 0.1, 0.1),  # move
-        (0.2, 0.2, 0.2),  # shoot
-        (0.1, 0.1, 0.1),  # act
-        (0.1, 0.1, 0.1),  # vote
+        (0.3, 0.3, 0.3),  # act
+        (0.1, 0.1, 0.1),  # shoot
+        (0.1, 0.1, 0.1),  # shoot
+        (0.1, 0.1, 0.1),  # shoot
+        (0.1, 0.1, 0.1),  # shoot
+
     ])
 
     for r in range(n_roles):

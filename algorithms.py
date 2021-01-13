@@ -309,14 +309,15 @@ class PMAlgorithm(MarlAlgorithm):
         self.batch_player_action_predictions = None
         self.batch_player_role_predictions = None
 
+        # the true role of each player in the game that agent a is playing
+        self.batch_player_roles = np.zeros([N, A, vec_env.max_players], dtype=np.int64)
+
         # ground truth observations for each player
         # this is so when we take a random sample we always have the information we need.
         # It's a bit wasteful with memory though, especially with high player counts.
         if self.uses_deception_model:
             # unmodulated deception bonus for all players at each timestep.
             self.batch_raw_deception_bonus = np.zeros([N, A], dtype=np.float32)
-            # the true role of each player in the game that agent a is playing
-            self.batch_player_roles = np.zeros([N, A, vec_env.max_players], dtype=np.int64)
             # policies for each player for each role at time t for given game recorded for all agents
             self.batch_player_role_policy = np.zeros([N, A, vec_env.max_players, R, *self.policy_shape], dtype=np.float32)
             # all policies at time t for given game recorded for all agents
@@ -799,6 +800,10 @@ class PMAlgorithm(MarlAlgorithm):
                 log_policy = model_out["log_policy"].detach().cpu().numpy()
                 ext_value = model_out["ext_value"].detach().cpu().numpy()
 
+                # save who is which role
+                player_roles = self._duplicate_players(roles, n_players)  # batch_roles is [A, n_players]
+                self.batch_player_roles[t] = player_roles
+
                 if self.uses_deception_model:
 
                     # calculate who is visible [B, n_players]
@@ -811,8 +816,6 @@ class PMAlgorithm(MarlAlgorithm):
                     players_visible = np.asarray(players_visible)
 
                     # role prediction
-                    player_roles = self._duplicate_players(roles, n_players)  # batch_roles is [A, n_players]
-                    self.batch_player_roles[t] = player_roles
                     self.batch_player_policy[t] = self._duplicate_players(log_policy, n_players)
                     self.batch_player_role_policy[t] = self._duplicate_players(role_log_policies, n_players)
                     self.batch_player_terminals[t] = self._duplicate_players(prev_terminals, n_players)

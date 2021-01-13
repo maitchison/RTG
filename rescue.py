@@ -39,25 +39,22 @@ from utils import draw_line, draw_pixel
 from typing import Tuple, List
 
 CELL_SIZE = 3
-DAMAGE_PER_SHOT = 10 # players normally have 10 health, so 1 shot kills
 
 ACTION_NOOP = 0
 ACTION_MOVE_UP = 1
 ACTION_MOVE_DOWN = 2
 ACTION_MOVE_LEFT = 3
 ACTION_MOVE_RIGHT = 4
-ACTION_SHOOT = 5
-ACTION_ACT = 6
-ACTION_CALL_VOTE = 7
-ACTION_SIGNAL_UP = 8
-ACTION_SIGNAL_DOWN = 9
-ACTION_SIGNAL_LEFT = 10
-ACTION_SIGNAL_RIGHT = 11
+ACTION_ACT = 5
+ACTION_SHOOT_UP = 6
+ACTION_SHOOT_DOWN = 7
+ACTION_SHOOT_LEFT = 8
+ACTION_SHOOT_RIGHT = 9
 
-# just indicates how many actions there normally are
-NORMAL_ACTIONS = 8 # for the moment include call to vote as a normal action, even though it might not be used
+# how many actions the game has
+NUM_ACTIONS = 10
 
-SIGNAL_ACTIONS = {ACTION_SIGNAL_UP, ACTION_SIGNAL_DOWN, ACTION_SIGNAL_LEFT, ACTION_SIGNAL_RIGHT}
+SHOOT_ACTIONS = {ACTION_SHOOT_UP, ACTION_SHOOT_DOWN, ACTION_SHOOT_LEFT, ACTION_SHOOT_RIGHT}
 MOVE_ACTIONS = {ACTION_MOVE_UP, ACTION_MOVE_DOWN, ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT}
 
 class RTG_Player():
@@ -174,7 +171,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
     SIGNAL_COLOR = np.asarray([20, 20, 20], dtype=np.uint8)
     HIGHLIGHT_COLOR = np.asarray([180, 180, 50], dtype=np.uint8)
     GENERAL_COLOR = np.asarray([255, 255, 255], dtype=np.uint8)
-    NEUTRAL_COLOR = np.asarray([96, 96, 96], dtype=np.uint8)
+    NEUTRAL_COLOR = np.asarray([96, 96, 96], dtype=np. uint8)
     GRASS_COLOR = np.asarray([16, 64, 24], dtype=np.uint8)
     TREE_COLOR = np.asarray([12, 174, 91], dtype=np.uint8)
     BUTTON_COLOR = np.asarray([200, 200, 200], dtype=np.uint8)
@@ -225,11 +222,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.log_file = log_file
         self._needs_repaint = True
 
-        number_of_actions = NORMAL_ACTIONS
-        if self.scenario.enable_signals:
-            number_of_actions = NORMAL_ACTIONS + 4
-
-        self.action_space = gym.spaces.Discrete(number_of_actions)
+        self.action_space = gym.spaces.Discrete(NUM_ACTIONS)
 
         self.vote_timer = 0             # >0 indicates a vote is taking place
         self.current_vote = np.zeros([self.n_players], dtype=np.int) # who is voting for who (-1 = pass)
@@ -325,6 +318,67 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             player.x = new_x
             player.y = new_y
 
+    def _player_direct_shoot(self, player:RTG_Player, direction:int):
+        """
+        Return the player that would be hit if player fires in given cardinal direction.
+        :param player:
+        :param direction:
+        :return:
+        """
+
+        x = player.x
+        y = player.y
+        for j in range(player.shoot_range):
+            x += self.DX[direction]
+            y += self.DY[direction]
+
+            if x < 0 or x >= self.scenario.map_width or y < 0 or y >= self.scenario.map_height:
+                break
+
+            # check other players
+            other_player = self.player_at_pos(x, y)
+            if other_player is not None:
+                return other_player
+
+            # check general
+            if not self.scenario.battle_royale and ((x, y) == self.general_location):
+                return 'general'
+
+        return None
+
+
+
+    def _player_auto_shoot(self, player:RTG_Player):
+        """
+        Returns the player that would be hit if this player fires (via auto targeting).
+        :param player: the player who is firing
+        :return: target that was hit or None or 'general'
+        """
+        # look for a target to shoot, this will update so dead players can not be shot twice.
+        potential_targets = []
+        for target in self.living_players:
+            # must be not us, not known to be on our team, and living
+            if target == player:
+                continue
+            if self.can_see_role(player, target) and player.team == target.team:
+                continue
+            distance = max_distance(*player.pos, *target.pos)
+            if distance <= player.shoot_range:
+                potential_targets.append((distance, target.index, target))
+
+        if len(potential_targets) == 0:
+            general_distance = max_distance(*player.pos, *self.general_location)
+            # no targets, check for general
+            if not self.scenario.battle_royale and general_distance <= player.shoot_range and player.team != self.TEAM_BLUE:
+                return 'general'
+            return None
+
+        # sort close to far, and then by index order
+        potential_targets.sort()
+        _, _, target = potential_targets[0]
+
+        return target
+
     def _step_main(self, actions):
 
         green_tree_harvest_counter = 0
@@ -344,7 +398,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
             player.action = ACTION_NOOP if player.is_dead else action
 
-            if player.action == ACTION_SHOOT and not player.can_shoot:
+            if player.action in SHOOT_ACTIONS and not player.can_shoot:
                 player.action = ACTION_NOOP
 
         # count actions
@@ -369,85 +423,70 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # combat still get to shoot this round
         for player in self.living_players:
 
-            if player.action != ACTION_SHOOT:
+            if player.action not in SHOOT_ACTIONS:
                 continue
 
             player.turns_until_we_can_shoot = player.shooting_timeout
 
-            # look for a target to shoot, this will update so dead players can not be shot twice.
-            potential_targets = []
-            for target in self.living_players:
-                # must be not us, not known to be on our team, and living
-                if target == player:
-                    continue
-                if self.can_see_role(player, target) and player.team == target.team:
-                    continue
-                distance = max_distance(*player.pos, *target.pos)
-                if distance <= player.shoot_range:
-                    potential_targets.append((distance, target.index, target))
-
-            if len(potential_targets) == 0:
-
-                general_distance = max_distance(*player.pos, *self.general_location)
-
-                # no targets, check for general
-                if not self.scenario.battle_royale and general_distance <= player.shoot_range and player.team != self.TEAM_BLUE:
-                    # general was hit
-                    self.general_health -= DAMAGE_PER_SHOT
-                    self.stats_general_shot[player.team] += 1
-                    self._needs_repaint = True
-                    self.shooting_lines.append((*player.pos, *self.general_location))
-
+            if self.scenario.auto_shooting:
+                target = self._player_auto_shoot(player)
             else:
+                target = self._player_direct_shoot(player, player.action - ACTION_SHOOT_UP)
 
-                # sort close to far, and then by index order
-                potential_targets.sort()
+            # check who was hit
+            if target is None:
+                # nothing was hit, but still display shooting line
+                hit_x = player.x + self.DX[player.action - ACTION_SHOOT_UP] * player.shoot_range
+                hit_y = player.y + self.DY[player.action - ACTION_SHOOT_UP] * player.shoot_range
+                self.shooting_lines.append((*player.pos, hit_x, hit_y))
+                continue
+            elif target == 'general':
+                # general was hit
+                self.general_health -= self.scenario.team_shoot_damage[player.team]
+                self.stats_general_shot[player.team] += 1
+                self._needs_repaint = True
+                self.shooting_lines.append((*player.pos, *self.general_location))
+            else:
+                # target was another player, so damage them and display shooting line
+                target.damage(self.scenario.team_shoot_damage[player.team])
+                self.stats_player_hit[player.team, target.team] += 1
+                self.shooting_lines.append((*player.pos, *target.pos))
 
-                _, _, target = potential_targets[0]
-
-                # now that we have a target damage them
-                target.damage(DAMAGE_PER_SHOT)
                 if target.is_dead:
                     # we killed the target player
                     self.stats_deaths[target.team] += 1
                     self.stats_kills[player.team] += 1
                     team_deaths[target.team] += 1
-
                     if player.team == target.team:
                         team_self_kills[player.team] += 1
-
                     if player.team == self.TEAM_RED and target.team == self.TEAM_BLUE:
                         red_team_good_kills += 1
                     elif player.team == self.TEAM_BLUE and target.team == self.TEAM_RED:
                         blue_team_good_kills += 1
-
                     # issue points for kills
                     team_rewards[player.team] += self.scenario.points_for_kill[player.team, target.team]
-
-                    self.stats_player_hit[player.team, target.team] += 1
-
-                    # display the shot
-                    self.shooting_lines.append((*player.pos, *target.pos))
 
         # perform update
         for player in self.players:
             player.update()
 
         # -------------------------
-        # call vote button
+        # call vote button (combined with action button)
 
         if self.vote_cooldown > 0:
             self.vote_cooldown -= 1
 
         for player in self.living_players:
 
-            if not self.scenario.enable_voting or player.action != ACTION_CALL_VOTE or self.vote_cooldown > 0:
+            # to call a vote we must be standing next to the button or a dead body
+
+            if not self.scenario.enable_voting or player.action != ACTION_ACT or self.vote_cooldown > 0:
                 continue
 
             # to call a vote player must be alive, and close to a dead body
             near_body = None
             for target in self.players:
-                if target.is_dead and max_distance(*player.pos, *target.pos) <= 2 and not target.invisible:
+                if target.is_dead and max_distance(*player.pos, *target.pos) <= 1 and not target.invisible:
                     near_body = target
 
             near_button = max_distance(*player.pos, *self.button_location) <= 1
@@ -800,11 +839,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         obs[draw_x - 1:draw_x + 2, draw_y - 1:draw_y + 2] = id_color
         obs[draw_x, draw_y] = team_color
-
-        if self.scenario.enable_signals and player.action in SIGNAL_ACTIONS:
-            index = player.action - ACTION_SIGNAL_UP
-            dx, dy = self.DX[index], self.DY[index]
-            obs[draw_x + dx, draw_y + dy] = self.SIGNAL_COLOR
 
     def _draw_general(self, obs, padding=(0, 0)):
 
