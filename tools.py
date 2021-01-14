@@ -142,6 +142,13 @@ def load_results(path):
                 data[vs_order[i]] += [hit]
 
             # convert the team stats to single columns
+            for i, hit in enumerate(int(x) for x in str(data["stats_player_hit_with_witness"][-1]).split(" ")):
+                key = vs_order[i]+"_ww"
+                if key not in data:
+                    data[key] = []
+                data[key] += [hit]
+
+            # convert the team stats to single columns
             for stat in ["deaths", "kills", "general_shot", "general_moved", "general_hidden", "tree_harvested"]:
 
                 stats_name = f"stats_{stat}"
