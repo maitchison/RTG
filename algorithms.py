@@ -1250,13 +1250,18 @@ class PMAlgorithm(MarlAlgorithm):
                     team_filter = data["roles"] == team_id
                     nll = calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"], team_filter)
                     if nll is not None:
-                        # stub: check if any red players were very wrong
-                        # if team_id == 0 and nll.abs().max() > 1.0:
-                        #     print("Red team had high role prediction error.")
-                        #     print(nll)
-                        #     print(data["player_roles"])
-                        #     print(data["t"])
-
+                        # stub: check if any red players were very wrong in their prediction of roles
+                        # they should be very good
+                        if team_id == 0 and nll.abs().max() > nll.mean()+nll.std()*3:
+                            # make a record
+                            print("Logging high nll", nll)
+                            import pickle
+                            with open(f"high_red_{self.deception_batch_counter}.dat", "wb") as f:
+                                pickle.dump({
+                                    'nll': nll,
+                                    'data': data,
+                                    'model_out': model_out
+                                }, f)
                         self.log.watch_mean(f"{team_name}_role_nll", nll.mean(), display_width=0)
 
         if "role_backwards_prediction" in model_out:
@@ -1597,20 +1602,16 @@ class PMAlgorithm(MarlAlgorithm):
         assert self.batch_size % self.mini_batches == 0
         mini_batch_size = self.batch_size // self.mini_batches
 
-        # when we use shorter windows it makes sense to run additional epochs as we are only using a portion of the data
-        # each time
-        windows_per_segment = self.n_steps // 16
-
         self._train_model(
             batch_data,
             self.policy_model,
             self.policy_optimizer,
             self.forward_policy_mini_batch,
-            epochs=(self.batch_epochs * windows_per_segment),
+            epochs=self.batch_epochs,
             mini_batch_size=mini_batch_size,
             short_name="pol",
-            max_window_size=16,
-            enable_window_offsets=True
+            max_window_size=None,
+            enable_window_offsets=False
         )
 
         # this was the old version, but I found the windowing quite useful for learning role prediction on the

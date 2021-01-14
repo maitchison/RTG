@@ -152,7 +152,7 @@ class RescueTheGeneralScenario():
             "n_trees": 18,
             "reward_per_tree": 0.5,
             "hidden_roles": "all",
-            "timeout_mean": 250,               # make sure games don't last too long, 250 is plenty of time for green
+            "timeout_mean": 400,               # make sure games don't last too long, 400 is plenty of time for green
                                                # to harvest all the trees
             "max_view_distance": 5,            # makes things a bit faster having smaller vision
             "team_view_distance": (5, 5, 5),   # no bonus vision for red
@@ -179,7 +179,7 @@ class RescueTheGeneralScenario():
             "n_trees": 18,
             "reward_per_tree": 0.5,
             "hidden_roles": "all",
-            "timeout_mean": 250,  # make sure games don't last too long, 250 is plenty of time for green
+            "timeout_mean": 400,  # make sure games don't last too long, 400 is plenty of time for green
             # to harvest all the trees
             "max_view_distance": 5,  # makes things a bit faster having smaller vision
             "team_shoot_damage": (10, 5, 5),
@@ -199,7 +199,7 @@ class RescueTheGeneralScenario():
             "n_trees": 18,
             "reward_per_tree": 0.5,
             "hidden_roles": "all",
-            "timeout_mean": 250,  # make sure games don't last too long, 250 is plenty of time for green
+            "timeout_mean": 400,  # make sure games don't last too long, 400 is plenty of time for green
             # to harvest all the trees
             "max_view_distance": 5,  # makes things a bit faster having smaller vision
             "team_view_distance": (5, 5, 5),

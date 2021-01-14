@@ -16,4 +16,8 @@ python train.py train --train_scenario="wolf_sheep_nv" --eval_scenarios="[]" --p
 python train.py train --train_scenario="5p" --eval_scenarios="[]" --prediction_mode='action' --verbose=2 --device="cuda:0" --deception_bonus='[0,0,0]' --run="exp_full_db0"
 python train.py train --train_scenario="5p" --eval_scenarios="[]" --prediction_mode='action' --verbose=2 --device="cuda:1" --deception_bonus='[3,0,0]' --run="exp_full_db3"
 
+# role prediction experiments
+python train.py train --train_scenario="wolf_sheep_nv" --eval_scenarios="[]" --prediction_mode='action' --verbose=2 --device="cuda:2" --deception_bonus='[0,0,0]' --run="test_red_rp"
+python train.py train --train_scenario="wolf_sheep_nv" --eval_scenarios="[]" --prediction_mode='action' --verbose=2 --device="cuda:3" --deception_bonus='[3,0,0]' --run="test_red_rp_db3"
+
 """

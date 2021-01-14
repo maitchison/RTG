@@ -140,13 +140,13 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         """
         return x.swapaxes(0, 2)
 
-    prev_actions = np.zeros([len(vec_env.players)], dtype=np.long)
+    actions = np.zeros([len(vec_env.players)], dtype=np.long)
 
     # play the game...
     while last_outcome == "":
 
         last_outcome = env.round_outcome
-        prev_actions[:] = actions
+        prev_actions = actions.copy()
 
         with torch.no_grad():
             roles = vec_env.get_roles()
@@ -224,21 +224,21 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             for i in range(n_players):
                 dx = 0 * (n_actions+1) + 4
                 dy = orig_height + i * policy_spacing_y
-                display_policy(frame, dx, dy, true_policy[i], actions[i])
+                display_policy(frame, dx, dy, true_policy[i], prev_actions[i])
 
             # predicted policy
             for i in range(n_players):
                 for j in range(n_players):
                     dx = (j+1) * (n_actions+1) + 8
                     dy = orig_height + i * policy_spacing_y
-                    display_policy(frame, dx, dy, action_predictions[i, j], actions[j])
+                    display_policy(frame, dx, dy, action_predictions[i, j], prev_actions[j])
 
             # predictions of other players predictions of our own policy
             for i in range(n_players):
                 for j in range(n_players):
                     dx = (n_players+(j+1)) * (n_actions+1) + 12
                     dy = orig_height + i * policy_spacing_y
-                    display_policy(frame, dx, dy, action_prediction_predictions[i, j], actions[i])
+                    display_policy(frame, dx, dy, action_prediction_predictions[i, j], prev_actions[i])
 
         # add deception bonus indicators (on top of role prediction)
         if bonus is not None:
