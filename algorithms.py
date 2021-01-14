@@ -503,74 +503,6 @@ class PMAlgorithm(MarlAlgorithm):
         self.episode_len *= 0
         self.terminals *= 0
 
-    def calculate_deception_bonus_from_actions(
-            self,
-            player_action_prediction_predictions: torch.Tensor,
-            prior_role_belief: torch.Tensor,
-            true_role: torch.Tensor,
-            mask: torch.Tensor,
-            actions: torch.Tensor,
-        ):
-        """
-        Calculates a deception bonus based on modifying other agents belief under the assumption that they are
-        bayesian agents, and using our own estimations of their estimations of our likely actions for each role.
-
-        The observations version uses the policy of the predicted observations, but this one uses predictions of policy
-        directly. This avoids rnn_states, and having to predict unimportant parts of the observation space.
-
-        :param player_action_prediction_predictions: distribution over actions that represent agent i's belief about agent j's
-            belief about i's action distribution for each role at current timestep. These should be log probabilities
-            Tensor of dims [B, n_players, n_roles, *action_space] of type float32
-        :param prior_role_belief: Agent i's belief about agent j's belief about agent i's true role. These should be log probabilities
-            Tensor of dims [B, n_players, n_roles] of type float32
-
-        :param true_role: The true roles for each player, of shape [B] of type long
-        :param mask: A mask indicating which players we are trying to deceive, and therefore get a bonus for.
-            This can be used to mask out invisible players, or players that are known to be on the same team
-            Tensor of dims [B, n_players] of type float
-
-        :param actions: Actions for each agent
-            Tensor of dims [B] of type long
-
-        :return: The bonus for each player summed over other players, tensor of dims [B],
-        """
-
-        device = self.deception_model.device
-
-        # upload everything to correct device, and get dtype right
-        player_action_prediction_predictions = player_action_prediction_predictions.to(device)
-        prior_role_belief = prior_role_belief.to(device)
-        true_role = true_role.to(device)
-        mask = mask.to(device)
-        actions = actions.to(device).to(torch.long)
-
-        B, n_players, *role_policy_shape = player_action_prediction_predictions.shape
-        n_roles = 3
-
-        # [B, n_players, n_roles, n_actions]
-        role_policy = torch.exp(player_action_prediction_predictions)
-        prior_role_belief = torch.exp(prior_role_belief)
-
-        # next calculate the B_ji, which is agent j's belief about agent i's role being the true role if we take
-        # action a
-        # (actually this is not the posterior belief, it's the likelihood ratio)
-        likelihood_true_role = torch.zeros([B, n_players], device=device)
-
-        for j in range(n_players):
-            role_sum = torch.zeros([B], device=device)
-            for role in range(n_roles):
-                role_sum += role_policy[range(B), j, role, actions] * prior_role_belief[:, j, role]
-            # we add 1e-6 just for stability.
-            likelihood_true_role[:, j] = role_policy[range(B), j, true_role, actions] / (role_sum + 1e-6)
-
-        # bonus is just neg log likelihood, and sum over other players we are trying to deceive
-        # clip it so we can't get extremely high bonus
-        bonus = -torch.clip(torch.log(likelihood_true_role), -10, +10)
-        bonus = bonus * mask
-        bonus = torch.sum(bonus, dim=-1) # sum over players
-        return bonus
-
-
     def calculate_deception_bonus_from_observations(
             self,
             player_observation_prediction_predictions: torch.Tensor,
@@ -629,12 +561,13 @@ class PMAlgorithm(MarlAlgorithm):
         # states need to be reshaped too
         new_rnn_states = new_rnn_states.reshape(B, n_players, 2, self.policy_memory_units)
 
-        return self.calculate_deception_bonus_from_actions(
+        return calculate_deception_bonus_from_actions(
             player_action_prediction_predictions=role_log_policy,
             prior_role_belief=prior_role_belief,
             true_role=true_role,
             mask=mask,
-            actions=actions
+            actions=actions,
+            device=self.deception_model.device
         ), new_rnn_states
 
     def _duplicate_players(self, x, n_players):
@@ -661,8 +594,14 @@ class PMAlgorithm(MarlAlgorithm):
 
 
     @profiler.record_function("calculate_deception")
-    def calculate_deception_bonus(self, model_out: dict, actions: np.ndarray, env: MultiAgentVecEnv, roles: np.ndarray,
-                                  believed_other_rnn_states=None, prev_terminals=None):
+    def calculate_deception_bonus(self,
+                                  model_out: dict,
+                                  actions: np.ndarray,
+                                  env: MultiAgentVecEnv,
+                                  roles: np.ndarray,
+                                  believed_other_rnn_states=None,
+                                  prev_terminals=None
+                                  ):
         """
         Calculate (unmodulated) deception bonus for all players
         :param model_out:
@@ -681,15 +620,12 @@ class PMAlgorithm(MarlAlgorithm):
         # enemies.
 
         bonus_mask = np.ones((B, n_players), dtype=np.float32)
-        indexes = np.asarray([player.index for player in env.players])
 
         # we don't try and deceive ourselves
-        bonus_mask[range(len(bonus_mask)), indexes] = 0
-        # don't get a bonus for deceiving players on our own team
-        # note, this leaks a little team information, but just during training...
-        # to fix this we'd need to mask the mask with who knows who's identities
-        same_team_mask = roles[:, np.newaxis] == self._duplicate_players(roles, n_players)
-        bonus_mask *= (1 - same_team_mask)
+        # this isn't needed as agents will quickly set their prior to 1 for themselves, effectively masking out the
+        # deception.
+        # indexes = np.asarray([player.index for player in env.players])
+        #bonus_mask[range(len(bonus_mask)), indexes] = 0
 
         # also: don't give bonus to dead players, and don't factor in dead players beliefs
         is_dead = np.asarray([player.is_dead for player in env.players])
@@ -700,12 +636,13 @@ class PMAlgorithm(MarlAlgorithm):
 
         # there are two ways of doing this, the predict actions method and the predict observations method
         if self.predicts_actions:
-            db_actions = self.calculate_deception_bonus_from_actions(
+            db_actions = calculate_deception_bonus_from_actions(
                 player_action_prediction_predictions=model_out["action_backwards_prediction"],
                 prior_role_belief=model_out["role_backwards_prediction"],
                 true_role=torch.from_numpy(roles),
-                mask=bonus_mask,  # for the moment don't mask non-visible players
-                actions=torch.from_numpy(actions)
+                mask=bonus_mask,
+                actions=torch.from_numpy(actions),
+                device=self.deception_model.device
             )
             deception_bonus += db_actions.cpu().detach().numpy()
 
@@ -1835,5 +1772,127 @@ def calculate_roll_prediction_nll(role_predictions, role_targets, filter=None):
     return F.nll_loss(role_predictions, role_targets, reduction='none')
 
 
+def calculate_deception_bonus_from_actions(
+        player_action_prediction_predictions: torch.Tensor,
+        prior_role_belief: torch.Tensor,
+        true_role: torch.Tensor,
+        mask: torch.Tensor,
+        actions: torch.Tensor,
+        device: str,
+    ):
+    """
+    Calculates a deception bonus based on modifying other agents belief under the assumption that they are
+    bayesian agents, and using our own estimations of their estimations of our likely actions for each role.
+
+    The observations version uses the policy of the predicted observations, but this one uses predictions of policy
+    directly. This avoids rnn_states, and having to predict unimportant parts of the observation space.
+
+    :param player_action_prediction_predictions: distribution over actions that represent agent i's belief about agent j's
+        belief about i's action distribution for each role at current timestep. These should be log probabilities
+        Tensor of dims [B, n_players, n_roles, *action_space] of type float32
+    :param prior_role_belief: Agent i's belief about agent j's belief about agent i's true role. These should be log probabilities
+        Tensor of dims [B, n_players, n_roles] of type float32
+
+    :param true_role: The true roles for each player, of shape [B] of type long
+    :param mask: A mask indicating which players we are trying to deceive, and therefore get a bonus for.
+        This can be used to mask out invisible players, or players that are known to be on the same team
+        Tensor of dims [B, n_players] of type float
+
+    :param actions: Actions for each agent
+        Tensor of dims [B] of type long
+
+    :return: The bonus for each player summed over other players, tensor of dims [B],
+    """
+
+    # upload everything to correct device, and get dtype right
+    player_action_prediction_predictions = player_action_prediction_predictions.to(device)
+    prior_role_belief = prior_role_belief.to(device)
+    true_role = true_role.to(device)
+    mask = mask.to(device)
+    actions = actions.to(device).to(torch.long)
+
+    B, n_players, *role_policy_shape = player_action_prediction_predictions.shape
+    n_roles = 3
+
+    # [B, n_players, n_roles, n_actions]
+    role_policy = torch.exp(player_action_prediction_predictions)
+    prior_role_belief = torch.exp(prior_role_belief)
+
+    # next calculate the B_ji, which is agent j's belief about agent i's role being the true role if we take
+    # action a
+    # (actually this is not the posterior belief, it's the likelihood ratio)
+    likelihood_true_role = torch.zeros([B, n_players], device=device)
+
+    for j in range(n_players):
+        role_sum = torch.zeros([B], device=device)
+        for role in range(n_roles):
+            role_sum += role_policy[range(B), j, role, actions] * prior_role_belief[:, j, role]
+        # we add 1e-6 just for stability.
+        likelihood_true_role[:, j] = role_policy[range(B), j, true_role, actions] / (role_sum + 1e-6)
+
+    # bonus is just neg log likelihood, and sum over other players we are trying to deceive
+    # clip it so we can't get extremely high bonus
+    #bonus = -torch.clip(torch.log(likelihood_true_role), -10, +10)
+    bonus = -torch.log(likelihood_true_role)
+    bonus = bonus * mask
+    bonus = torch.sum(bonus, dim=-1) # sum over players
+    return bonus
+
+def test_deception_bonus():
+
+    # uniform belief, there should be no deception
+    # order is i's belief about j's belief about i in role r taking action a
+    # [i,j,r,a], dims should be 2,2,3,2
+    prediction_predictions = torch.Tensor(np.asarray(
+        [[
+            [[0.75, 0.5], [0.5, 0.5], [0.5, 0.5]],  # P0 thinks P0 thinks P0 taking action 0 is a 'red' move
+            [[0.75, 0.5], [0.5, 0.5], [0.5, 0.5]], # P0 thinks P1 thinks P0 taking action 0 is a 'red' move
+        ],
+        [
+            [[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]],  # R
+            [[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]],  # G
+
+        ]],
+    ))
+
+    # this is of shape [2,2,3] [i, j, r]
+    prior_role_belief = torch.Tensor(np.asarray([
+        [
+            # 0 belief about 0 belief about roles
+            [1, 0, 0],
+            # 0 belief about 1 belief about roles
+            [1/3, 1/3, 1/3],
+        ],
+        [
+            # 1 belief about 0 belief about roles
+            [1/3, 1/3, 1/3],
+            # 1 belief about 1 belief about roles
+            [0, 1, 0],
+        ],
+    ]))
+
+    # true roles
+    true_role = torch.Tensor(np.asarray([0, 1])).to(torch.long)
+
+    # we have only 2 actions in this game, this should be 2
+    actions = torch.Tensor(np.asarray([0, 1]))
+
+    # no need to mask out ourselves as prior does this for us.
+    mask = torch.Tensor(np.asarray([[1, 1], [1, 1]]))
+
+    result = calculate_deception_bonus_from_actions(
+        player_action_prediction_predictions = torch.log(prediction_predictions),
+        prior_role_belief = torch.log(prior_role_belief),
+        true_role = true_role,
+        mask = mask,
+        actions = actions,
+        device = 'cpu'
+    )
+
+    print(result)
+
+    assert abs(result[0] - -0.25) < 0.1 and abs(result[1] - 0) < 1e-4, f"{result}, (0.25, 0)"
+
+test_deception_bonus()
 test_calculate_returns()
 test_filter_visible()

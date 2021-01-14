@@ -140,10 +140,13 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         """
         return x.swapaxes(0, 2)
 
+    prev_actions = np.zeros([len(vec_env.players)], dtype=np.long)
+
     # play the game...
     while last_outcome == "":
 
         last_outcome = env.round_outcome
+        prev_actions[:] = actions
 
         with torch.no_grad():
             roles = vec_env.get_roles()
