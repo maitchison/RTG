@@ -64,6 +64,7 @@ class Config():
         self.split_policy = bool()
         self.nan_check = bool()
         self.max_window_size = int()
+        self.use_global_value = bool()
 
         self.verbose = int()
 
@@ -147,9 +148,9 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
         with torch.no_grad():
             roles = vec_env.get_roles()
             model_output, new_rnn_states = algorithm.forward(
-                torch.from_numpy(env_obs),
-                rnn_states,
-                torch.from_numpy(roles)
+                obs=torch.from_numpy(env_obs),
+                rnn_states=rnn_states,
+                roles=torch.from_numpy(roles)
             )
             rnn_states[:] = new_rnn_states
 
@@ -354,6 +355,7 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
         export_rollout=config.export_rollout,
         micro_batch_size=config.micro_batch_size,
         n_steps=config.n_steps,
+        use_global_value_module=config.use_global_value,
         max_window_size=config.max_window_size,
         prediction_mode=config.prediction_mode,
         deception_bonus=config.deception_bonus,
@@ -665,6 +667,9 @@ def main():
 
     parser.add_argument('--n_steps', type=int, default=16)
     parser.add_argument('--max_window_size', type=int, default=None)
+
+    parser.add_argument('--use_global_value', type=str2bool, nargs='?', const=True, default=False,
+                        help="Enable Global value function")
 
     parser.add_argument('--amp', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable Automatic Mixed Precision")

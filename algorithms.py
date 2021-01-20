@@ -63,7 +63,7 @@ class MarlAlgorithm():
         self.n_steps = N
         self.n_agents = A
 
-        self.obs_shape = self.policy_model.input_dims
+        self.obs_shape = self.policy_model.input_shape
         self.rnn_state_shape = [2, self.policy_model.memory_units]  # records h and c for LSTM units
         self.policy_shape = [self.policy_model.n_actions]
 
@@ -81,7 +81,7 @@ class MarlAlgorithm():
         n_agents = n_agents or self.n_agents
         return torch.zeros([n_agents, *self.rnn_state_shape], dtype=torch.float32, device=self.policy_model.device)
 
-    def forward(self, obs, rnn_state, roles=None):
+    def forward(self, obs, rnn_states, roles=None):
         raise NotImplemented()
 
 class PMAlgorithm(MarlAlgorithm):
@@ -130,6 +130,7 @@ class PMAlgorithm(MarlAlgorithm):
             lstm_mode="residual",
             deception_bonus: tuple = (0,0,0),            # scale of deception bonus for each team (requires deception module to be enabled)
             deception_bonus_start_timestep: int = 10e6,  # deception bonus will be 0 until this timestep.
+            use_global_value_module=False,  # enables a global value function estimator, which improves training
 
             nan_check=False,                # if enabled checks for nans, and logs extreme values (slows things down)
             max_window_size:Union[int, None]=None,
@@ -177,6 +178,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.deception_bonus_start_timestep = deception_bonus_start_timestep
         self.deception_batch_counter = 0
         self.policy_batch_counter = 0
+        self.gv_batch_counter = 0
         self.max_window_size = max_window_size
 
         # the type of prediction to use for deception off|action|observation|both
@@ -196,6 +198,16 @@ class PMAlgorithm(MarlAlgorithm):
         model = policy_fn(vec_env, device=device, memory_units=policy_memory_units, model=model_name,
                             data_parallel=data_parallel, out_features=policy_memory_units,
                             lstm_mode=lstm_mode, nan_check=nan_check)
+
+        if use_global_value_module:
+            print("Enabeling Global Value Module.")
+            self.gv_model = GlobalValueModel(
+                vec_env, device=device, memory_units=policy_memory_units, model=model_name,
+                data_parallel=data_parallel, out_features=policy_memory_units,
+                lstm_mode=lstm_mode, nan_check=nan_check
+            )
+        else:
+            self.gv_model = None
 
         if self.uses_deception_model:
             self.deception_model = DeceptionModel(
@@ -219,9 +231,16 @@ class PMAlgorithm(MarlAlgorithm):
 
         assert self.obs_shape[0] == 3, f"Model assumes RGB 3-channel input, but found {self.obs_shape}"
 
+        states_needed = policy_memory_units
+
         if self.uses_deception_model:
             # to handle the deception rnn states just concatenate the h,c states together
-            self.rnn_state_shape = [2, policy_memory_units+dm_memory_units]
+            states_needed += dm_memory_units
+        if use_global_value_module:
+            # same goes for global value module
+            states_needed += policy_memory_units
+
+        self.rnn_state_shape = [2, states_needed]
 
         self.name = name
         self.amp = amp
@@ -252,6 +271,10 @@ class PMAlgorithm(MarlAlgorithm):
         self.log_folder = "."
 
         self.policy_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=learning_rate, eps=adam_epsilon)
+
+        if self.uses_gv_model:
+            self.gv_optimizer = torch.optim.Adam(self.gv_model.parameters(), lr=learning_rate, eps=adam_epsilon)
+
         if self.deception_model is not None:
             # optimal settings for deception optimizer are different than the policy optimizer
             self.deception_optimizer = torch.optim.Adam(self.deception_model.parameters(), lr=self.dm_learning_rate,
@@ -316,6 +339,11 @@ class PMAlgorithm(MarlAlgorithm):
         # the true role of each player in the game that agent a is playing
         self.batch_player_roles = np.zeros([N, A, vec_env.max_players], dtype=np.int64)
 
+        if self.uses_deception_model or self.uses_gv_model:
+            # all player observations at time t for given game recorded for all agents
+            # required for deception and gv model.
+            self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
+
         # ground truth observations for each player
         # this is so when we take a random sample we always have the information we need.
         # It's a bit wasteful with memory though, especially with high player counts.
@@ -332,8 +360,6 @@ class PMAlgorithm(MarlAlgorithm):
             self.batch_player_visible = np.zeros([N, A, vec_env.max_players], dtype=np.bool)
 
             if self.predicts_observations:
-                # all player observations at time t for given game recorded for all agents
-                self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
                 # all player predictions at time t for given game recorded for all agents
                 self.batch_player_obs_predictions = np.zeros([N, A, vec_env.max_players, *self.obs_shape],
                                                              dtype=np.uint8)
@@ -453,6 +479,8 @@ class PMAlgorithm(MarlAlgorithm):
             self.generate_rollout()
             self._train()
             self.train_policy()
+            if self.uses_gv_model:
+                self.train_global_value()
             if self.uses_deception_model:
                 self.train_deception()
 
@@ -706,11 +734,16 @@ class PMAlgorithm(MarlAlgorithm):
         n_roles = self.vec_env.max_roles
         n_players = self.vec_env.max_players
         n_games = len(self.vec_env.games)
-        assert n_games * n_players == len(self.vec_env.players)
+        B = n_games * n_players
+
+        assert B == len(self.vec_env.players)
 
         believed_other_rnn_states = torch.zeros(
             [self.n_agents, n_players, 2, self.policy_memory_units], dtype=torch.float32
         )
+
+        # these should not change over time
+        ids = np.asarray([player.index for player in self.vec_env.players])
 
         with torch.no_grad():
 
@@ -732,6 +765,7 @@ class PMAlgorithm(MarlAlgorithm):
                 self.batch_roles[t] = roles
 
                 prev_obs = self.agent_obs.copy() #[A, *obs_shape]
+                player_obs = self._duplicate_players(prev_obs, n_players)
                 prev_terminals = self.terminals.copy()
 
                 # forward state through model, then detach the result and convert to numpy.
@@ -739,9 +773,18 @@ class PMAlgorithm(MarlAlgorithm):
                     model_out, new_agent_rnn_state = self.forward(
                         torch.from_numpy(self.agent_obs),
                         self.agent_rnn_state,
-                        roles=torch.from_numpy(roles)
+                        roles=torch.from_numpy(roles),
+                        global_obs=torch.from_numpy(player_obs)
                     )
                 self.agent_rnn_state[:] = new_agent_rnn_state # we copy into the states to avoid allocating another buffer.
+
+                # map across values if we are using global value
+                if self.uses_gv_model:
+                    assert "global_ext_value" in model_out, \
+                        "Global value estimates missing from model output, did you forget to pass global_observations during forward?"
+                    # global values come out as [B, n_players], so we need to pick out the players needed.
+                    for value in ['ext', 'int']:
+                        model_out[f"{value}_value"] = model_out[f"global_{value}_value"][range(B), ids]
 
                 role_log_policies = model_out["role_log_policy"].detach().cpu().numpy()
                 log_policy = model_out["log_policy"].detach().cpu().numpy()
@@ -769,7 +812,7 @@ class PMAlgorithm(MarlAlgorithm):
 
                     if self.predicts_observations:
                         # predictions of other players observations
-                        self.batch_player_obs[t] = self._duplicate_players(prev_obs, n_players)
+                        self.batch_player_obs[t] = player_obs
                         # organise prediction predictions
                         player_obs_predictions = image_to_uint8(model_out["obs_prediction"].detach().cpu())
                         self.batch_player_obs_predictions[t] = swap_prediction_targets(player_obs_predictions)
@@ -789,10 +832,12 @@ class PMAlgorithm(MarlAlgorithm):
                     player_role_predictions = model_out["role_prediction"].detach().cpu().numpy()
                     self.batch_player_role_predictions[t] = swap_prediction_targets(player_role_predictions)
 
+                # ---------------------------------------------------------------
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
                 with profiler.record_function("gr_env_step"):
                     self.agent_obs, ext_rewards, new_terminals, infos = self.vec_env.step(actions)
+                # ---------------------------------------------------------------
 
                 self.terminals[:] = new_terminals
 
@@ -866,14 +911,15 @@ class PMAlgorithm(MarlAlgorithm):
                     self.batch_int_rewards[t] = int_rewards
                     self.batch_ext_value[t] = ext_value
                     self.batch_int_value[t] = int_value
-                    self.batch_id[t] = np.asarray([player.index for player in self.vec_env.players])
+                    self.batch_id[t] = ids
                     self.batch_t[t] = ts
 
             # get value estimates for final observation.
             model_out, _ = self.forward(
                 torch.from_numpy(self.agent_obs),
                 self.agent_rnn_state,
-                roles=torch.from_numpy(roles)
+                roles=torch.from_numpy(roles),
+                global_obs=torch.from_numpy(self._duplicate_players(self.agent_obs, n_players)) if self.uses_gv_model else None
             )
 
             self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
@@ -975,16 +1021,123 @@ class PMAlgorithm(MarlAlgorithm):
 
     def extract_deception_rnn_states(self, rnn_states):
         # input can be [..., 2, memory_units]
-        return rnn_states[..., self.policy_memory_units:]
+        assert self.uses_deception_model
+        return rnn_states[..., self.policy_memory_units: self.policy_memory_units + self.dm_memory_units]
 
-    @profiler.record_function("model_forward")
-    def forward(self, obs: torch.Tensor, rnn_states:torch.Tensor, roles: torch.Tensor, disable_deception=False):
+    def extract_gv_rnn_states(self, rnn_states):
+        # input can be [..., 2, memory_units]
+        assert self.uses_gv_model
+        if self.uses_deception_model:
+            return rnn_states[..., self.policy_memory_units + self.dm_memory_units:]
+        else:
+            return rnn_states[..., self.policy_memory_units:]
+
+    @property
+    def uses_gv_model(self):
+        return self.gv_model is not None
+
+    def compact_rnn_states(self, policy_states, deception_states=None, gv_states=None):
+        """
+        Compacts the rnn states for all 3 modules into one state.
+        :param policy_states:
+        :param deception_states:
+        :param gv_states:
+        :return:
+        """
+        if self.uses_gv_model and not self.uses_deception_model:
+            return torch.cat([policy_states, gv_states], dim=-1)
+        if self.uses_deception_model and not self.uses_gv_model:
+            return torch.cat([policy_states, deception_states], dim=-1)
+        if self.uses_deception_model and self.uses_gv_model:
+            return torch.cat([policy_states, deception_states, gv_states], dim=-1)
+        return policy_states
+
+    @profiler.record_function("gv_forward")
+    def forward_gv_mini_batch(self, data, loss_scale=1):
+
+        loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.policy_model.device, requires_grad=True)
+
+        prev_obs = data["player_obs"]
+        terminals = data["terminals"]
+        rnn_states = data["rnn_states"][0]  # get states at start of window
+        ids = merge_down(data["id"])
+
+        # these were provided in N, B format but we want them just as one large batch.
+        weights = 1
+
+        with profiler.record_function("gv_forward_model"):
+            model_out, _ = self.gv_model.forward_sequence(
+                obs=prev_obs,
+                rnn_states=rnn_states,
+                terminals=terminals
+            )
+
+        # output will be a sequence of [N, B] but we want this just as [N*B] for processing
+        for k, v in model_out.items():
+            model_out[k] = merge_down(v)
+
+        # -------------------------------------------------------------------------
+        # Calculate loss_value
+        # -------------------------------------------------------------------------
+
+        value_heads = ["ext", "int"]
+
+
+        for value_head in value_heads:
+
+            # value predictions will come out as [N * B, n_players], so we need to index in to find the correct ones
+            value_prediction = model_out["global_{}_value".format(value_head)][range(len(ids)), ids]
+            returns = merge_down(data["{}_returns".format(value_head)])
+            old_pred_values = merge_down(data["{}_value".format(value_head)])
+
+            if self.use_clipped_value_loss:
+                # is is essentially trust region for value learning, and seems to help a lot.
+                value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
+                                                                         -self.ppo_epsilon, +self.ppo_epsilon)
+                vf_losses1 = (value_prediction - returns).pow(2)
+                vf_losses2 = (value_prediction_clipped - returns).pow(2)
+                loss_value = self.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2) * weights)
+            else:
+                # simpler version, just use MSE.
+                vf_losses1 = (value_prediction - returns).pow(2)
+                loss_value = self.vf_coef * 0.5 * torch.mean(vf_losses1 * weights)
+
+            self.log.watch_mean("gvl_v_" + value_head, loss_value, history_length=64)
+            loss = loss + loss_value
+
+        # -------------------------------------------------------------------------
+        # Apply loss
+        # -------------------------------------------------------------------------
+
+        loss = loss * loss_scale
+        self.log.watch_mean("gv_loss", loss)
+
+        # calculate gradients, and log grad_norm
+        if self.amp:
+            self.scaler.scale(-loss).backward()
+            self.log.watch_mean("s_unskip", self.scaler._get_growth_tracker())
+            self.log.watch_mean("s_scale", self.scaler.get_scale())
+        else:
+            loss.backward()
+
+        self.gv_batch_counter += 1
+
+    @profiler.record_function("algorithm_forward")
+    def forward(
+            self,
+            obs: torch.Tensor,
+            rnn_states:torch.Tensor,
+            roles: torch.Tensor,
+            global_obs: torch.Tensor = None,
+            disable_deception=False
+    ):
         """
         Forwards a single observations through model for each agent
         For more advanced uses call model.forward_sequence directly.
 
         :param obs: Observations for each agent, tensor of dims [B, *observation_shape]
         :param rnn_states: tensor of dims [B, 2|4, memory_units]
+        :param global_obs: observations for all players in each agents game [B, n_players, *observation_shape] (optional)
         :param roles: role for each player, [B]
 
         :return: a tuple(
@@ -1019,25 +1172,44 @@ class PMAlgorithm(MarlAlgorithm):
                 output[k] = torch.cat([out[k] for out in out_parts], dim=0)
             return output, rnn_states
 
+        new_policy_states = None
+        new_gv_states = None
+        new_deception_states = None
+
         # make a sequence of length 1 and forward it through model
-        result, new_rnn_states = self.policy_model.forward_sequence(
+        result, new_policy_states = self.policy_model.forward_sequence(
             obs=obs[np.newaxis],
             rnn_states=self.extract_policy_rnn_states(rnn_states),
             roles=roles[np.newaxis, :]
         )
 
+        # global value (requires special input, otherwise is ignored)
+        if self.gv_model:
+            if global_obs is not None:
+                gv_results, new_gv_states = self.gv_model.forward_sequence(
+                    obs=global_obs[np.newaxis],
+                    rnn_states=self.extract_gv_rnn_states(rnn_states)
+                )
+                for k, v in gv_results.items():
+                    result[k] = v
+            else:
+                # pass through rnn states
+                new_gv_states = self.extract_gv_rnn_states(rnn_states)
+
+        # deception module
         if self.uses_deception_model:
             if disable_deception:
                 # just copy old states through
-                new_deception_rnn_states = self.extract_deception_rnn_states(rnn_states)
+                new_deception_states = self.extract_deception_rnn_states(rnn_states)
             else:
-                deception_result, new_deception_rnn_states = self.deception_model.forward_sequence(
+                deception_results, new_deception_states = self.deception_model.forward_sequence(
                     obs=obs[np.newaxis],
                     rnn_states=self.extract_deception_rnn_states(rnn_states)
                 )
-                for k, v in deception_result.items():
+                for k, v in deception_results.items():
                     result[k] = v
-            new_rnn_states = torch.cat([new_rnn_states, new_deception_rnn_states], dim=-1)
+
+        new_rnn_states = self.compact_rnn_states(new_policy_states, new_deception_states, new_gv_states)
 
         # remove the sequence of length 1
         unsqueze_result = {}
@@ -1227,7 +1399,7 @@ class PMAlgorithm(MarlAlgorithm):
             pred = filter_visible(pred_obs_log_policy, player_visible[N // 2:])
 
             # check the KL between these two
-            # kl = [N*B*n_players, *policy_shape]
+            # kl is [N*B*n_players, *policy_shape]
             kl = torch.exp(true) * (true - pred)
             kl = kl.sum(dim=-1)
             kl = kl.mean()
@@ -1268,34 +1440,6 @@ class PMAlgorithm(MarlAlgorithm):
                     team_filter = data["roles"] == team_id
                     nll = calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"], team_filter)
                     if nll is not None:
-                        # stub: check if any red players were very wrong in their prediction of roles
-                        # they should be very good
-                        if team_id == 0 and nll.abs().max() > 0.1 and self.deception_batch_counter > 10000:
-                            pass
-                            # make a record
-                            # print(
-                            #     "Logging high nll",
-                            #     self.deception_batch_counter,
-                            #     float(nll.mean()),
-                            #     float(nll.std()),
-                            #     float(nll.max())
-                            # )
-
-                            # stub export high loss
-                            # import pickle
-                            #
-                            # def convert_to_np(x):
-                            #     new_x = {}
-                            #     for k,v in x.items():
-                            #         new_x[k] = v.detach().cpu().numpy()
-                            #     return new_x
-                            #
-                            # with open(f"{self.log_folder}/high_red_{self.deception_batch_counter}.dat", "wb") as f:
-                            #     pickle.dump({
-                            #         'nll': nll.detach().cpu().numpy(),
-                            #         'data': convert_to_np(data),
-                            #         'model_out': convert_to_np(model_out)
-                            #     }, f)
                         self.log.watch_mean(f"{team_name}_role_nll", nll.mean(), display_width=0)
 
         if "role_backwards_prediction" in model_out:
@@ -1465,7 +1609,7 @@ class PMAlgorithm(MarlAlgorithm):
         """
 
         for k, v in batch_data.items():
-            assert type(v) == np.ndarray, "batch_data input must be numpy array."
+            assert type(v) == np.ndarray, f"batch_data input {k} must be numpy array not {type(v)}"
             assert v.dtype != np.float64, f"batch_data entry {k} is float64, should be float32."
 
         # convert everything over to torch arrays
@@ -1475,7 +1619,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         last_epoch = math.ceil(epochs)
 
-        N, B = batch_data["prev_obs"].shape[0:2]
+        N, B = batch_data["id"].shape[0:2]
         window_size = min(max_window_size or float('inf'), self.n_steps)
 
         assert mini_batch_size % window_size == 0
@@ -1617,6 +1761,43 @@ class PMAlgorithm(MarlAlgorithm):
             enable_window_offsets=True
         )
 
+    @profiler.record_function("train_gv")
+    def train_global_value(self):
+        """ trains agent on it's own experience, using the rnn training loop """
+
+        # put the required data into a dictionary
+        batch_data = {}
+        batch_data["id"] = self.batch_id
+        batch_data["t"] = self.batch_t
+        batch_data["roles"] = self.batch_roles
+        batch_data["ext_returns"] = self.batch_ext_returns
+        batch_data["int_returns"] = self.batch_int_returns
+        batch_data["ext_value"] = self.batch_ext_value
+        batch_data["int_value"] = self.batch_int_value
+        batch_data["player_roles"] = self.batch_player_roles
+        batch_data["player_obs"] = self.batch_player_obs
+        batch_data["advantages"] = self.batch_advantage
+        batch_data["terminals"] = self.batch_terminals
+        batch_data["rnn_states"] = self.extract_gv_rnn_states(self.batch_rnn_states)
+
+        # use the same settings as policy
+        assert self.batch_size % self.mini_batches == 0
+        mini_batch_size = self.batch_size // self.mini_batches
+        windows_per_segment = self.n_steps // (self.max_window_size or self.n_steps)
+
+        self._train_model(
+            batch_data,
+            self.gv_model,
+            self.gv_optimizer,
+            self.forward_gv_mini_batch,
+            epochs=self.batch_epochs * windows_per_segment,
+            mini_batch_size=mini_batch_size,
+            short_name="gv",
+            max_window_size=self.max_window_size,
+            enable_window_offsets=True
+        )
+
+
     @profiler.record_function("train_policy")
     def train_policy(self):
         """ trains agent on it's own experience, using the rnn training loop """
@@ -1654,19 +1835,6 @@ class PMAlgorithm(MarlAlgorithm):
             max_window_size=self.max_window_size,
             enable_window_offsets=True
         )
-
-        # this was the old version, but I found the windowing quite useful for learning role prediction on the
-        # policy module.
-        #
-        # self._train_model(
-        #     batch_data,
-        #     self.policy_model,
-        #     self.policy_optimizer,
-        #     self.forward_policy_mini_batch,
-        #     epochs=self.batch_epochs,
-        #     mini_batch_size=mini_batch_size,
-        #     short_name="pol"
-        # )
 
 # ------------------------------------------------------------------
 # Helper functions

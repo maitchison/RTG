@@ -171,8 +171,12 @@ class BaseModel(nn.Module):
             data_parallel=False,
             lstm_mode='cat',
             nan_check=False,
+            input_shape=None, # if set overrides environment observation shape
 
     ):
+
+        input_shape = input_shape or env.observation_space.shape
+
         assert env.observation_space.dtype == np.uint8, "Observation space should be 8bit integer"
 
         self.lstm_mode = lstm_mode
@@ -191,7 +195,7 @@ class BaseModel(nn.Module):
         super().__init__()
 
         # environment is channels last, but we work with channels first.
-        self.input_dims = env.observation_space.shape
+        self.input_shape = tuple(input_shape)
 
         self.n_actions = env.action_space.n
         self.device = device
@@ -200,9 +204,9 @@ class BaseModel(nn.Module):
         self.nan_check = nan_check
 
         if model.lower() == "default":
-            self.encoder = DefaultEncoder(env.observation_space.shape, out_features=out_features)
+            self.encoder = DefaultEncoder(self.input_shape, out_features=out_features)
         elif model.lower() == "fast":
-            self.encoder = FastEncoder(env.observation_space.shape, out_features=out_features)
+            self.encoder = FastEncoder(self.input_shape, out_features=out_features)
         else:
             raise Exception(f"Invalid model {model}, expected [default|fast|global]")
 
@@ -215,7 +219,6 @@ class BaseModel(nn.Module):
 
         # hardcode this to 3 for simplicity, could use env.max_roles, but then it might change from game to game
         self.n_roles = 3
-        self.obs_shape = env.observation_space.shape
 
         # memory units
         self.lstm = torch.nn.LSTM(input_size=self.encoder_features, hidden_size=self.memory_units, num_layers=1,
@@ -257,7 +260,7 @@ class BaseModel(nn.Module):
         N, B, *obs_shape = obs.shape
 
         # merge first two dims into a batch, run it through encoder, then reshape it back into the correct form.
-        assert tuple(obs_shape) == self.obs_shape, f"Expected obs_input to be in the form [N, B, {self.obs_shape}] but found {obs.shape}"
+        assert tuple(obs_shape) == self.input_shape, f"Expected obs_input to be in the form [N, B, {self.input_shape}] but found {obs.shape}"
         assert tuple(rnn_states.shape) == (B, 2, self.memory_units), f"Expected {(B, 2, self.memory_units)} found {rnn_states.shape}."
         if terminals is not None:
             assert tuple(terminals.shape) == (N, B)
@@ -318,7 +321,7 @@ class BaseModel(nn.Module):
 
         assert self.device is not None, "Must call set_device_and_dtype."
 
-        utils.validate_dims(x, (None, *self.input_dims))
+        utils.validate_dims(x, (None, *self.input_shape))
 
         # if this is numpy convert it over
         if type(x) is np.ndarray:
@@ -396,8 +399,8 @@ class DeceptionModel(BaseModel):
         else:
             self.role_backwards_prediction_head = None
 
-            # prediction of each observation
-        c, h, w = self.obs_shape
+        # prediction of each observation
+        c, h, w = self.input_shape
 
         self.n_predictions = n_predictions
 
@@ -480,7 +483,7 @@ class DeceptionModel(BaseModel):
             Take input of (N*B, c, h*n_players, w) and return (N, B, n_players, c, h, w)
             :return:
             """
-            c, h, w = self.obs_shape
+            c, h, w = self.input_shape
             assert x.shape == (N*B, c, h*self.n_players, w)
             x = x.reshape(N, B, c, self.n_players * h, w)
             x = x.split(h, dim=3)
@@ -518,6 +521,90 @@ class DeceptionModel(BaseModel):
             unnormalized_action_backwards_predictions = unnormalized_action_backwards_predictions.reshape(N, B, self.n_predictions, self.n_roles, self.n_actions)
             action_backwards_predictions = torch.log_softmax(unnormalized_action_backwards_predictions, dim=-1)
             result["action_backwards_prediction"] = action_backwards_predictions
+
+        if self.nan_check:
+            self._check_for_nans([(k,v) for k,v in result.items()] + [('rnn_states', new_rnn_states)])
+
+        return result, new_rnn_states
+
+
+class GlobalValueModel(BaseModel):
+
+    """
+    Multi-agent model for PPO Marl implementation
+
+    This model provides the following outputs
+
+    Feature Extractor -> LSTM
+                              -> Extrinsic Value (global estimation)
+                              -> Intrinsic Value (global estimation)
+
+    """
+
+    def __init__(
+            self,
+            env: MultiAgentVecEnv,
+            device="cpu",
+            dtype=torch.float32,
+            memory_units=128,
+            out_features=128,
+            model="default",
+            data_parallel=False,
+            n_roles=3,    # number of polcies / value_estimates to output
+            lstm_mode="residual",
+            nan_check=False,
+
+    ):
+
+        c, h, w = env.observation_space.shape
+        extended_observation_shape = [c * env.max_players, h, w]
+
+        super().__init__(env, device, dtype, memory_units, out_features, model, data_parallel,
+                         lstm_mode=lstm_mode, nan_check=nan_check, input_shape=extended_observation_shape)
+
+        self.n_roles = n_roles
+        self.n_players = env.max_players
+
+        self.global_int_value_head = nn.Linear(self.encoder_output_features, self.n_players)
+        self.global_ext_value_head = nn.Linear(self.encoder_output_features, self.n_players)
+        self.set_device_and_dtype(self.device, self.dtype)
+
+    def forward_sequence(self, obs, rnn_states, terminals=None):
+        """
+        Input should be in
+
+        :param obs: tensor of dims [N, B, n_players, * obs_shape] format.
+        :param rnn_states:
+        :param terminals:
+        :return: dict containing "global_ext_value" and "global_int"value" of shape [N, B, n_players]
+        """
+
+        # check the input
+        (N, B, n_players, *obs_shape), device = obs.shape, obs.device
+
+        check_tensor("obs", obs, (N, B, *obs_shape), torch.uint8)
+        check_tensor("rnn_states", rnn_states, (N, B, 2, self.memory_units), torch.float32)
+        if terminals is not None:
+            check_tensor("terminals", terminals, (N, B), torch.int64)
+
+        # upload to device
+        obs = obs.to(self.device)
+        rnn_states = rnn_states.to(self.device)
+        if terminals is not None:
+            terminals = terminals.to(self.device)
+
+        # stack player observations together as channels
+        C, H, W = obs_shape
+        obs = torch.reshape(obs, [N, B, C*n_players, H, W])
+        encoder_output, new_rnn_states = self._forward_sequence(obs, rnn_states, terminals)
+
+        ext_value = self.global_ext_value_head(encoder_output)
+        int_value = self.global_int_value_head(encoder_output)
+
+        result = {
+            'global_ext_value': ext_value,
+            'global_int_value': int_value
+        }
 
         if self.nan_check:
             self._check_for_nans([(k,v) for k,v in result.items()] + [('rnn_states', new_rnn_states)])
@@ -693,14 +780,13 @@ class SplitPolicyModel(nn.Module):
         self.model_2 = self.models[2]
 
         # setup variables so as to look like a normal PolicyModel
-        self.input_dims = env.observation_space.shape
         self.n_actions = env.action_space.n
         self.device = device
         self.dtype = dtype
         self.lstm_mode = lstm_mode
         self.n_agents = env.total_agents
         self.n_players = env.max_players
-        self.obs_shape = env.observation_space.shape
+        self.input_shape = env.observation_space.shape
         self.memory_units = memory_units
         self.encoder_output_features = self.models[0].encoder_output_features
         self.encoder_features = self.models[0].encoder_features
