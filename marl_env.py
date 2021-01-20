@@ -75,9 +75,6 @@ class MultiAgentVecEnv(SubprocVecEnv):
     """
 
     def __init__(self, make_marl_envs):
-        """
-        :param make_env: List of functions to make given environment
-        """
 
         self.games = [make_env() for make_env in make_marl_envs]
 
@@ -132,6 +129,7 @@ class MultiAgentVecEnv(SubprocVecEnv):
         Returns numpy array containing alive status for each player
         :return: bool np array of dims [n_envs]
         """
+        alive = []
         alive = []
         for game in self.games:
             for player in game.players:

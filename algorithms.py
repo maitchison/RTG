@@ -129,21 +129,23 @@ class PMAlgorithm(MarlAlgorithm):
             max_grad_norm=5.0,
             lstm_mode="residual",
             deception_bonus: tuple = (0,0,0),            # scale of deception bonus for each team (requires deception module to be enabled)
+            deception_bonus_start_timestep: int = 10e6,  # deception bonus will be 0 until this timestep.
 
             nan_check=False,                # if enabled checks for nans, and logs extreme values (slows things down)
+            max_window_size:Union[int, None]=None,
 
             # ------ deception module settings ----------------
 
             dm_replay_buffer_multiplier=1,  # this doesn't seem to help... so keep it at 1
-            dm_max_window_size=16,
-            dm_mini_batch_size=256,         # 128 works best, but might train's 20% slower than 256, which is also ok.
+            dm_max_window_size=8,
+            dm_mini_batch_size=256,         # 128 works best, but train's 20% slower than 256, which is also ok.
             dm_memory_units=512,
             dm_out_features=512,
             dm_learning_rate=2.5e-4,
             dm_lstm_mode="residual",
             dm_kl_factor=0,                 # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
             dm_vision_filter=0.25,          # what proportion of non_visible agent pairs to train on
-            dm_loss_scale=0.1,              # loss scale for observation mse loss
+            dm_loss_scale=0.1,              # loss scale for deception module
         ):
 
         if type(deception_bonus) in [float, int]:
@@ -172,8 +174,10 @@ class PMAlgorithm(MarlAlgorithm):
         self.dm_learning_rate = dm_learning_rate
         self.dm_loss_scale = dm_loss_scale
         self.dm_kl_factor = dm_kl_factor
+        self.deception_bonus_start_timestep = deception_bonus_start_timestep
         self.deception_batch_counter = 0
         self.policy_batch_counter = 0
+        self.max_window_size = max_window_size
 
         # the type of prediction to use for deception off|action|observation|both
         self.prediction_mode = prediction_mode
@@ -599,6 +603,7 @@ class PMAlgorithm(MarlAlgorithm):
                                   actions: np.ndarray,
                                   env: MultiAgentVecEnv,
                                   roles: np.ndarray,
+                                  is_visible: np.ndarray,
                                   believed_other_rnn_states=None,
                                   prev_terminals=None
                                   ):
@@ -621,6 +626,9 @@ class PMAlgorithm(MarlAlgorithm):
 
         bonus_mask = np.ones((B, n_players), dtype=np.float32)
 
+        # filter out players who are not visible, as they can not observe the action
+        bonus_mask[:, :] = is_visible
+
         # we don't try and deceive ourselves
         # this isn't needed as agents will quickly set their prior to 1 for themselves, effectively masking out the
         # deception.
@@ -631,6 +639,8 @@ class PMAlgorithm(MarlAlgorithm):
         is_dead = np.asarray([player.is_dead for player in env.players])
         bonus_mask[is_dead] = 0
         bonus_mask[self._duplicate_players(is_dead, n_players)] = 0
+
+        # filter out players who could not have seen the action
 
         bonus_mask = torch.from_numpy(bonus_mask)
 
@@ -745,7 +755,6 @@ class PMAlgorithm(MarlAlgorithm):
 
                     # calculate who is visible [B, n_players]
                     players_visible = []
-
                     for game in self.vec_env.games:
                         for player in game.players:
                             vision = [player.in_vision(other_player.x, other_player.y) for other_player in game.players]
@@ -793,7 +802,7 @@ class PMAlgorithm(MarlAlgorithm):
 
                 if self.uses_deception_model:
                     raw_deception_bonus = self.calculate_deception_bonus(
-                        model_out, actions, self.vec_env, roles,
+                        model_out, actions, self.vec_env, roles, players_visible,
                         believed_other_rnn_states if self.predicts_observations else None,
                         prev_terminals if self.predicts_observations else None
                     )
@@ -810,6 +819,20 @@ class PMAlgorithm(MarlAlgorithm):
                         else:
                             deception_bonus = raw_deception_bonus * \
                                 np.asarray([self.deception_bonus[r] for r in roles]) / max(self.deception_bonus)
+
+                    # turn off deception bonus until we get through the warm up peroid, then slowly introduce it
+                    if self.t < self.deception_bonus_start_timestep:
+                        deception_bonus *= 0
+                    elif self.deception_bonus_start_timestep < self.t < self.deception_bonus_start_timestep * 2:
+                        factor = (self.t - self.deception_bonus_start_timestep) / self.deception_bonus_start_timestep
+                        deception_bonus *= factor
+
+                    # make sure bonus is reasonable by setting nan to 0 and applying clipping
+                    if np.any(np.isnan(deception_bonus)):
+                        self.log.warn("Nan found in deception bonus, setting to 0.")
+                        deception_bonus[np.isnan(deception_bonus)] = 0
+                    deception_bonus = np.clip(deception_bonus, -10, 10)
+
 
                     int_rewards += deception_bonus
 
@@ -1172,11 +1195,6 @@ class PMAlgorithm(MarlAlgorithm):
     @profiler.record_function("deception_back")
     def forward_deception_mini_batch(self, data, loss_scale=1):
 
-        # these help to make sure the deception module losses are all roughly the same order of magnitude
-        # the target is ~ 0.01 for role, role_bp, ap, bap, and obs_mse
-        rp_coef = 0.1
-        ap_coef = 0.1
-
         def calculate_kl(obs_predictions):
             """
             Calculates KL between policy of true observation and policy of predicted observation
@@ -1239,7 +1257,7 @@ class PMAlgorithm(MarlAlgorithm):
         # Calculate loss_role
         # -------------------------------------------------------------------------
 
-        loss_role = rp_coef * calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"]).mean()
+        loss_role = self.dm_loss_scale * calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"]).mean()
         loss += loss_role
         self.log.watch_mean("loss_role", loss_role)
 
@@ -1252,22 +1270,38 @@ class PMAlgorithm(MarlAlgorithm):
                     if nll is not None:
                         # stub: check if any red players were very wrong in their prediction of roles
                         # they should be very good
-                        if team_id == 0 and nll.abs().max() > nll.mean()+nll.std()*3:
+                        if team_id == 0 and nll.abs().max() > 0.1 and self.deception_batch_counter > 10000:
+                            pass
                             # make a record
-                            print("Logging high nll", nll)
-                            import pickle
-                            with open(f"high_red_{self.deception_batch_counter}.dat", "wb") as f:
-                                pickle.dump({
-                                    'nll': nll,
-                                    'data': data,
-                                    'model_out': model_out
-                                }, f)
+                            # print(
+                            #     "Logging high nll",
+                            #     self.deception_batch_counter,
+                            #     float(nll.mean()),
+                            #     float(nll.std()),
+                            #     float(nll.max())
+                            # )
+
+                            # stub export high loss
+                            # import pickle
+                            #
+                            # def convert_to_np(x):
+                            #     new_x = {}
+                            #     for k,v in x.items():
+                            #         new_x[k] = v.detach().cpu().numpy()
+                            #     return new_x
+                            #
+                            # with open(f"{self.log_folder}/high_red_{self.deception_batch_counter}.dat", "wb") as f:
+                            #     pickle.dump({
+                            #         'nll': nll.detach().cpu().numpy(),
+                            #         'data': convert_to_np(data),
+                            #         'model_out': convert_to_np(model_out)
+                            #     }, f)
                         self.log.watch_mean(f"{team_name}_role_nll", nll.mean(), display_width=0)
 
         if "role_backwards_prediction" in model_out:
             role_backwards_targets = data["player_role_predictions"].reshape(N*B*n_players, n_roles)
             role_backwards_predictions = model_out["role_backwards_prediction"].reshape(N*B*n_players, n_roles)
-            loss_backwards_role = rp_coef * F.kl_div(
+            loss_backwards_role = self.dm_loss_scale * F.kl_div(
                 role_backwards_predictions,
                 role_backwards_targets,
                 reduction="batchmean",
@@ -1283,14 +1317,14 @@ class PMAlgorithm(MarlAlgorithm):
         if "action_prediction" in model_out:
             pred = model_out["action_prediction"]
             true = data["player_role_policy"]
-            ap_loss = ap_coef * calculate_action_prediction_loss(pred, true)
+            ap_loss = self.dm_loss_scale * calculate_action_prediction_loss(pred, true)
             self.log.watch_mean("ap_loss", ap_loss, display_width=10, display_precision=5)
             loss += ap_loss
 
         if "action_backwards_prediction" in model_out:
             pred = model_out["action_backwards_prediction"]
             true = data["player_action_predictions"]
-            bap_loss = ap_coef * calculate_action_prediction_loss(pred, true)
+            bap_loss = self.dm_loss_scale * calculate_action_prediction_loss(pred, true)
             self.log.watch_mean("bap_loss", bap_loss, display_width=10, display_precision=5)
             loss += bap_loss
 
@@ -1459,6 +1493,9 @@ class PMAlgorithm(MarlAlgorithm):
             assert mini_batch_segments % max_micro_batch_segments == 0
             micro_batches = mini_batch_segments // max_micro_batch_segments
 
+        if self.t == 0:
+            print(f" - {short_name} using mini_batches of size {mini_batch_size} ({micro_batches} micro_batches)")
+
         for i in range(last_epoch):
 
             segments = list(range(B))
@@ -1490,7 +1527,7 @@ class PMAlgorithm(MarlAlgorithm):
                             if enable_window_offsets and gap > 0:
                                 offsets = np.random.randint(0, gap, size=[segments_per_micro_batch])
                             else:
-                                offsets = np.zeros([segments_per_micro_batch])
+                                enable_window_offsets = False
 
                         # put together a mini batch from all agents at this time step...
                         mini_batch_data = {}
@@ -1503,8 +1540,11 @@ class PMAlgorithm(MarlAlgorithm):
                             if max_window_size is not None:
                                 if enable_window_offsets:
                                     # with numpy I could roll the data so each segment had a different start point
-                                    # but with torch in need to have them all share the same offset.
-                                    value = value[offsets[0]:offsets[0]+max_window_size]
+                                    # but with torch I need to do it this slower way...
+                                    new_value = torch.zeros_like(value[:max_window_size])
+                                    for idx in range(len(offsets)):
+                                        new_value[:, idx] = value[offsets[idx]:offsets[idx]+max_window_size, idx]
+                                    value = new_value
                                 else:
                                     value = value[:max_window_size]
 
@@ -1563,7 +1603,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         # when we use shorter windows it makes sense to run additional epochs as we are only using a portion of the data
         # each time
-        windows_per_segment = self.n_steps // self.dm_max_window_size
+        windows_per_segment = self.n_steps // (self.dm_max_window_size or self.n_steps)
 
         self._train_model(
             replay_batch_data,
@@ -1601,17 +1641,18 @@ class PMAlgorithm(MarlAlgorithm):
 
         assert self.batch_size % self.mini_batches == 0
         mini_batch_size = self.batch_size // self.mini_batches
+        windows_per_segment = self.n_steps // (self.max_window_size or self.n_steps)
 
         self._train_model(
             batch_data,
             self.policy_model,
             self.policy_optimizer,
             self.forward_policy_mini_batch,
-            epochs=self.batch_epochs,
+            epochs=self.batch_epochs * windows_per_segment,
             mini_batch_size=mini_batch_size,
             short_name="pol",
-            max_window_size=None,
-            enable_window_offsets=False
+            max_window_size=self.max_window_size,
+            enable_window_offsets=True
         )
 
         # this was the old version, but I found the windowing quite useful for learning role prediction on the
@@ -1889,8 +1930,6 @@ def test_deception_bonus():
         actions = actions,
         device = 'cpu'
     )
-
-    print(result)
 
     assert abs(result[0] - -0.25) < 0.1 and abs(result[1] - 0) < 1e-4, f"{result}, (0.25, 0)"
 

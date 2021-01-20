@@ -22,9 +22,9 @@ class RTG_ScriptedEnv(MultiAgentEnv, Wrapper):
     """
 
     def __init__(self, scenario_name="full", name="scripted", red_strategy=None, green_strategy=None, blue_strategy=None,
-                 log_file=None, dummy_prob=0, **scenario_kwargs):
+                 log_file=None, **scenario_kwargs):
 
-        vec_env = RescueTheGeneralEnv(scenario_name=scenario_name, name=name, log_file=log_file, dummy_prob=dummy_prob, **scenario_kwargs)
+        vec_env = RescueTheGeneralEnv(scenario_name=scenario_name, name=name, log_file=log_file, **scenario_kwargs)
         super(MultiAgentEnv, self).__init__(vec_env)
 
         self.controllers = [red_strategy, green_strategy, blue_strategy]

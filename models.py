@@ -61,7 +61,7 @@ class DefaultEncoder(BaseEncoder):
         x = torch.max_pool2d(x, 2, 2)
         assert x.shape[1:] == self.final_dims, f"Expected final shape to be {self.final_dims} but found {x.shape[1:]}"
         x = x.reshape((b, -1))
-        x = torch.sigmoid(self.fc(x))  # try sigmoid, see if it's any better than relu (I'm getting a lot of 0 activations...)
+        x = torch.relu(self.fc(x))
 
         return x
 

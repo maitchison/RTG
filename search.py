@@ -14,20 +14,20 @@ def has_been_started(base_path, run):
 
 def run_experiment(job):
 
-    id, params, name = job
+    id, params, name, devices, run = job
 
-    device = DEVICES[multiprocessing.current_process()._identity[0]-1]
+    device = devices[multiprocessing.current_process()._identity[0]-1]
 
-    path = f"{args.run}/{name}"
+    path = f"{run}/{name}"
 
-    if has_been_started(os.path.join('run',args.run), name):
+    if has_been_started(os.path.join('run',run), name):
         print(f"skipping {path} as it exists.")
         return
 
     # todo: look for and ignore folders that are already done
 
     script = \
-        f"python ./run/{args.run}/train.py train --run=\"{path}\" --device={device} " + params
+        f"python ./run/{run}/train.py train --run=\"{path}\" --device={device} " + params
 
     print()
     print(script)
@@ -76,11 +76,23 @@ def axis_search(main_params, search_params, default_params=None):
                 # in residual mode out features must match memory units
                 params['dm_out_features'] = v
 
-            name = f"{k}-{v}-1"
+            key_name = k[2:] if k.startswith("a:") else k
+            name = f"{key_name}-{v}-1"
 
-            algo_params = algo_dict_to_str(params)
-            params = f"{main_params} --algo_params=\"{algo_params}\""
-            jobs.append([id, params, name])
+            # build the string
+            algo_params = {}
+            normal_params = {}
+            for k, v in params.items():
+                if k.startswith("a:"):
+                    algo_params[k[2:]] = v
+                else:
+                    normal_params[k] = v
+
+            normal_params = " ".join(f"--{k}={quote_if_str(v)}" for k, v in normal_params.items())
+            algo_params = algo_dict_to_str(algo_params)
+
+            params = f"{main_params} {normal_params} --algo_params=\"{algo_params}\""
+            jobs.append([id, params, name, DEVICES, args.run])
             id += 1
 
     return jobs
@@ -89,7 +101,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--devices', type=str, default="['cuda']")
-    parser.add_argument('--run', type=str, default="search_x")
+    parser.add_argument('--run', type=str, default="search_dm4")
     args = parser.parse_args()
 
     DEVICES = ast.literal_eval(args.devices)
@@ -98,30 +110,43 @@ if __name__ == "__main__":
 
     pool = multiprocessing.Pool(processes=len(DEVICES))
 
-    os.system(f'mkdir ./run/{args.run}')
+    destination_path = os.path.join("run", args.run)
+    os.system(f'mkdir {destination_path}')
+
 
     # copy source files so that modifications will not effect search
-    if not os.path.exists(f"./run/{args.run}/train.py"):
+    if not os.path.exists(os.path.join(destination_path, "train.py")):
+        import platform
         print("Copying train.py")
-        os.system(f'cp *.py ./run/{args.run}')
+        if platform.system() == "Windows":
+            os.system(f'copy *.py {destination_path}')
+        else:
+            os.system(f'cp *.py {destination_path}')
+
     else:
         print("Using previous train.py")
 
     main_params = " ".join([
-        "--train_scenarios=wolf_sheep",
-        "--micro_batch_size=2048",  # 1024 is slower, but can run two searches in parallel
-        "--prediction_mode=both",
-        "--prediction_type=both",
+        "--train_scenarios=wolf_sheep_nv",
+        "--eval_scenarios=[]",
+        "--micro_batch_size=1024",  # 1024 is slower, but can run two searches in parallel
+        "--prediction_mode=action",
+        "--verbose=2",
+        "--deception_bonus=[0,0,0]",
         "--save_model=recent",
-        "--epochs=200"
+        "--epochs=10"
     ])
 
     search_params = {
-        'dm_mini_batch_size': [128],
+        #'a:dm_mini_batch_size': [128, 256, 512, 1024],
+        #'a:dm_lstm_mode': ['off', 'on', 'cat', 'residual'],
+        #'a:dm_loss_scale': [0.1, 1, 10],
+        #'a:dm_max_window_size': [8, 16],
+        'parallel_envs': [128, 256, 512, 1024],
+        #'n_steps': [16, 32, 64, 128],
     }
-    default_params = {'dm_vision_filter': 0.0, 'dm_mini_batch_size': 128}
 
-    jobs = axis_search(main_params, search_params, default_params)
+    jobs = axis_search(main_params, search_params)
     print()
     print("-"*60)
     print()
@@ -130,4 +155,7 @@ if __name__ == "__main__":
     print()
     print("-" * 60)
     print()
+
     pool.map(run_experiment, jobs)
+
+    #4

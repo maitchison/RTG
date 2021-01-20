@@ -37,29 +37,40 @@ class ScenarioSetting():
 class RescueTheGeneralScenario():
 
     SCENARIOS = {
+
         "full": {
-            "description": "This is the default scenario.",
+            "description": "The full game",
             "map_width": 48,
             "map_height": 48,
-            "team_counts": (1, 1, 2),           # I really want more players, but it's faster with less
-
+            "team_counts": (2, 2, 2),
             "n_trees": 10,
-            "max_view_distance": 5,
-            "team_view_distance": (5, 5, 5),    # all players can see 5 squares
-            "team_shoot_range": (4, 4, 2),      # everyone can shoot, but blue is limited
-            "team_shoot_timeout": (3, 3, 3),
+            "reward_per_tree": 1,
+            "hidden_roles": "default",
             "timeout_mean": 500,
-            "timeout_rnd": 0.1,                 # a little variation on the timeouts so games are out of sync
-            "starting_locations": "together",   # players start together, rather than randomly spread out.
-            "local_team_colors": True,          # show team colors on local observation
-            "rounds": 4,                        # number of rounds before reset
+            "max_view_distance": 7,
+            "team_shoot_damage": (10, 5, 5),
+            "team_view_distance": (7, 5, 5),    # red can see further
+            "team_shoot_range": (5, 5, 5),
+            "starting_locations": "together",   # players start together
+            "team_shoot_timeout": (20, 20, 20),
         },
 
-        "medium": {
-            "description": "A smaller version of default scenario.",
+        "full_vp": {
+            "description": "The full game, but we vary the number of players in each team.",
+            "map_width": 48,
+            "map_height": 48,
             "team_counts": (2, 2, 2),
-            "map_width": 32,
-            "map_height": 32
+            "initial_random_kills": 0.5,        # we occasionally kill a player from random team at the start of the game.
+            "n_trees": 10,
+            "reward_per_tree": 1,
+            "hidden_roles": "default",
+            "timeout_mean": 500,
+            "max_view_distance": 7,
+            "team_shoot_damage": (10, 5, 5),
+            "team_view_distance": (7, 5, 5),  # red can see further
+            "team_shoot_range": (5, 5, 5),
+            "starting_locations": "together",  # players start together
+            "team_shoot_timeout": (20, 20, 20),
         },
 
         "blue4": {
@@ -70,15 +81,16 @@ class RescueTheGeneralScenario():
         },
 
         "r2g2": {
-            "description": "Two red players and two green players on a medium map",
-            "map_width": 48,
-            "map_height": 48,
+            "description": "Two red players and two green players on a small map",
+            "map_width": 24,
+            "map_height": 24,
             "team_counts": (2, 2, 0),
             "n_trees": 10,
             "reward_per_tree": 1,
             "hidden_roles": "none",
             "max_view_distance": 5,             # makes thins a bit faster
             "team_view_distance": (5, 5, 5),    # no bonus vision for red
+            "team_shoot_damage": (5, 5, 5),     # 2 hits to kill
             "team_shoot_range": (4, 4, 4),
             "starting_locations": "random",     # random start locations
             "team_shoot_timeout": (5, 5, 5)      # green is much slower at shooting
@@ -163,7 +175,8 @@ class RescueTheGeneralScenario():
             #"frame_blanking": 0.75,             # stub: delete 75% of frames
             "battle_royale": True,              # removes general, and ends game if all green players are killed, or
                                                 # if green eliminates red players and harvests all trees
-            "voting_button": True,  # place a voting button at the start
+            "voting_button": True,              # place a voting button at the start
+            "zero_sum": True,
             "points_for_kill": np.asarray((     # loose a point for self kill, gain one for other team kill
                 (-1, +3.33, +1),
                 (+1, -1, +1),
@@ -173,8 +186,8 @@ class RescueTheGeneralScenario():
 
         "5p": {
             "description": "A five player game",
-            "map_width": 32,
-            "map_height": 32,
+            "map_width": 48,
+            "map_height": 48,
             "team_counts": (1, 2, 2),
             "n_trees": 18,
             "reward_per_tree": 0.5,
@@ -208,6 +221,7 @@ class RescueTheGeneralScenario():
             "starting_locations": "together",  # random start locations
             "team_shoot_timeout": (20, 20, 20),
             "enable_voting": False,
+            "zero_sum": True,
             "battle_royale": True,  # removes general, and ends game if all green players are killed, or
             # if green eliminates red players and harvests all trees
             "points_for_kill": np.asarray((  # loose a point for self kill, gain one for other team kill
@@ -386,6 +400,7 @@ class RescueTheGeneralScenario():
         self.team_shoot_timeout = (3, 3, 3)  # number of turns between shooting
         self.enable_voting = False      # enables the voting system
         self.auto_shooting = False    # shooting auto targets closest player
+        self.zero_sum = False           # if enabled any points scored by one team will be counted as negative points for all other teams.
 
         self.timeout_mean = 500
         self.timeout_rnd = 0.1      # this helps make sure games are not always in sync, which can happen if lots of
@@ -405,6 +420,7 @@ class RescueTheGeneralScenario():
         # however it could cause problems if you want to infer what a different team would have done in that situation
         self.local_team_colors = True
         self.frame_blanking = 0     # fraction of frames to zero out (tests memory)
+        self.initial_random_kills = 0 # enables random killing of players at the start of the game, can be helpful to make winning viable for a team.
 
         # how many point a player gets for killing a player
         # ordered as points_for_kill[shooting_player_team, killed_player_team]

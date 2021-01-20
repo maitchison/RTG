@@ -53,7 +53,6 @@ class Config():
         self.export_video = bool()
         self.train_scenarios = list()
         self.eval_scenarios = list()
-        self.vary_team_player_counts = bool()
         self.amp = bool()
         self.micro_batch_size: Union[str, int] = str()
         self.n_steps = int()
@@ -64,6 +63,7 @@ class Config():
         self.deception_bonus = tuple()
         self.split_policy = bool()
         self.nan_check = bool()
+        self.max_window_size = int()
 
         self.verbose = int()
 
@@ -128,14 +128,13 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     """
     Evaluate given model in given environment.
     :param algorithm:
-    :param vec_env:
     :param trials:
     :return:
     """
 
     # run them all in parallel at once to make sure we get exactly 'trials' number of environments
     os.makedirs(sub_folder, exist_ok=True)
-    vec_env = make_env(eval_scenario, name="eval", log_path=sub_folder, vary_players=False, parallel_envs=trials)
+    vec_env = make_env(eval_scenario, name="eval", log_path=sub_folder, parallel_envs=trials)
     env_obs = vec_env.reset()
     rnn_states = algorithm.get_initial_rnn_state(vec_env.num_envs)
     env_terminals = np.zeros([len(rnn_states)], dtype=np.bool)
@@ -175,13 +174,12 @@ def evaluate_model(algorithm: MarlAlgorithm, eval_scenario, sub_folder, trials=1
     return red_score, green_score, blue_score
 
 def make_env(scenarios: Union[List[ScenarioSetting], ScenarioSetting, str], parallel_envs = None, log_path = None,
-             name="env", vary_players = False):
+             name="env"):
     """
     Creates a vectorized environment from given scenario specifications
     :param scenarios: Either a string: e.g. "red2", in which case a single scenario with no scripting is used, or a
         single ScriptedScenario, or a list of ScriptedScenarios
     :param parallel_envs: Number of times to duplicate the environment(s)
-    :param enable_logging:
     :param name:
     :return:
     """
@@ -217,8 +215,7 @@ def make_env(scenarios: Union[List[ScenarioSetting], ScenarioSetting, str], para
                     red_strategy=_strats[0],
                     green_strategy=_strats[1],
                     blue_strategy=_strats[2],
-                    log_file=_log_file,
-                    dummy_prob=0.25 if vary_players else 0
+                    log_file=_log_file
                 )
 
             env_functions.append(make_env_fn)
@@ -247,8 +244,7 @@ def train_model():
     with open(f"{config.log_folder}/config.txt", "w") as f:
         f.write(str(config))
 
-    vec_env = make_env(config.train_scenarios, name="train", log_path=config.log_folder,
-                       vary_players=config.vary_team_player_counts)
+    vec_env = make_env(config.train_scenarios, name="train", log_path=config.log_folder)
 
     print("Scenario parameters:")
     scenario_descriptions = set(str(env.scenario) for env in vec_env.games)
@@ -356,7 +352,9 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
         device=config.device,
         amp=config.amp,
         export_rollout=config.export_rollout,
-        micro_batch_size=config.micro_batch_size, n_steps=config.n_steps,
+        micro_batch_size=config.micro_batch_size,
+        n_steps=config.n_steps,
+        max_window_size=config.max_window_size,
         prediction_mode=config.prediction_mode,
         deception_bonus=config.deception_bonus,
         split_policy=config.split_policy,
@@ -585,7 +583,6 @@ def regression_test(tests: Union[str, tuple, list] = ("mem2b", "red2", "green2",
         ("red2", "red", 7.5),
         ("green2", "green", 7.5),
         ("blue2", "blue", 7.5),
-        ("mem2b", "red", 7.5),
     ]:
         if scenario_name not in tests:
             continue
@@ -666,10 +663,12 @@ def main():
 
     parser.add_argument('--vary_team_player_counts', type=str2bool, nargs='?', const=True,  default=False, help="Use a random number of players turning training.")
 
-    parser.add_argument('--n_steps', type=int, default=32)
+    parser.add_argument('--n_steps', type=int, default=16)
+    parser.add_argument('--max_window_size', type=int, default=None)
+
     parser.add_argument('--amp', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable Automatic Mixed Precision")
-    parser.add_argument('--parallel_envs', type=int, default=256,
+    parser.add_argument('--parallel_envs', type=int, default=512,
                         help="The number of times to duplicate the environments. Note: when using mixed learning each"+
                              "environment will be duplicated this number of times.")
     parser.add_argument('--model', type=str, help="model to use [default|fast]", default="default")

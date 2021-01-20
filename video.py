@@ -282,7 +282,12 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
         if algorithm.uses_deception_model and not algorithm.predicts_observations:
             # show bonus, only works on actions at the moment
             # this bonus is for the action we *will* take on the next frame.
-            bonus = algorithm.calculate_deception_bonus(model_output, actions, vec_env, roles)
+            players_visible = []
+            for player in env.players:
+                vision = [player.in_vision(other_player.x, other_player.y) for other_player in env.players]
+                players_visible.append(vision)
+            players_visible = np.asarray(players_visible)
+            bonus = algorithm.calculate_deception_bonus(model_output, actions, vec_env, roles, players_visible)
         else:
             bonus = None
 

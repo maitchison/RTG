@@ -198,7 +198,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             scenario_name:str= "full",
             name:str= "env",
             log_file:str=None,
-            dummy_prob=0,
             location_encoding="none",
             channels_first=True,        # observations will be returned as CHW
             **scenario_kwargs
@@ -207,8 +206,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         :param scenario_name:
         :param name:
         :param log_file:
-        :param dummy_prob: Probability (0..1) that a player will be removed from game. This allows for a random number of
-            players in the game.
         :param scenario_kwargs:
         """
 
@@ -232,7 +229,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.round_timeout = 0          # timeout for current round
         self.game_counter = 0           # counts the number of games played
         self.round_number = 0           # the current round we are on
-        self.dummy_prob = dummy_prob
 
         self.general_location = (0, 0)
         self.general_health = int()
@@ -639,11 +635,21 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 team_rewards[self.TEAM_RED] -= 10
                 team_rewards[self.TEAM_BLUE] += self.blue_rewards_for_winning
 
+
+        # apply zero sum rules
+        if self.scenario.zero_sum:
+            new_team_rewards = team_rewards.copy()
+            new_team_rewards[0] -= (team_rewards[1] + team_rewards[2])
+            new_team_rewards[1] -= (team_rewards[0] + team_rewards[2])
+            new_team_rewards[2] -= (team_rewards[0] + team_rewards[1])
+            team_rewards = new_team_rewards
+
         # ----------------------------------------
         # assign team rewards
 
         for player in self.players:
             rewards[player.index] += team_rewards[player.team]
+
 
         self.round_team_scores += team_rewards
 
@@ -1256,13 +1262,18 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             player.custom_data = dict()
             player.invisible = False
 
-        # apply dummy players, we can do this by simply killing them
-        players_left_alive = len(self.players)
-        for player in self.players:
-            # make sure not to kill the last player
-            if np.random.rand() < self.dummy_prob and players_left_alive > 1:
-                player.health = 0
-                players_left_alive -= 1
+        # randomly kill a few players
+        players_to_kill = self.scenario.initial_random_kills
+        while players_to_kill > np.random.rand():
+            living_player_ids = [player.index for player in self.living_players]
+            if len(living_player_ids) == 0:
+                print("Warning, removed all players during initialization!")
+                break
+            idx = np.random.choice(1, living_player_ids)
+            player_to_kill = self.players[idx]
+            player_to_kill.health = 0
+            player_to_kill.visible = False
+            players_to_kill -= 1
 
         # reset stats
         self.stats_player_hit *= 0
@@ -1366,9 +1377,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         # show current scores
         for team in range(3):
-            length = max(0, int(self.round_team_scores[team] * 10))
-            frame[0:100, team, team] = 50
-            frame[0:length, team, team] = 255
+            frame[0:100, team, team] = 128
+            if self.round_team_scores[team] >= 0:
+                length = max(0, int(self.round_team_scores[team] * 10))
+                frame[0:length, team, team] = 255
+            else:
+                length = max(0, -int(self.round_team_scores[team] * 10))
+                frame[0:length, team, team] = 32
 
         frame = frame.swapaxes(0, 1) # I'm using x,y, but video needs y,x
 
