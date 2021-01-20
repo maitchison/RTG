@@ -811,8 +811,6 @@ class PMAlgorithm(MarlAlgorithm):
                     self.batch_player_visible[t] = players_visible
 
                     if self.predicts_observations:
-                        # predictions of other players observations
-                        self.batch_player_obs[t] = player_obs
                         # organise prediction predictions
                         player_obs_predictions = image_to_uint8(model_out["obs_prediction"].detach().cpu())
                         self.batch_player_obs_predictions[t] = swap_prediction_targets(player_obs_predictions)
@@ -913,6 +911,8 @@ class PMAlgorithm(MarlAlgorithm):
                     self.batch_int_value[t] = int_value
                     self.batch_id[t] = ids
                     self.batch_t[t] = ts
+                    if self.batch_player_obs is not None:
+                        self.batch_player_obs[t] = player_obs
 
             # get value estimates for final observation.
             model_out, _ = self.forward(
@@ -997,10 +997,14 @@ class PMAlgorithm(MarlAlgorithm):
                             display_width=0)
         self.watch_per_team("value_est_ext", self.batch_ext_value, display_name="est_v_ext")
         self.log.watch_mean("value_est_ext_std", np.std(self.batch_ext_value), display_name="est_v_ext_std", display_width=0)
-        self.log.watch_mean("ev_ext", utils.explained_variance(self.batch_ext_value.ravel(), self.batch_ext_returns.ravel()))
+        if self.policy_batch_counter == 0:
+            # assume random for logging point before first update.
+            explained_variance = 0.0
+        else:
+            explained_variance = utils.explained_variance(self.batch_ext_value.ravel(), self.batch_ext_returns.ravel())
+        self.log.watch_mean("ev_ext", explained_variance, display_precision=2)
 
         if self.uses_deception_model:
-
             # log intrinsic rewards per team
             self.watch_per_team("raw_deception_bonus", self.batch_raw_deception_bonus, display_width=0)
             self.watch_per_team("batch_reward_int", self.batch_int_rewards, display_name="rew_int", display_width=0)
@@ -1114,7 +1118,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         # calculate gradients, and log grad_norm
         if self.amp:
-            self.scaler.scale(-loss).backward()
+            self.scaler.scale(loss).backward()
             self.log.watch_mean("s_unskip", self.scaler._get_growth_tracker())
             self.log.watch_mean("s_scale", self.scaler.get_scale())
         else:
@@ -1692,7 +1696,7 @@ class PMAlgorithm(MarlAlgorithm):
                                 else:
                                     value = value[:max_window_size]
 
-                            # rnn states are useful for debuging, but take a lot of v-ram.
+                            # rnn states are useful for debugging, but take a lot of v-ram.
                             if key == "rnn_states":
                                 # only need first rnn_state for mini_batch, saves a bit of GPU memory
                                 value = value[0:1]
@@ -1774,7 +1778,6 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["int_returns"] = self.batch_int_returns
         batch_data["ext_value"] = self.batch_ext_value
         batch_data["int_value"] = self.batch_int_value
-        batch_data["player_roles"] = self.batch_player_roles
         batch_data["player_obs"] = self.batch_player_obs
         batch_data["advantages"] = self.batch_advantage
         batch_data["terminals"] = self.batch_terminals
