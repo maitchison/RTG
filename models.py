@@ -565,24 +565,24 @@ class GlobalValueModel(BaseModel):
         self.n_roles = n_roles
         self.n_players = env.max_players
 
-        self.global_int_value_head = nn.Linear(self.encoder_output_features, self.n_players)
-        self.global_ext_value_head = nn.Linear(self.encoder_output_features, self.n_players)
+        self.global_int_value_head = nn.Linear(self.encoder_output_features, self.n_players*self.n_roles)
+        self.global_ext_value_head = nn.Linear(self.encoder_output_features, self.n_players*self.n_roles)
         self.set_device_and_dtype(self.device, self.dtype)
 
-    def forward_sequence(self, obs, rnn_states, terminals=None):
+    def forward_sequence(self, obs, rnn_states, roles=None, terminals=None):
         """
         Input should be in
 
         :param obs: tensor of dims [N, B, n_players, * obs_shape] format.
         :param rnn_states:
         :param terminals:
-        :return: dict containing "global_ext_value" and "global_int"value" of shape [N, B, n_players]
+        :return: dict containing "global_ext_value" and "global_int_value" of shape [N, B, n_players]
         """
 
         # check the input
         (N, B, n_players, *obs_shape), device = obs.shape, obs.device
 
-        check_tensor("obs", obs, (N, B, *obs_shape), torch.uint8)
+        check_tensor("obs", obs, (N, B, n_players, *obs_shape), torch.uint8)
         check_tensor("rnn_states", rnn_states, (N, B, 2, self.memory_units), torch.float32)
         if terminals is not None:
             check_tensor("terminals", terminals, (N, B), torch.int64)
@@ -601,10 +601,18 @@ class GlobalValueModel(BaseModel):
         ext_value = self.global_ext_value_head(encoder_output)
         int_value = self.global_int_value_head(encoder_output)
 
+        # these come out as [N, B,  n_roles * n_players], so reshape
+        ext_value = ext_value.reshape([N, B, self.n_roles, self.n_players])
+        int_value = int_value.reshape([N, B, self.n_roles, self.n_players])
+
         result = {
-            'global_ext_value': ext_value,
-            'global_int_value': int_value
+            'global_role_ext_value': ext_value,
+            'global_role_int_value': int_value
         }
+
+        if roles is not None:
+            result['global_ext_value'] = extract_roles(ext_value, roles)
+            result['global_int_value'] = extract_roles(int_value, roles)
 
         if self.nan_check:
             self._check_for_nans([(k,v) for k,v in result.items()] + [('rnn_states', new_rnn_states)])
@@ -715,17 +723,6 @@ class PolicyModel(BaseModel):
             role_prediction = torch.log_softmax(unnormalized_role_predictions, dim=-1)
             result['policy_role_prediction'] = role_prediction
 
-        def extract_roles(x, roles):
-            """
-            Input is N, B, R, *shape
-            """
-            N, B, R, *shape = x.shape
-            assert roles.shape == (N, B)
-            parts = []
-            for n in range(N):
-                parts.append(x[n:n+1, range(B), roles[n]])
-            return torch.cat(parts, dim=0)
-
         if roles is not None:
             result['log_policy'] = extract_roles(log_policy, roles)
             result['ext_value'] = extract_roles(ext_value, roles)
@@ -818,3 +815,14 @@ class SplitPolicyModel(nn.Module):
             new_rnn_states[rnn_mask] = rnn_states_part[rnn_mask]
 
         return result, new_rnn_states
+
+def extract_roles(x, roles):
+    """
+    Input is N, B, R, *shape
+    """
+    N, B, R, *shape = x.shape
+    assert roles.shape == (N, B)
+    parts = []
+    for n in range(N):
+        parts.append(x[n:n+1, range(B), roles[n]])
+    return torch.cat(parts, dim=0)

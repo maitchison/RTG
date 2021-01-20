@@ -1063,6 +1063,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         prev_obs = data["player_obs"]
         terminals = data["terminals"]
+        roles = data["roles"]
         rnn_states = data["rnn_states"][0]  # get states at start of window
         ids = merge_down(data["id"])
 
@@ -1073,7 +1074,8 @@ class PMAlgorithm(MarlAlgorithm):
             model_out, _ = self.gv_model.forward_sequence(
                 obs=prev_obs,
                 rnn_states=rnn_states,
-                terminals=terminals
+                roles=roles,
+                terminals=terminals,
             )
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
@@ -1192,7 +1194,9 @@ class PMAlgorithm(MarlAlgorithm):
             if global_obs is not None:
                 gv_results, new_gv_states = self.gv_model.forward_sequence(
                     obs=global_obs[np.newaxis],
-                    rnn_states=self.extract_gv_rnn_states(rnn_states)
+                    rnn_states=self.extract_gv_rnn_states(rnn_states),
+                    roles=roles[np.newaxis],
+
                 )
                 for k, v in gv_results.items():
                     result[k] = v
