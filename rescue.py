@@ -1269,10 +1269,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             if len(living_player_ids) == 0:
                 print("Warning, removed all players during initialization!")
                 break
-            idx = np.random.choice(1, living_player_ids)
+            idx = np.random.choice(living_player_ids)
             player_to_kill = self.players[idx]
             player_to_kill.health = 0
-            player_to_kill.visible = False
+            player_to_kill.invisible = True
             players_to_kill -= 1
 
         # reset stats

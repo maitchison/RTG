@@ -200,7 +200,7 @@ class PMAlgorithm(MarlAlgorithm):
                             lstm_mode=lstm_mode, nan_check=nan_check)
 
         if use_global_value_module:
-            print("Enabeling Global Value Module.")
+            print("Enabling Global Value Module.")
             self.gv_model = GlobalValueModel(
                 vec_env, device=device, memory_units=policy_memory_units, model=model_name,
                 data_parallel=data_parallel, out_features=policy_memory_units,

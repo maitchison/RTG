@@ -182,7 +182,7 @@ def load_results(path):
     return data
 
 def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "score_blue"), hold=False, label=None,
-               color=None, legend_location="best"):
+               color=None, legend_location="best", smooth_factor="auto"):
 
     marking_map = {
         "GvG": "--",
@@ -274,15 +274,21 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
         error = _Y_err*1.96
 
         # smoothing
-        if len(_Y) > 1000:
-            _Y = ema(_Y, 0.99)
-            error = ema(error, 0.99)
-        elif len(_Y) > 100:
-            _Y = ema(_Y, 0.95)
-            error = ema(error, 0.95)
-        elif len(_Y) > 10:
-            _Y = ema(_Y, 0.8)
-            ema(error, 0.8)
+
+        if smooth_factor == "auto":
+            if len(_Y) > 1000:
+                smooth_factor = 0.99
+            elif len(_Y) > 100:
+                smooth_factor = 0.95
+            elif len(_Y) > 10:
+                smooth_factor = 0.8
+            else:
+                smooth_factor = 0
+        elif smooth_factor == "off":
+            smooth_factor = 0.0
+
+        _Y = ema(_Y, smooth_factor)
+        error = ema(error, smooth_factor)
 
         error = np.asarray(error)
 

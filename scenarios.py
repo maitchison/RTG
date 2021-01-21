@@ -55,7 +55,7 @@ class RescueTheGeneralScenario():
             "team_shoot_timeout": (20, 20, 20),
         },
 
-        "full_vp": {
+        "full_training": {
             "description": "The full game, but we vary the number of players in each team.",
             "map_width": 48,
             "map_height": 48,
