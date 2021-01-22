@@ -105,7 +105,7 @@ class PMAlgorithm(MarlAlgorithm):
 
             amp=False,  # automatic mixed precision
             device="cuda",
-            policy_memory_units=128,   # >128 is required if we want to predict roles using policy module
+            policy_memory_units=128,   # >128 is required if we want to predict roles using policy module, 512 is standard.
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
             # the type of prediction to use for deception.  Observation is much slower to process
@@ -136,6 +136,7 @@ class PMAlgorithm(MarlAlgorithm):
             max_window_size:Union[int, None]=None,
 
             # ------ deception module settings ----------------
+            gp_memory_units = 512,          # global policy requires additional memory units to work well.
 
             dm_replay_buffer_multiplier=1,  # this doesn't seem to help... so keep it at 1
             dm_max_window_size=8,
@@ -164,6 +165,7 @@ class PMAlgorithm(MarlAlgorithm):
             print(f"[DEBUG: Using {C.WARNING}nan_check{C.ENDC}]")
 
         self.export_rollout = export_rollout
+        self.gp_memory_units = gp_memory_units
 
         # deception module settings
         self.dm_replay_buffer_multiplier = dm_replay_buffer_multiplier
@@ -202,8 +204,8 @@ class PMAlgorithm(MarlAlgorithm):
         if use_global_value_module:
             print("Enabling Global Value Module.")
             self.gv_model = GlobalValueModel(
-                vec_env, device=device, memory_units=policy_memory_units, model=model_name,
-                data_parallel=data_parallel, out_features=policy_memory_units,
+                vec_env, device=device, memory_units=gp_memory_units, model=model_name,
+                data_parallel=data_parallel, out_features=gp_memory_units,
                 lstm_mode=lstm_mode, nan_check=nan_check
             )
         else:
@@ -238,7 +240,7 @@ class PMAlgorithm(MarlAlgorithm):
             states_needed += dm_memory_units
         if use_global_value_module:
             # same goes for global value module
-            states_needed += policy_memory_units
+            states_needed += gp_memory_units
 
         self.rnn_state_shape = [2, states_needed]
 
@@ -1176,7 +1178,6 @@ class PMAlgorithm(MarlAlgorithm):
                 output[k] = torch.cat([out[k] for out in out_parts], dim=0)
             return output, rnn_states
 
-        new_policy_states = None
         new_gv_states = None
         new_deception_states = None
 

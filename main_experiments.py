@@ -29,5 +29,10 @@ python train.py train --train_scenario="full_training" --eval_scenarios="full" -
 
 
 
+--------
+
+experiments to test global value function
+
+
 
 """
