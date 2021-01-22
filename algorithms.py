@@ -105,7 +105,7 @@ class PMAlgorithm(MarlAlgorithm):
 
             amp=False,  # automatic mixed precision
             device="cuda",
-            policy_memory_units=128,   # >128 is required if we want to predict roles using policy module, 512 is standard.
+            policy_memory_units=512,   # >128 is required if we want to predict roles using policy module, 512 is standard.
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
             # the type of prediction to use for deception.  Observation is much slower to process
@@ -136,7 +136,7 @@ class PMAlgorithm(MarlAlgorithm):
             max_window_size:Union[int, None]=None,
 
             # ------ deception module settings ----------------
-            gp_memory_units = 512,          # global policy requires additional memory units to work well.
+            gvm_memory_units = 512,          # global value requires additional memory units to work well.
 
             dm_replay_buffer_multiplier=1,  # this doesn't seem to help... so keep it at 1
             dm_max_window_size=8,
@@ -165,7 +165,7 @@ class PMAlgorithm(MarlAlgorithm):
             print(f"[DEBUG: Using {C.WARNING}nan_check{C.ENDC}]")
 
         self.export_rollout = export_rollout
-        self.gp_memory_units = gp_memory_units
+        self.gvm_memory_units = gvm_memory_units
 
         # deception module settings
         self.dm_replay_buffer_multiplier = dm_replay_buffer_multiplier
@@ -180,7 +180,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.deception_bonus_start_timestep = deception_bonus_start_timestep
         self.deception_batch_counter = 0
         self.policy_batch_counter = 0
-        self.gv_batch_counter = 0
+        self.gvm_batch_counter = 0
         self.max_window_size = max_window_size
 
         # the type of prediction to use for deception off|action|observation|both
@@ -204,8 +204,8 @@ class PMAlgorithm(MarlAlgorithm):
         if use_global_value_module:
             print("Enabling Global Value Module.")
             self.gv_model = GlobalValueModel(
-                vec_env, device=device, memory_units=gp_memory_units, model=model_name,
-                data_parallel=data_parallel, out_features=gp_memory_units,
+                vec_env, device=device, memory_units=gvm_memory_units, model=model_name,
+                data_parallel=data_parallel, out_features=gvm_memory_units,
                 lstm_mode=lstm_mode, nan_check=nan_check
             )
         else:
@@ -240,7 +240,7 @@ class PMAlgorithm(MarlAlgorithm):
             states_needed += dm_memory_units
         if use_global_value_module:
             # same goes for global value module
-            states_needed += gp_memory_units
+            states_needed += gvm_memory_units
 
         self.rnn_state_shape = [2, states_needed]
 
@@ -1128,7 +1128,7 @@ class PMAlgorithm(MarlAlgorithm):
         else:
             loss.backward()
 
-        self.gv_batch_counter += 1
+        self.gvm_batch_counter += 1
 
     @profiler.record_function("algorithm_forward")
     def forward(
@@ -1467,10 +1467,13 @@ class PMAlgorithm(MarlAlgorithm):
         # Calculate action prediction loss
         # -------------------------------------------------------------------------
 
+        vision_mask = create_vision_mask(player_visible, self.dm_vision_filter)
+
         if "action_prediction" in model_out:
             pred = model_out["action_prediction"]
             true = data["player_role_policy"]
-            ap_kl = calculate_action_prediction_loss(pred, true)
+
+            ap_kl = calculate_action_prediction_loss(pred, true, vision_filter=vision_mask)
             ap_loss = self.dm_loss_scale * ap_kl
             self.log.watch_mean("ap_loss", ap_loss, display_width=10, display_precision=5)
             loss += ap_loss
@@ -1480,7 +1483,7 @@ class PMAlgorithm(MarlAlgorithm):
         if "action_backwards_prediction" in model_out:
             pred = model_out["action_backwards_prediction"]
             true = data["player_action_predictions"]
-            bap_kl = calculate_action_prediction_loss(pred, true)
+            bap_kl = calculate_action_prediction_loss(pred, true, vision_filter=vision_mask)
             bap_loss = self.dm_loss_scale * bap_kl
             self.log.watch_mean("bap_loss", bap_loss, display_width=10, display_precision=5)
             loss += bap_loss
@@ -1488,7 +1491,7 @@ class PMAlgorithm(MarlAlgorithm):
             bap_kl=0
 
         if self.deception_batch_counter % 10 == 2 and "action_prediction" in model_out:
-            # unscaled varions of the loss
+            # unscaled versions of the loss
             self.log.watch_mean("bap_kl", bap_kl)
             self.log.watch_mean("ap_kl", ap_kl)
             # get self prediction error (for debugging)
@@ -1499,7 +1502,7 @@ class PMAlgorithm(MarlAlgorithm):
                 for n in range(N):
                     pred = model_out["action_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
                     true = data["role_log_policies"][n:n+1][:, :, np.newaxis]
-                    self_kl += calculate_action_prediction_loss(pred, true) / N
+                    self_kl += calculate_action_prediction_loss(pred, true, vision_filter=vision_mask) / N
             self.log.watch_mean("self_ap_kl", self_kl, display_width=10)
 
         if self.deception_batch_counter % 10 == 3 and "action_backwards_prediction" in model_out:
@@ -1511,7 +1514,7 @@ class PMAlgorithm(MarlAlgorithm):
                 for n in range(N):
                     pred = model_out["action_backwards_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
                     true = model_out["action_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
-                    self_kl += calculate_action_prediction_loss(pred, true) / N
+                    self_kl += calculate_action_prediction_loss(pred, true, vision_filter=vision_mask) / N
             self.log.watch_mean("self_bap_kl", self_kl, display_width=10)
 
         # -------------------------------------------------------------------------
@@ -2015,17 +2018,19 @@ def image_to_uint8(x):
     assert x.dtype == torch.float32
     return torch.clamp(x * 255.0, 0, 255).to(torch.uint8)
 
-def calculate_action_prediction_loss(pred: torch.Tensor, true: torch.Tensor):
+def calculate_action_prediction_loss(pred: torch.Tensor, true: torch.Tensor, vision_filter=None):
     """
 
     :param pred: tensor of logprobs of dims [N, B, n_players, n_roles, n_actions]
     :param true: tensor of logprobs of dims [N, B, n_players, n_roles, n_actions]
+    :param vision_filter: (optional) tensor of bools of dims [N, B]
     :return: scalar indicating average kl over batch.
     """
     assert pred.shape == true.shape, f"shapes {pred.shape} and {true.shape} must match."
-    N, B, n_players, n_roles, n_actions = pred.shape
-    pred = pred.reshape(N * B * n_players * n_roles, n_actions)
-    true = true.reshape(N * B * n_players * n_roles, n_actions)
+    N, B, n_players, n_roles, n_actions = pred.shape[-1]
+    mask = vision_filter.reshape(-1)[:, np.newaxis]
+    pred = pred.reshape(-1, n_actions)[mask]
+    true = true.reshape(-1, n_actions)[mask]
     return F.kl_div(pred, true, reduction='batchmean', log_target=True)
 
 
@@ -2173,6 +2178,21 @@ def test_deception_bonus():
     )
 
     assert abs(result[0] - -0.25) < 0.1 and abs(result[1] - 0) < 1e-4, f"{result}, (0.25, 0)"
+
+def create_vision_mask(player_visible: torch.Tensor, fraction_to_let_through: float):
+    """
+    Creates a mask that filters out given fraction of invisible players.
+    :param player_visible: bool tensor of dims [N, B]
+    :param fraction_to_let_through: fraction of non-visible players to let through
+    :return: bool tensor of dims [N, B]
+    """
+
+    pass_through = np.random.choice(a=[True, False], size=player_visible.shape,
+                                    p=[fraction_to_let_through, 1 - fraction_to_let_through])
+    pass_through = torch.tensor(pass_through, dtype=torch.bool,
+                                device=player_visible.device)  # gets cast to uint8 for some reason..
+    mask = torch.logical_or(pass_through, player_visible)
+    return mask
 
 test_deception_bonus()
 test_calculate_returns()

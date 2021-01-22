@@ -818,7 +818,8 @@ class SplitPolicyModel(nn.Module):
 
 def extract_roles(x, roles):
     """
-    Input is N, B, R, *shape
+    x is [N, B, R, *shape]
+    roles is [N, B]
     """
     N, B, R, *shape = x.shape
     assert roles.shape == (N, B)
