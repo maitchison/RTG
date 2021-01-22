@@ -146,7 +146,7 @@ class PMAlgorithm(MarlAlgorithm):
             dm_learning_rate=2.5e-4,
             dm_lstm_mode="residual",
             dm_kl_factor=0,                 # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
-            dm_vision_filter=0.25,          # what proportion of non_visible agent pairs to train on
+            dm_vision_filter=1.0,           # what proportion of non_visible agent pairs to train on (stub set to 1.0)
             dm_loss_scale=0.1,              # loss scale for deception module
         ):
 
@@ -1502,7 +1502,7 @@ class PMAlgorithm(MarlAlgorithm):
                 for n in range(N):
                     pred = model_out["action_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
                     true = data["role_log_policies"][n:n+1][:, :, np.newaxis]
-                    self_kl += calculate_action_prediction_loss(pred, true, vision_filter=vision_mask) / N
+                    self_kl += calculate_action_prediction_loss(pred, true) / N
             self.log.watch_mean("self_ap_kl", self_kl, display_width=10)
 
         if self.deception_batch_counter % 10 == 3 and "action_backwards_prediction" in model_out:
@@ -1514,7 +1514,7 @@ class PMAlgorithm(MarlAlgorithm):
                 for n in range(N):
                     pred = model_out["action_backwards_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
                     true = model_out["action_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
-                    self_kl += calculate_action_prediction_loss(pred, true, vision_filter=vision_mask) / N
+                    self_kl += calculate_action_prediction_loss(pred, true) / N
             self.log.watch_mean("self_bap_kl", self_kl, display_width=10)
 
         # -------------------------------------------------------------------------
@@ -2023,15 +2023,25 @@ def calculate_action_prediction_loss(pred: torch.Tensor, true: torch.Tensor, vis
 
     :param pred: tensor of logprobs of dims [N, B, n_players, n_roles, n_actions]
     :param true: tensor of logprobs of dims [N, B, n_players, n_roles, n_actions]
-    :param vision_filter: (optional) tensor of bools of dims [N, B]
+    :param vision_filter: (optional) tensor of bools of dims [N, B, n_players]
     :return: scalar indicating average kl over batch.
     """
     assert pred.shape == true.shape, f"shapes {pred.shape} and {true.shape} must match."
-    N, B, n_players, n_roles, n_actions = pred.shape[-1]
-    mask = vision_filter.reshape(-1)[:, np.newaxis]
-    pred = pred.reshape(-1, n_actions)[mask]
-    true = true.reshape(-1, n_actions)[mask]
-    return F.kl_div(pred, true, reduction='batchmean', log_target=True)
+    N, B, n_players, n_roles, n_actions = pred.shape
+    if vision_filter is not None:
+        assert vision_filter.shape == (N, B, n_players), f"Expected vision_filter to be of shape {(N, B, n_players)} but found {vision_filter.shape}"
+        assert vision_filter.dtype == torch.bool, f"Vision filter must be of type bool, not {vision_filter.dtype}"
+        # mask (N, B, n_players) -> (N*B*n_players)
+        mask = vision_filter.reshape(-1)
+        # these will come out as [N*B*n_players, n_roles, n_actions]
+        pred = pred.reshape(-1, n_roles, n_actions)[mask, :, :]
+        true = true.reshape(-1, n_roles, n_actions)[mask, :, :]
+
+    # reshape down to one large batch
+    pred = pred.reshape(-1, n_actions)
+    true = true.reshape(-1, n_actions)
+
+    return F.kl_div(pred, true, reduction='batchmean', log_target=True) if len(pred) > 0 else 0.0
 
 
 def calculate_roll_prediction_nll(role_predictions, role_targets, filter=None):
@@ -2186,6 +2196,11 @@ def create_vision_mask(player_visible: torch.Tensor, fraction_to_let_through: fl
     :param fraction_to_let_through: fraction of non-visible players to let through
     :return: bool tensor of dims [N, B]
     """
+
+    if fraction_to_let_through == 1:
+        return torch.ones_like(player_visible)
+    elif fraction_to_let_through == 0:
+        return player_visible
 
     pass_through = np.random.choice(a=[True, False], size=player_visible.shape,
                                     p=[fraction_to_let_through, 1 - fraction_to_let_through])

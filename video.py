@@ -39,7 +39,11 @@ def display_role_prediction(frame: np.ndarray, dx: int, dy: int, raw_predictions
             c = [int(x * 255) for x in role_predictions[i, j]]
             draw_pixel(frame, dy + (i + 1) * block_size, dx + (j + 1) * block_size, c=c, size=block_size)
 
-def display_policy(frame: np.ndarray, dx:int, dy:int, policy: np.ndarray, action: Union[int, None] = None):
+def display_policy(frame: np.ndarray, dx:int, dy:int, policy: np.ndarray,
+                   action: Union[int, None] = None,
+                   prev_action: Union[int, None] = None,
+
+                   ):
     """
     :param frame:
     :param dx:
@@ -79,7 +83,9 @@ def display_policy(frame: np.ndarray, dx:int, dy:int, policy: np.ndarray, action
         else:
             c = 0.0
         if action is not None and a == action:
-            c = 1.0 # indicate which action the player took.
+            c = 0.8 # indicate which action the player took.
+        elif prev_action is not None and a == prev_action:
+            c = 0.5 # show the previous action too, if required (useful for deception bonus)
 
         c = np.asarray(c)
 
@@ -103,19 +109,30 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
 
     obs_size = env.observation_space.shape[1]  # stub, make this a shape and get from env
     n_players = len(env.players)
+    n_actions = vec_env.action_space.n
 
     # work out our height
     height, width, channels = frame.shape
     orig_height, orig_width = height, width
 
     if algorithm.uses_deception_model:
-        # make room for role predictions
-        width = max(width, (n_players * 2 + 1) * obs_size)
+
+        if algorithm.predicts_observations:
+            prediction_display_width = obs_size
+            prediction_display_height = obs_size
+        else:
+            prediction_display_width = (n_actions + 1) + 8
+            prediction_display_height = (n_roles + 1) + 8
+
+        # make room for predictions
+        role_prediction_space = (n_players + 2) * 8 * 2
+        width = max(width + role_prediction_space , (n_players * 2 + 1) * prediction_display_width)
+
         # make room for other predictions
         if algorithm.predicts_observations:
-            height = height + n_players * obs_size
+            height = height + n_players * prediction_display_height
         if algorithm.predicts_actions:
-            height = height + n_players * 1 * (n_roles+1) + 8
+            height = height + n_players * prediction_display_height
 
     scaled_width = (width * scale) // 4 * 4  # make sure these are multiples of 4
     scaled_height = (height * scale) // 4 * 4
@@ -224,21 +241,21 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             for i in range(n_players):
                 dx = 0 * (n_actions+1) + 4
                 dy = orig_height + i * policy_spacing_y
-                display_policy(frame, dx, dy, true_policy[i], prev_actions[i])
+                display_policy(frame, dx, dy, true_policy[i], actions[i], prev_actions[i])
 
             # predicted policy
             for i in range(n_players):
                 for j in range(n_players):
                     dx = (j+1) * (n_actions+1) + 8
                     dy = orig_height + i * policy_spacing_y
-                    display_policy(frame, dx, dy, action_predictions[i, j], prev_actions[j])
+                    display_policy(frame, dx, dy, action_predictions[i, j])
 
             # predictions of other players predictions of our own policy
             for i in range(n_players):
                 for j in range(n_players):
                     dx = (n_players+(j+1)) * (n_actions+1) + 12
                     dy = orig_height + i * policy_spacing_y
-                    display_policy(frame, dx, dy, action_prediction_predictions[i, j], prev_actions[i])
+                    display_policy(frame, dx, dy, action_prediction_predictions[i, j])
 
         # add deception bonus indicators (on top of role prediction)
         if bonus is not None:
@@ -290,6 +307,12 @@ def export_video(filename, algorithm: PMAlgorithm, scenario):
             bonus = algorithm.calculate_deception_bonus(model_output, actions, vec_env, roles, players_visible)
         else:
             bonus = None
+
+    # write last frame out 10 times
+    # this is because some video players terminate at the end of the video making it *very* hard to see the last frame
+    # (which is often very important)
+    for _ in range(10):
+        video_out.write(frame)
 
     video_out.release()
 
