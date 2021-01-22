@@ -141,8 +141,8 @@ class PMAlgorithm(MarlAlgorithm):
             dm_replay_buffer_multiplier=1,  # this doesn't seem to help... so keep it at 1
             dm_max_window_size=8,
             dm_mini_batch_size=256,         # 128 works best, but train's 20% slower than 256, which is also ok.
-            dm_memory_units=512,
-            dm_out_features=512,
+            dm_memory_units=2048,
+            dm_out_features=2048,
             dm_learning_rate=2.5e-4,
             dm_lstm_mode="residual",
             dm_kl_factor=0,                 # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
