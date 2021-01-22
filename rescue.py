@@ -1096,7 +1096,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 (255, 255, 255), # y
                 (128, 255, 128), # health
                 (255, 255, 0),   # timeout
-                (255, 0, 255),   # shooting timeout
+                (255, 255, 0),   # shooting timeout (warming up)
             ]
 
             status_values = [
@@ -1106,6 +1106,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 self.round_timer / self.timeout,
                 player.turns_until_we_can_shoot / player.shooting_timeout if player.shooting_timeout > 0 else 0,
             ]
+
+            # change color if agent is able to shoot
+            if player.turns_until_we_can_shoot == 0:
+                status_colors[4] = (255, 0, 0) # red for able to shoot
 
             for i, (col, value) in enumerate(zip(status_colors, status_values)):
                 c = np.asarray(np.asarray(col, dtype=np.float32) * value, dtype=np.uint8)
@@ -1232,17 +1236,19 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             start_locations = [all_locations[i] for i in np.random.choice(range(len(all_locations)), size=self.n_players)]
         elif self.scenario.starting_locations == "together":
             # players are placed together but not right ontop of the general
+
+            min_distance_from_general = min([4, self.scenario.map_width//4, self.scenario.map_height//4])
+
             general_filter = lambda p: \
-                abs(p[0] - self.general_location[0]) > 4 and \
-                abs(p[1] - self.general_location[1]) > 4
+                abs(p[0] - self.general_location[0]) >= min_distance_from_general and \
+                abs(p[1] - self.general_location[1]) >= min_distance_from_general
             assert self.n_players <= 16, "This method of initializing starting locations only works with 16 or less players."
             valid_start_locations = list(filter(general_filter, all_locations))
             start_location_center = valid_start_locations[np.random.choice(range(len(valid_start_locations)))]
             button_location = start_location_center
             start_locations = []
-            for dx in range(-3, 3+1):
-                for dy in range(-3, 3+1):
-                    # todo, fix the +dx, +dy warning
+            for dx in range(-2, 2+1):
+                for dy in range(-2, 2+1):
                     x, y = start_location_center[0]+dx, start_location_center[1]+dy
                     if 0 <= x < self.scenario.map_width:
                         if 0 <= y < self.scenario.map_height:

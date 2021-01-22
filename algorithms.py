@@ -146,7 +146,7 @@ class PMAlgorithm(MarlAlgorithm):
             dm_learning_rate=2.5e-4,
             dm_lstm_mode="residual",
             dm_kl_factor=0,                 # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
-            dm_vision_filter=1.0,           # what proportion of non_visible agent pairs to train on (stub set to 1.0)
+            dm_vision_filter=0.1,           # what proportion of non_visible agent pairs to train on
             dm_loss_scale=0.1,              # loss scale for deception module
         ):
 

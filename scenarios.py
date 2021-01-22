@@ -47,9 +47,9 @@ class RescueTheGeneralScenario():
             "reward_per_tree": 1,
             "hidden_roles": "default",
             "timeout_mean": 500,
-            "max_view_distance": 7,
+            "max_view_distance": 6,
             "team_shoot_damage": (10, 5, 5),
-            "team_view_distance": (7, 5, 5),    # red can see further
+            "team_view_distance": (6, 5, 5),    # red can see further
             "team_shoot_range": (5, 5, 5),
             "starting_locations": "together",   # players start together
             "team_shoot_timeout": (20, 20, 20),
@@ -65,9 +65,9 @@ class RescueTheGeneralScenario():
             "reward_per_tree": 1,
             "hidden_roles": "default",
             "timeout_mean": 500,
-            "max_view_distance": 7,
+            "max_view_distance": 6,
             "team_shoot_damage": (10, 5, 5),
-            "team_view_distance": (7, 5, 5),  # red can see further
+            "team_view_distance": (6, 5, 5),  # red can see further
             "team_shoot_range": (5, 5, 5),
             "starting_locations": "together",  # players start together
             "team_shoot_timeout": (20, 20, 20),
