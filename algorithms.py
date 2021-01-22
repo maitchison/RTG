@@ -604,7 +604,7 @@ class PMAlgorithm(MarlAlgorithm):
             device=self.deception_model.device
         ), new_rnn_states
 
-    def _duplicate_players(self, x, n_players):
+    def _duplicate_players(self, x:np.ndarray, n_players):
         """ Returns a copy of data with players duplicated.
             If input is
 
@@ -620,9 +620,11 @@ class PMAlgorithm(MarlAlgorithm):
             x: [n_games*n_players, *data_shape]
             returns [n_games*n_players, n_players, *data_shape]
         """
+        assert type(x) is np.ndarray
+
         data_shape = x.shape[1:]
         assert len(x) % n_players == 0
-        x = x.reshape(len(x)//n_players, n_players, *data_shape)
+        x = x.reshape((len(x)//n_players, n_players, *data_shape))
         x = x.repeat(n_players, axis=0)
         return x
 
@@ -1468,16 +1470,49 @@ class PMAlgorithm(MarlAlgorithm):
         if "action_prediction" in model_out:
             pred = model_out["action_prediction"]
             true = data["player_role_policy"]
-            ap_loss = self.dm_loss_scale * calculate_action_prediction_loss(pred, true)
+            ap_kl = calculate_action_prediction_loss(pred, true)
+            ap_loss = self.dm_loss_scale * ap_kl
             self.log.watch_mean("ap_loss", ap_loss, display_width=10, display_precision=5)
             loss += ap_loss
+        else:
+            ap_kl = 0
 
         if "action_backwards_prediction" in model_out:
             pred = model_out["action_backwards_prediction"]
             true = data["player_action_predictions"]
-            bap_loss = self.dm_loss_scale * calculate_action_prediction_loss(pred, true)
+            bap_kl = calculate_action_prediction_loss(pred, true)
+            bap_loss = self.dm_loss_scale * bap_kl
             self.log.watch_mean("bap_loss", bap_loss, display_width=10, display_precision=5)
             loss += bap_loss
+        else:
+            bap_kl=0
+
+        if self.deception_batch_counter % 10 == 2 and "action_prediction" in model_out:
+            # unscaled varions of the loss
+            self.log.watch_mean("bap_kl", bap_kl)
+            self.log.watch_mean("ap_kl", ap_kl)
+            # get self prediction error (for debugging)
+            ids = data["id"]
+            N, B = ids.shape
+            self_kl = 0
+            with torch.no_grad():
+                for n in range(N):
+                    pred = model_out["action_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
+                    true = data["role_log_policies"][n:n+1][:, :, np.newaxis]
+                    self_kl += calculate_action_prediction_loss(pred, true) / N
+            self.log.watch_mean("self_ap_kl", self_kl, display_width=10)
+
+        if self.deception_batch_counter % 10 == 3 and "action_backwards_prediction" in model_out:
+            # get self prediction error (for debugging)
+            ids = data["id"]
+            N, B = ids.shape
+            self_kl = 0
+            with torch.no_grad():
+                for n in range(N):
+                    pred = model_out["action_backwards_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
+                    true = model_out["action_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
+                    self_kl += calculate_action_prediction_loss(pred, true) / N
+            self.log.watch_mean("self_bap_kl", self_kl, display_width=10)
 
         # -------------------------------------------------------------------------
         # Calculate observation prediction loss
@@ -1987,7 +2022,7 @@ def calculate_action_prediction_loss(pred: torch.Tensor, true: torch.Tensor):
     :param true: tensor of logprobs of dims [N, B, n_players, n_roles, n_actions]
     :return: scalar indicating average kl over batch.
     """
-    assert pred.shape == true.shape
+    assert pred.shape == true.shape, f"shapes {pred.shape} and {true.shape} must match."
     N, B, n_players, n_roles, n_actions = pred.shape
     pred = pred.reshape(N * B * n_players * n_roles, n_actions)
     true = true.reshape(N * B * n_players * n_roles, n_actions)

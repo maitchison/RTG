@@ -33,6 +33,11 @@ python train.py train --train_scenario="full_training" --eval_scenarios="full" -
 
 experiments to test global value function
 
+-------
+
+experiments to test action prediction
+
+python train.py train --train_scenario="red2" --verbose=2 --run="ap_default" --prediction_mode='action' --device="cuda:0"
 
 
 """
