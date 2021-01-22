@@ -1617,7 +1617,7 @@ class PMAlgorithm(MarlAlgorithm):
         # player_obs is [N, B, n_players, *obs_shape]
         for player_entry, batch_entry in (
                 ('player_obs', 'prev_obs'),
-                ('player_policy', 'policy'),
+                ('player_policy', 'log_policy'),
                 ('player_roles', 'roles'),
                 ('player_terminals', 'terminals'),
         ):
@@ -1732,8 +1732,9 @@ class PMAlgorithm(MarlAlgorithm):
 
                             mini_batch_data[key] = value.to(device=model.device, non_blocking=True)
 
-                        # stub: verify the data..
-                        self._verify_minibatch_data(mini_batch_data)
+                        # verify the data, but only occasionally
+                        if np.random.rand() < 0.05:
+                            self._verify_minibatch_data(mini_batch_data)
 
                         forward_func(mini_batch_data)
                         micro_batch_counter += 1
@@ -1811,6 +1812,7 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["ext_value"] = self.batch_ext_value
         batch_data["int_value"] = self.batch_int_value
         batch_data["player_obs"] = self.batch_player_obs
+        batch_data["prev_obs"] = self.batch_prev_obs    # only used for debugging
         batch_data["advantages"] = self.batch_advantage
         batch_data["terminals"] = self.batch_terminals
         batch_data["rnn_states"] = self.extract_gv_rnn_states(self.batch_rnn_states)
