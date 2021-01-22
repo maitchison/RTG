@@ -129,7 +129,7 @@ class PMAlgorithm(MarlAlgorithm):
             max_grad_norm=5.0,
             lstm_mode="residual",
             deception_bonus: tuple = (0,0,0),            # scale of deception bonus for each team (requires deception module to be enabled)
-            deception_bonus_start_timestep: int = 10e6,  # deception bonus will be 0 until this timestep.
+            deception_bonus_start_timestep: int = 10e6,  # deception bonus starts at 0, and ramps up linearly until this timestep
             use_global_value_module=False,  # enables a global value function estimator, which improves training
 
             nan_check=False,                # if enabled checks for nans, and logs extreme values (slows things down)
@@ -863,11 +863,9 @@ class PMAlgorithm(MarlAlgorithm):
                             deception_bonus = raw_deception_bonus * \
                                 np.asarray([self.deception_bonus[r] for r in roles]) / max(self.deception_bonus)
 
-                    # turn off deception bonus until we get through the warm up peroid, then slowly introduce it
+                    # turn off deception bonus until we get through the warm up period, then slowly introduce it
                     if self.t < self.deception_bonus_start_timestep:
-                        deception_bonus *= 0
-                    elif self.deception_bonus_start_timestep < self.t < self.deception_bonus_start_timestep * 2:
-                        factor = (self.t - self.deception_bonus_start_timestep) / self.deception_bonus_start_timestep
+                        factor = self.t / self.deception_bonus_start_timestep
                         deception_bonus *= factor
 
                     # make sure bonus is reasonable by setting nan to 0 and applying clipping
@@ -1608,6 +1606,33 @@ class PMAlgorithm(MarlAlgorithm):
             optimizer.step()
             optimizer.zero_grad()
 
+    def _verify_minibatch_data(self, minibatch_data: dict):
+        """ Perform some basic checks to make sure batch data looks right. """
+
+        assert "id" in minibatch_data
+        ids = minibatch_data["id"]
+
+        N, B = ids.shape
+
+        # player_obs is [N, B, n_players, *obs_shape]
+        for player_entry, batch_entry in (
+                ('player_obs', 'prev_obs'),
+                ('player_policy', 'policy'),
+                ('player_roles', 'roles'),
+                ('player_terminals', 'terminals'),
+        ):
+            if player_entry not in minibatch_data:
+                continue
+            # I could probably do this with gather, but I'm not sure how
+            for n in range(N):
+                if not torch.all(torch.eq(minibatch_data[player_entry][n, range(B), ids[n]], minibatch_data[batch_entry])[n]):
+                    print(f"Error: player data {player_entry} does not match individual data at relevant index")
+                    with open("bad_minibatch", 'wb') as f:
+                        output_data = {}
+                        for k,v in minibatch_data:
+                            output_data[k] = v.detach().cpu().numpy()
+                        pickle.dump(output_data, f)
+
     def _train_model(self, batch_data, model, optimizer, forward_func,
                      epochs:float, mini_batch_size, short_name="model",
                      max_window_size=None, enable_window_offsets=False):
@@ -1706,6 +1731,9 @@ class PMAlgorithm(MarlAlgorithm):
                                 value = value[0:1]
 
                             mini_batch_data[key] = value.to(device=model.device, non_blocking=True)
+
+                        # stub: verify the data..
+                        self._verify_minibatch_data(mini_batch_data)
 
                         forward_func(mini_batch_data)
                         micro_batch_counter += 1
