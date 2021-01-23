@@ -138,11 +138,10 @@ class PMAlgorithm(MarlAlgorithm):
             # ------ deception module settings ----------------
             gvm_memory_units = 512,          # global value requires additional memory units to work well.
 
-            dm_replay_buffer_multiplier=1,  # this doesn't seem to help... so keep it at 1
             dm_max_window_size=8,
             dm_mini_batch_size=256,         # 128 works best, but train's 20% slower than 256, which is also ok.
-            dm_memory_units=2048,
-            dm_out_features=2048,
+            dm_memory_units=1024,
+            dm_out_features=1024,
             dm_learning_rate=2.5e-4,
             dm_lstm_mode="residual",
             dm_kl_factor=0,                 # 1 = train on KL only, 0 = loss_fn only, and 0.5 is a 50/50 mixture
@@ -168,7 +167,6 @@ class PMAlgorithm(MarlAlgorithm):
         self.gvm_memory_units = gvm_memory_units
 
         # deception module settings
-        self.dm_replay_buffer_multiplier = dm_replay_buffer_multiplier
         self.dm_max_window_size = dm_max_window_size
         self.dm_mini_batch_size = dm_mini_batch_size
         self.dm_memory_units = dm_memory_units
@@ -182,6 +180,8 @@ class PMAlgorithm(MarlAlgorithm):
         self.policy_batch_counter = 0
         self.gvm_batch_counter = 0
         self.max_window_size = max_window_size
+
+        self.deferred_logs = []
 
         # the type of prediction to use for deception off|action|observation|both
         self.prediction_mode = prediction_mode
@@ -341,7 +341,7 @@ class PMAlgorithm(MarlAlgorithm):
         # the true role of each player in the game that agent a is playing
         self.batch_player_roles = np.zeros([N, A, vec_env.max_players], dtype=np.int64)
 
-        if self.uses_deception_model or self.uses_gv_model:
+        if (self.uses_deception_model and self.predicts_observations) or self.uses_gv_model:
             # all player observations at time t for given game recorded for all agents
             # required for deception and gv model.
             self.batch_player_obs = np.zeros([N, A, vec_env.max_players, *self.obs_shape], dtype=np.uint8)
@@ -372,8 +372,6 @@ class PMAlgorithm(MarlAlgorithm):
 
             # each players prediction about the roles of all other players, as a log prob.
             self.batch_player_role_predictions = np.zeros([N, A, vec_env.max_players, R], dtype=np.float32)
-
-            self.replay_buffer = []
 
         # advantage used during policy gradient (combination of intrinsic and extrinsic reward)
         self.batch_advantage = np.zeros([N, A], dtype=np.float32)
@@ -867,11 +865,6 @@ class PMAlgorithm(MarlAlgorithm):
                             deception_bonus = raw_deception_bonus * \
                                 np.asarray([self.deception_bonus[r] for r in roles]) / max(self.deception_bonus)
 
-                    # turn off deception bonus until we get through the warm up period, then slowly introduce it
-                    if self.t < self.deception_bonus_start_timestep:
-                        factor = self.t / self.deception_bonus_start_timestep
-                        deception_bonus *= factor
-
                     # make sure bonus is reasonable by setting nan to 0 and applying clipping
                     if np.any(np.isnan(deception_bonus)):
                         self.log.warn("Nan found in deception bonus, setting to 0.")
@@ -976,6 +969,11 @@ class PMAlgorithm(MarlAlgorithm):
         else:
             self.intrinsic_reward_norm_scale = 1
             scaled_int_rewards = self.batch_int_rewards
+
+        # turn off deception bonus until we get through the warm up period, then slowly introduce it
+        if self.t < self.deception_bonus_start_timestep:
+            factor = self.t / self.deception_bonus_start_timestep
+            scaled_int_rewards *= factor
 
         # optionaly let returns propagate through terminal states.
         int_advantage = calculate_gae(scaled_int_rewards, self.batch_int_value, self.int_final_value_estimate,
@@ -1227,7 +1225,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         return unsqueze_result, new_rnn_states
 
-    @profiler.record_function("minibatch_forward")
+    @profiler.record_function("policy_forward_minibatch")
     def forward_policy_mini_batch(self, data, loss_scale=1):
         """
         Run mini batch through model generating loss, call opt_step_mini_batch to apply the update.
@@ -1255,7 +1253,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         N, B, *obs_shape = prev_obs.shape
 
-        with profiler.record_function("fmb_forward_model"):
+        with profiler.record_function("pfm_forward_model"):
             model_out, _ = self.policy_model.forward_sequence(
                 obs=prev_obs,
                 rnn_states=rnn_states,
@@ -1264,22 +1262,23 @@ class PMAlgorithm(MarlAlgorithm):
             )
 
         # output will be a sequence of [N, B] but we want this just as [N*B] for processing
-        for k, v in model_out.items():
-            if k != "policy_role_prediction":
-                model_out[k] = merge_down(v)
+        with profiler.record_function("pfm_merge_down"):
+            for k, v in model_out.items():
+                if k != "policy_role_prediction":
+                    model_out[k] = merge_down(v)
 
-        logps = model_out["log_policy"]
+        with profiler.record_function("pfm_policy_gradiant"):
+            logps = model_out["log_policy"]
+            actions = actions.to(dtype=torch.int64) # required for indexing
 
-        actions = actions.to(dtype=torch.int64) # required for indexing
+            ratio = torch.exp(logps[range(N*B), actions] - policy_log_probs[range(N*B), actions])
+            clipped_ratio = torch.clamp(ratio, 1 - self.ppo_epsilon, 1 + self.ppo_epsilon)
 
-        ratio = torch.exp(logps[range(N*B), actions] - policy_log_probs[range(N*B), actions])
-        clipped_ratio = torch.clamp(ratio, 1 - self.ppo_epsilon, 1 + self.ppo_epsilon)
+            loss_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
+            loss_clip_mean = (weights*loss_clip).mean()
 
-        loss_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
-        loss_clip_mean = (weights*loss_clip).mean()
-
-        self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64, display_precision=3)
-        loss = loss + loss_clip_mean
+            self.deferred_watch_mean("loss_pg", loss_clip_mean, history_length=64, display_precision=3)
+            loss = loss + loss_clip_mean
 
         # ----------------------------------------
         # role prediction loss
@@ -1289,21 +1288,22 @@ class PMAlgorithm(MarlAlgorithm):
         # loss must be negative as we maximize loss with policy...
 
         if "policy_role_prediction" in model_out:
-            loss_role = -0.1 * calculate_roll_prediction_nll(
-                model_out["policy_role_prediction"],
-                data["player_roles"]
-            ).mean()
-            loss = loss + loss_role
-            self.log.watch_mean("loss_policy_role", loss_role)
+            with profiler.record_function("pfm_role_prediction"):
+                loss_role = -0.1 * calculate_roll_prediction_nll(
+                    model_out["policy_role_prediction"],
+                    data["player_roles"]
+                ).mean()
+                loss = loss + loss_role
+                self.deferred_watch_mean("loss_policy_role", loss_role)
 
-            # get clean roll_loss for each team, this is used for debugging only
-            if self.policy_batch_counter % 10 == 0:
-                with torch.no_grad():
-                    for team_id, team_name in ((0, 'red'), (1, 'green'), (2, 'blue')):
-                        team_filter = data["roles"] == team_id
-                        nll = calculate_roll_prediction_nll(model_out["policy_role_prediction"], data["player_roles"], team_filter)
-                        if nll is not None:
-                            self.log.watch_mean(f"{team_name}_policy_role_nll", nll.mean(), display_width=0)
+                # get clean roll_loss for each team, this is used for debugging only
+                if self.policy_batch_counter % 10 == 0:
+                    with torch.no_grad():
+                        for team_id, team_name in ((0, 'red'), (1, 'green'), (2, 'blue')):
+                            team_filter = data["roles"] == team_id
+                            nll = calculate_roll_prediction_nll(model_out["policy_role_prediction"], data["player_roles"], team_filter)
+                            if nll is not None:
+                                self.deferred_watch_mean(f"{team_name}_policy_role_nll", nll.mean(), display_width=0)
 
         # -------------------------------------------------
         # calculate kl between policies, and record entropy
@@ -1312,108 +1312,91 @@ class PMAlgorithm(MarlAlgorithm):
         # of how the policies diverge
         # also, this is a little slow so we do it only on occasion
         if self.policy_batch_counter % 10 == 9:
-            for role_a in range(3):
-                a = data["role_log_policy"][..., role_a, :]
-                entropy = torch.sum(-torch.exp(a) * a, dim=-1).mean()
-                self.log.watch_mean(f"entropy_{role_a}", entropy, display_width=0)
-                for role_b in range(3):
-                    b = data["role_log_policy"][..., role_b, :]
-                    kl = F.kl_div(a, b, reduction='batchmean', log_target=True)
-                    self.log.watch_mean(f"kl_{role_a}_{role_b}", kl, display_width=0)
+            with profiler.record_function("pfm_debug_kl"):
+                for role_a in range(3):
+                    a = data["role_log_policy"][..., role_a, :]
+                    entropy = torch.sum(-torch.exp(a) * a, dim=-1).mean()
+                    self.deferred_watch_mean(f"entropy_{role_a}", entropy, display_width=0)
+                    for role_b in range(3):
+                        b = data["role_log_policy"][..., role_b, :]
+                        kl = F.kl_div(a, b, reduction='batchmean', log_target=True)
+                        self.deferred_watch_mean(f"kl_{role_a}_{role_b}", kl, display_width=0)
 
         # -------------------------------------------------------------------------
         # Calculate loss_value
         # -------------------------------------------------------------------------
 
-        value_heads = ["ext", "int"]
+        with profiler.record_function("pfm_value"):
 
-        for value_head in value_heads:
-            value_prediction = model_out["{}_value".format(value_head)]
-            returns = merge_down(data["{}_returns".format(value_head)])
-            old_pred_values = merge_down(data["{}_value".format(value_head)])
+            value_heads = ["ext", "int"]
 
-            if self.use_clipped_value_loss:
-                # is is essentially trust region for value learning, and seems to help a lot.
-                value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
-                                                                         -self.ppo_epsilon, +self.ppo_epsilon)
-                vf_losses1 = (value_prediction - returns).pow(2)
-                vf_losses2 = (value_prediction_clipped - returns).pow(2)
-                loss_value = -self.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2) * weights)
-            else:
-                # simpler version, just use MSE.
-                vf_losses1 = (value_prediction - returns).pow(2)
-                loss_value = -self.vf_coef * 0.5 * torch.mean(vf_losses1 * weights)
+            for value_head in value_heads:
+                value_prediction = model_out["{}_value".format(value_head)]
+                returns = merge_down(data["{}_returns".format(value_head)])
+                old_pred_values = merge_down(data["{}_value".format(value_head)])
 
-            self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
-            loss = loss + loss_value
+                if self.use_clipped_value_loss:
+                    # is is essentially trust region for value learning, and seems to help a lot.
+                    value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
+                                                                             -self.ppo_epsilon, +self.ppo_epsilon)
+                    vf_losses1 = (value_prediction - returns).pow(2)
+                    vf_losses2 = (value_prediction_clipped - returns).pow(2)
+                    loss_value = -self.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2) * weights)
+                else:
+                    # simpler version, just use MSE.
+                    vf_losses1 = (value_prediction - returns).pow(2)
+                    loss_value = -self.vf_coef * 0.5 * torch.mean(vf_losses1 * weights)
+
+                self.deferred_watch_mean("loss_v_" + value_head, loss_value, history_length=64)
+                loss = loss + loss_value
 
         # -------------------------------------------------------------------------
         # Calculate loss_entropy
         # -------------------------------------------------------------------------
 
-        loss_entropy = -(logps.exp() * logps).sum(axis=1)
-        loss_entropy = (loss_entropy * weights * self.entropy_bonus).mean()
-        self.log.watch_mean("loss_ent", loss_entropy)
-        loss = loss + loss_entropy
+        with profiler.record_function("pfm_entropy"):
+            loss_entropy = -(logps.exp() * logps).sum(axis=1)
+            loss_entropy = (loss_entropy * weights * self.entropy_bonus).mean()
+            self.deferred_watch_mean("loss_ent", loss_entropy)
+            loss = loss + loss_entropy
 
         # -------------------------------------------------------------------------
         # Apply loss
         # -------------------------------------------------------------------------
 
-        loss = loss * loss_scale
-        self.log.watch_mean("loss", loss)
+        with profiler.record_function("pfm_apply_loss"):
 
-        # calculate gradients, and log grad_norm
-        if self.amp:
-            self.scaler.scale(-loss).backward()
-            self.log.watch_mean("s_unskip", self.scaler._get_growth_tracker())
-            self.log.watch_mean("s_scale", self.scaler.get_scale())
-        else:
-            (-loss).backward()
+            loss = loss * loss_scale
+            self.deferred_watch_mean("loss", loss)
+
+            # calculate gradients, and log grad_norm
+            if self.amp:
+                self.scaler.scale(-loss).backward()
+                self.deferred_watch_mean("s_unskip", self.scaler._get_growth_tracker())
+                self.deferred_watch_mean("s_scale", self.scaler.get_scale())
+            else:
+                (-loss).backward()
+
+        self.write_deferred_logs()
 
         self.policy_batch_counter += 1
 
-    @profiler.record_function("deception_back")
+    def deferred_watch_mean(self, name, var, **kwargs):
+        """
+        Schedules the logging of an event, but does not actually evaluate the variable until write_deferred_logs is called
+        This helps with performance as pytorch is not required to sync the CUDA operations at every log point.
+        It does mean that we hold onto the data a little longer though, so it could impact memory.
+        """
+        self.deferred_logs.append((name, var, kwargs))
+
+    def write_deferred_logs(self):
+        for (name, var, kwargs) in self.deferred_logs:
+            self.log.watch_mean(name, var, **kwargs)
+        self.deferred_logs = []
+
+
+    @profiler.record_function("deception_forward")
     def forward_deception_mini_batch(self, data, loss_scale=1):
-
-        def calculate_kl(obs_predictions):
-            """
-            Calculates KL between policy of true observation and policy of predicted observation
-            # obs predictions are [N, B, n_players, *obs_shape] and should not be filtered
-            :return:
-            """
-
-            N, B, n_players, *obs_shape = obs_predictions.shape
-
-            true_roles = data["player_roles"].reshape(N, B * n_players) #[N, B, n_players]
-
-            n_players = self.vec_env.max_players
-            predicted_initial_policy_rnn_states = self.extract_policy_rnn_states(
-                self.get_initial_rnn_state(B * n_players))
-            # obs predictions are [N, B, n_players, *obs_shape], so map down
-            pred_policy_out, _ = self.policy_model.forward_sequence(
-                obs_predictions.reshape(N, B * n_players, *self.obs_shape),
-                rnn_states=predicted_initial_policy_rnn_states,
-                terminals=data["player_terminals"].reshape(N, B * n_players),
-                roles=true_roles
-            )
-
-            # put back into [N, B, n_players, *] for processing, and remove first half of window
-            # (this allows LSTM to warm up)
-            true_obs_log_policy = data["player_policy"].reshape(N, B, n_players, *self.policy_shape)[N // 2:]
-            pred_obs_log_policy = pred_policy_out['log_policy'].reshape(N, B, n_players, *self.policy_shape)[N // 2:]
-
-            # filter out players that are not visible
-            true = filter_visible(true_obs_log_policy, player_visible[N // 2:])
-            pred = filter_visible(pred_obs_log_policy, player_visible[N // 2:])
-
-            # check the KL between these two
-            # kl is [N*B*n_players, *policy_shape]
-            kl = torch.exp(true) * (true - pred)
-            kl = kl.sum(dim=-1)
-            kl = kl.mean()
-
-            return kl
 
         loss = torch.tensor(0, dtype=torch.float32, device=self.deception_model.device)
 
@@ -1424,194 +1407,122 @@ class PMAlgorithm(MarlAlgorithm):
         n_players = self.vec_env.max_players
         n_roles = 3
 
-        # calculate
-        model_out, _ = self.deception_model.forward_sequence(
-            obs=prev_obs,
-            rnn_states=rnn_states,
-            terminals=terminals
-        )
+        with profiler.record_function("dfm_vision_mask"):
+            player_visible = data["player_visible"]
+            vision_mask = create_vision_mask(player_visible, self.dm_vision_filter)
+            self.deferred_watch_mean("visible", torch.mean(player_visible.float()))  # record what percentage of pairs have vision
 
-        player_visible = data["player_visible"]
-        self.log.watch_mean("visible",
-                            torch.mean(player_visible.float()))  # record what percentage of pairs have vision
+        with profiler.record_function("dfm_forward_model"):
+            model_out, _ = self.deception_model.forward_sequence(
+                obs=prev_obs,
+                rnn_states=rnn_states,
+                terminals=terminals
+            )
+
         # -------------------------------------------------------------------------
         # Calculate loss_role
         # -------------------------------------------------------------------------
 
-        loss_role = self.dm_loss_scale * calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"]).mean()
-        loss += loss_role
-        self.log.watch_mean("loss_role", loss_role)
+        with profiler.record_function("dfm_loss_role"):
 
-        # get clean roll_loss for each team, this is used for debugging only
-        if self.deception_batch_counter % 10 == 0:
-            with torch.no_grad():
-                for team_id, team_name in ((0, 'red'), (1, 'green'), (2, 'blue')):
-                    team_filter = data["roles"] == team_id
-                    nll = calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"], team_filter)
-                    if nll is not None:
-                        self.log.watch_mean(f"{team_name}_role_nll", nll.mean(), display_width=0)
+            with profiler.record_function("dfm_lr_forward"):
+                loss_role = self.dm_loss_scale * calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"]).mean()
+                loss += loss_role
+                self.deferred_watch_mean("loss_role", loss_role)
 
-        if "role_backwards_prediction" in model_out:
-            role_backwards_targets = data["player_role_predictions"].reshape(N*B*n_players, n_roles)
-            role_backwards_predictions = model_out["role_backwards_prediction"].reshape(N*B*n_players, n_roles)
-            loss_backwards_role = self.dm_loss_scale * F.kl_div(
-                role_backwards_predictions,
-                role_backwards_targets,
-                reduction="batchmean",
-                log_target=True
-            )
-            loss += loss_backwards_role
-            self.log.watch_mean("loss_role_bp", loss_backwards_role)
+            # get clean roll_loss for each team, this is used for debugging only
+            if self.deception_batch_counter % 10 == 7:
+                with torch.no_grad():
+                    for team_id, team_name in ((0, 'red'), (1, 'green'), (2, 'blue')):
+                        team_filter = data["roles"] == team_id
+                        nll = calculate_roll_prediction_nll(model_out["role_prediction"], data["player_roles"], team_filter)
+                        if nll is not None:
+                            self.deferred_watch_mean(f"{team_name}_role_nll", nll.mean(), display_width=0)
+
+            if "role_backwards_prediction" in model_out:
+                with profiler.record_function("dfm_lr_backward"):
+                    role_backwards_targets = data["player_role_predictions"].reshape(N*B*n_players, n_roles)
+                    role_backwards_predictions = model_out["role_backwards_prediction"].reshape(N*B*n_players, n_roles)
+                    loss_backwards_role = self.dm_loss_scale * F.kl_div(
+                        role_backwards_predictions,
+                        role_backwards_targets,
+                        reduction="batchmean",
+                        log_target=True
+                    )
+                    loss += loss_backwards_role
+                    self.deferred_watch_mean("loss_role_bp", loss_backwards_role)
 
         # -------------------------------------------------------------------------
         # Calculate action prediction loss
         # -------------------------------------------------------------------------
 
-        vision_mask = create_vision_mask(player_visible, self.dm_vision_filter)
 
-        if "action_prediction" in model_out:
-            pred = model_out["action_prediction"]
-            true = data["player_role_policy"]
+        with profiler.record_function("dfm_action_prediction"):
 
-            ap_kl = calculate_action_prediction_loss(pred, true, vision_filter=vision_mask)
-            ap_loss = self.dm_loss_scale * ap_kl
-            self.log.watch_mean("ap_loss", ap_loss, display_width=10, display_precision=5)
-            loss += ap_loss
-        else:
-            ap_kl = 0
+            if "action_prediction" in model_out:
+                pred = model_out["action_prediction"]
+                true = data["player_role_policy"]
 
-        if "action_backwards_prediction" in model_out:
-            pred = model_out["action_backwards_prediction"]
-            true = data["player_action_predictions"]
-            bap_kl = calculate_action_prediction_loss(pred, true, vision_filter=vision_mask)
-            bap_loss = self.dm_loss_scale * bap_kl
-            self.log.watch_mean("bap_loss", bap_loss, display_width=10, display_precision=5)
-            loss += bap_loss
-        else:
-            bap_kl=0
-
-        if self.deception_batch_counter % 10 == 2 and "action_prediction" in model_out:
-            # unscaled versions of the loss
-            self.log.watch_mean("bap_kl", bap_kl)
-            self.log.watch_mean("ap_kl", ap_kl)
-            # get self prediction error (for debugging)
-            ids = data["id"]
-            N, B = ids.shape
-            self_kl = 0
-            with torch.no_grad():
-                for n in range(N):
-                    pred = model_out["action_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
-                    true = data["role_log_policies"][n:n+1][:, :, np.newaxis]
-                    self_kl += calculate_action_prediction_loss(pred, true) / N
-            self.log.watch_mean("self_ap_kl", self_kl, display_width=10)
-
-        if self.deception_batch_counter % 10 == 3 and "action_backwards_prediction" in model_out:
-            # get self prediction error (for debugging)
-            ids = data["id"]
-            N, B = ids.shape
-            self_kl = 0
-            with torch.no_grad():
-                for n in range(N):
-                    pred = model_out["action_backwards_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
-                    true = model_out["action_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
-                    self_kl += calculate_action_prediction_loss(pred, true) / N
-            self.log.watch_mean("self_bap_kl", self_kl, display_width=10)
-
-        # -------------------------------------------------------------------------
-        # Calculate observation prediction loss
-        # -------------------------------------------------------------------------
-
-        if self.predicts_observations:
-            obs_predictions = model_out["obs_prediction"] # [N, B, n_players, *obs_shape]
-            obs_truth = image_to_float(data["player_obs"]) # [N, B, n_players, *obs_shape]
-
-            # remove from prediction other players we are not visible
-            if self.dm_vision_filter >= 1:
-                visible_obs_predictions = obs_predictions
-                visible_obs_truth = obs_truth
-            elif self.dm_vision_filter == 0:
-                visible_obs_predictions = filter_visible(obs_predictions, player_visible)
-                visible_obs_truth = filter_visible(obs_truth, player_visible)
+                ap_kl = calculate_action_prediction_loss(pred, true, vision_filter=vision_mask)
+                ap_loss = self.dm_loss_scale * ap_kl
+                self.deferred_watch_mean("ap_loss", ap_loss, display_width=10, display_precision=5)
+                loss += ap_loss
             else:
-                pass_through = np.random.choice(a=[True, False], size=player_visible.shape,
-                                                p=[self.dm_vision_filter, 1 - self.dm_vision_filter])
-                pass_through = torch.tensor(pass_through, dtype=torch.bool,
-                                            device=player_visible.device)  # gets cast to uint8 for some reason..
-                mask = torch.logical_or(pass_through, player_visible)
+                ap_kl = 0
 
-                visible_obs_predictions = filter_visible(obs_predictions, mask)
-                visible_obs_truth = filter_visible(obs_truth, mask)
-
-            # calculate the loss for the visible players
-            pred_obs_mse = F.mse_loss(visible_obs_predictions, visible_obs_truth)
-
-            # use KL if needed
-            if self.dm_kl_factor > 0:
-                pred_obs_kl = calculate_kl(obs_predictions)/100 # get kl on roughly the same scale as mse
-                obs_loss = (1 - self.dm_kl_factor) * pred_obs_mse + self.dm_kl_factor * pred_obs_kl
+            if "action_backwards_prediction" in model_out:
+                pred = model_out["action_backwards_prediction"]
+                true = data["player_action_predictions"]
+                bap_kl = calculate_action_prediction_loss(pred, true, vision_filter=vision_mask)
+                bap_loss = self.dm_loss_scale * bap_kl
+                self.deferred_watch_mean("bap_loss", bap_loss, display_width=10, display_precision=5)
+                loss += bap_loss
             else:
-                obs_loss = pred_obs_mse
+                bap_kl=0
 
-            obs_loss = obs_loss * self.dm_loss_scale
-            loss += obs_loss
-            self.log.watch_mean("pred_obs_mse", pred_obs_mse)
-            self.log.watch_mean("pred_obs_loss", obs_loss)
-
-            # calculate extra stats for logging
-            if self.deception_batch_counter % 10 == 9: # doing this late helps with benchmarking
+            if self.deception_batch_counter % 10 == 2 and "action_prediction" in model_out:
+                # unscaled versions of the loss
+                self.deferred_watch_mean("bap_kl", bap_kl)
+                self.deferred_watch_mean("ap_kl", ap_kl)
+                # get self prediction error (for debugging)
+                ids = data["id"]
+                N, B = ids.shape
+                self_kl = 0
                 with torch.no_grad():
+                    for n in range(N):
+                        pred = model_out["action_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
+                        true = data["role_log_policies"][n:n+1][:, :, np.newaxis]
+                        self_kl += calculate_action_prediction_loss(pred, true) / N
+                self.deferred_watch_mean("self_ap_kl", self_kl, display_width=10)
 
-                    # log the accuracy on non-visible players (should be worse)
-                    pred_nv = filter_visible(obs_predictions, ~player_visible)
-                    true_nv = filter_visible(obs_truth, ~player_visible)
-
-                    if len(pred_nv) > 0:
-                        # it's possible there are no non visible agents,
-                        # there will always be visible agents though as agents can always see themselves
-                        obs_mse_nv = F.mse_loss(pred_nv, true_nv)
-                        self.log.watch_mean("pred_obs_nv", obs_mse_nv, display_width=0)
-
-                    # note: as agents learn more determanistic policies KL gets larger
-                    # would be nice to have some kind of reference level, maybe KL when
-                    # observations are rolled along the players dim, ah yes, this will work
-
-                    # also this kl will include non-visible players. This is required as we can't (yet) partially
-                    # mask out players for only some transitions within a segment
-
-                    # log the kl between pi(true) and pi(pred) (for true role)
-                    kl = calculate_kl(obs_predictions)
-                    self.log.watch_mean("pred_obs_kl", kl, display_precision=4, display_width=0)
-
-                    # log the kl between pi(true) and pi(pred) (for true role)
-                    rolled_obs = torch.roll(obs_truth, 1, dims=2)
-                    kl_reference = calculate_kl(rolled_obs)
-                    self.log.watch_mean("ref_kl", kl_reference, display_precision=4)
-                    self.log.watch_mean("delta_kl", kl / kl_reference, display_precision=4, display_width=0)
-
-        # -------------------------------------------------------------------------
-        # Prediction prediction error
-        # -------------------------------------------------------------------------
-
-        if self.predicts_observations:
-            n_players = self.vec_env.max_players
-            pred_predictions = model_out["obs_backwards_prediction"].reshape(N, B, n_players, *obs_shape)  # [N, B, n_players, *obs_shape]
-            true_predictions = image_to_float(data["player_obs_predictions"])
-            pred_back_mse = F.mse_loss(pred_predictions, true_predictions)
-            self.log.watch_mean("pred_back_mse", pred_back_mse, display_width=0)
-            loss += pred_back_mse * self.dm_loss_scale
+            if self.deception_batch_counter % 10 == 3 and "action_backwards_prediction" in model_out:
+                # get self prediction error (for debugging)
+                ids = data["id"]
+                N, B = ids.shape
+                self_kl = 0
+                with torch.no_grad():
+                    for n in range(N):
+                        pred = model_out["action_backwards_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
+                        true = model_out["action_prediction"][n:n+1, range(B), ids[n]][:, :, np.newaxis]
+                        self_kl += calculate_action_prediction_loss(pred, true) / N
+                self.deferred_watch_mean("self_bap_kl", self_kl, display_width=10)
 
         # -------------------------------------------------------------------------
         # Apply loss
         # -------------------------------------------------------------------------
 
-        loss = loss * loss_scale
-        self.log.watch_mean("dec_loss", loss)
+        with profiler.record_function("dfm_apply_loss"):
 
-        # calculate gradients, and log grad_norm
-        if self.amp:
-            self.scaler.scale(loss).backward()
-        else:
-            loss.backward()
+            loss = loss * loss_scale
+            self.deferred_watch_mean("dec_loss", loss)
+
+            # calculate gradients, and log grad_norm
+            if self.amp:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
+
+        self.write_deferred_logs()
 
         self.deception_batch_counter += 1
 
@@ -1686,8 +1597,10 @@ class PMAlgorithm(MarlAlgorithm):
 
         # convert everything over to torch arrays
         # note: pinning the memory here doesn't seem to help, and would double memory consumption
-        for k, v in batch_data.items():
-            batch_data[k] = torch.from_numpy(v)
+        with profiler.record_function("convert to torch"):
+            for k, v in batch_data.items():
+                batch_data[k] = torch.from_numpy(v)
+                batch_data[k].requires_grad = False # make sure we don't try and store gradients for these tensors
 
         last_epoch = math.ceil(epochs)
 
@@ -1712,6 +1625,8 @@ class PMAlgorithm(MarlAlgorithm):
         if self.t == 0:
             print(f" - {short_name} using mini_batches of size {mini_batch_size} ({micro_batches} micro_batches)")
 
+        optimizer.zero_grad()
+
         for i in range(last_epoch):
 
             segments = list(range(B))
@@ -1719,8 +1634,6 @@ class PMAlgorithm(MarlAlgorithm):
 
             assert mini_batch_segments % micro_batches == 0
             segments_per_micro_batch = mini_batch_segments // micro_batches
-
-            optimizer.zero_grad()
 
             micro_batch_counter = 0
 
@@ -1747,33 +1660,31 @@ class PMAlgorithm(MarlAlgorithm):
 
                         # put together a mini batch from all agents at this time step...
                         mini_batch_data = {}
-                        for key, value in batch_data.items():
+                        with profiler.record_function("upload to gpu"):
+                            for key, value in batch_data.items():
 
-                            # sampling
-                            value = value[:, sample]
+                                # sampling
+                                value = value[:, sample]
 
-                            # select random sub-windows, useful if n_steps if high, but we want small segments
-                            if max_window_size is not None:
-                                if enable_window_offsets:
-                                    # with numpy I could roll the data so each segment had a different start point
-                                    # but with torch I need to do it this slower way...
-                                    new_value = torch.zeros_like(value[:max_window_size])
-                                    for idx in range(len(offsets)):
-                                        new_value[:, idx] = value[offsets[idx]:offsets[idx]+max_window_size, idx]
-                                    value = new_value
-                                else:
-                                    value = value[:max_window_size]
+                                # select random sub-windows, useful if n_steps if high, but we want small segments
+                                if max_window_size is not None:
+                                    if enable_window_offsets:
+                                        # unfortunately I have not found a fast way to slice each row individually.
+                                        # so all rows share the same offset
+                                        value = value[offsets[0]:offsets[0]+max_window_size]
+                                    else:
+                                        value = value[:max_window_size]
 
-                            # rnn states are useful for debugging, but take a lot of v-ram.
-                            if key == "rnn_states":
-                                # only need first rnn_state for mini_batch, saves a bit of GPU memory
-                                value = value[0:1]
+                                # rnn states are useful for debugging, but take a lot of v-ram.
+                                if key == "rnn_states":
+                                    # only need first rnn_state for mini_batch, saves a bit of GPU memory
+                                    value = value[0:1]
 
-                            mini_batch_data[key] = value.to(device=model.device, non_blocking=True)
+                                mini_batch_data[key] = value.to(device=model.device, non_blocking=True)
 
                         # verify the data, but only occasionally
-                        if np.random.rand() < 0.05:
-                            self._verify_minibatch_data(mini_batch_data)
+                        #if np.random.rand() < 0.05:
+                        #    self._verify_minibatch_data(mini_batch_data)
 
                         forward_func(mini_batch_data)
                         micro_batch_counter += 1
@@ -1784,53 +1695,40 @@ class PMAlgorithm(MarlAlgorithm):
         """ trains agent on it's own experience, using the rnn training loop """
 
         # put the required data into a dictionary
-        this_batch_data = {}
-        this_batch_data["roles"] = self.batch_roles
-        this_batch_data["t"] = self.batch_t
-        this_batch_data["id"] = self.batch_id
-        this_batch_data["prev_obs"] = self.batch_prev_obs
-        this_batch_data["player_policy"] = self.batch_player_policy
-        this_batch_data["player_terminals"] = self.batch_player_terminals
-        this_batch_data["player_visible"] = self.batch_player_visible
-        this_batch_data["terminals"] = self.batch_terminals
-        this_batch_data["player_roles"] = self.batch_player_roles
-        this_batch_data["log_policy"] = self.batch_log_policy
-        this_batch_data["role_log_policies"] = self.batch_role_log_policies
-        this_batch_data["rnn_states"] = self.extract_deception_rnn_states(self.batch_rnn_states)
+        batch_data = {}
+        batch_data["roles"] = self.batch_roles
+        batch_data["t"] = self.batch_t
+        batch_data["id"] = self.batch_id
+        batch_data["prev_obs"] = self.batch_prev_obs
+        batch_data["player_policy"] = self.batch_player_policy
+        batch_data["player_terminals"] = self.batch_player_terminals
+        batch_data["player_visible"] = self.batch_player_visible
+        batch_data["terminals"] = self.batch_terminals
+        batch_data["player_roles"] = self.batch_player_roles
+        batch_data["log_policy"] = self.batch_log_policy
+        batch_data["role_log_policies"] = self.batch_role_log_policies
+        batch_data["rnn_states"] = self.extract_deception_rnn_states(self.batch_rnn_states)
         if self.batch_player_role_predictions is not None:
-            this_batch_data["player_role_predictions"] = self.batch_player_role_predictions
+            batch_data["player_role_predictions"] = self.batch_player_role_predictions
         if self.batch_player_obs is not None:
-            this_batch_data["player_obs"] = self.batch_player_obs
+            batch_data["player_obs"] = self.batch_player_obs
         if self.batch_player_obs_predictions is not None:
-            this_batch_data["player_obs_predictions"] = self.batch_player_obs_predictions
+            batch_data["player_obs_predictions"] = self.batch_player_obs_predictions
         if self.batch_player_action_predictions is not None:
-            this_batch_data["player_action_predictions"] = self.batch_player_action_predictions
+            batch_data["player_action_predictions"] = self.batch_player_action_predictions
         if self.batch_player_role_policy is not None:
-            this_batch_data["player_role_policy"] = self.batch_player_role_policy
-
-        # handle the replay buffer
-        self.replay_buffer.append(this_batch_data)
-        if len(self.replay_buffer) > self.dm_replay_buffer_multiplier:
-            self.replay_buffer = self.replay_buffer[-self.dm_replay_buffer_multiplier:]
-
-        # collate batch data together
-        replay_batch_data = {}
-        for k in self.replay_buffer[0].keys():
-            replay_batch_data[k] = np.concatenate(
-                [buffer[k] for buffer in self.replay_buffer],
-                axis=1
-            )
+            batch_data["player_role_policy"] = self.batch_player_role_policy
 
         # when we use shorter windows it makes sense to run additional epochs as we are only using a portion of the data
         # each time
         windows_per_segment = self.n_steps // (self.dm_max_window_size or self.n_steps)
 
         self._train_model(
-            replay_batch_data,
+            batch_data,
             self.deception_model,
             self.deception_optimizer,
             self.forward_deception_mini_batch,
-            epochs=(self.batch_epochs / len(self.replay_buffer)) * windows_per_segment,
+            epochs=self.batch_epochs * windows_per_segment,
             mini_batch_size=self.dm_mini_batch_size,
             short_name="dec",
             max_window_size=self.dm_max_window_size,
@@ -2028,20 +1926,26 @@ def calculate_action_prediction_loss(pred: torch.Tensor, true: torch.Tensor, vis
     """
     assert pred.shape == true.shape, f"shapes {pred.shape} and {true.shape} must match."
     N, B, n_players, n_roles, n_actions = pred.shape
+
+    # reshape down to one large batch
+    pred = pred.reshape(-1, n_roles, n_actions)
+    true = true.reshape(-1, n_roles, n_actions)
+
+    kl = F.kl_div(pred, true, reduction='none', log_target=True).sum(dim=-1)
+
     if vision_filter is not None:
         assert vision_filter.shape == (N, B, n_players), f"Expected vision_filter to be of shape {(N, B, n_players)} but found {vision_filter.shape}"
         assert vision_filter.dtype == torch.bool, f"Vision filter must be of type bool, not {vision_filter.dtype}"
+        if torch.sum(vision_filter) == 0:
+            return 0.0
         # mask (N, B, n_players) -> (N*B*n_players)
         mask = vision_filter.reshape(-1)
-        # these will come out as [N*B*n_players, n_roles, n_actions]
-        pred = pred.reshape(-1, n_roles, n_actions)[mask, :, :]
-        true = true.reshape(-1, n_roles, n_actions)[mask, :, :]
+        # kl is N*B*n_players, n_roles, mask is N*B*n_players
+        kl = kl * mask[:, None]
+        return torch.sum(kl) / (torch.sum(mask) * n_roles)
+    else:
+        return torch.mean(kl)
 
-    # reshape down to one large batch
-    pred = pred.reshape(-1, n_actions)
-    true = true.reshape(-1, n_actions)
-
-    return F.kl_div(pred, true, reduction='batchmean', log_target=True) if len(pred) > 0 else 0.0
 
 
 def calculate_roll_prediction_nll(role_predictions, role_targets, filter=None):
@@ -2207,7 +2111,7 @@ def create_vision_mask(player_visible: torch.Tensor, fraction_to_let_through: fl
     pass_through = torch.tensor(pass_through, dtype=torch.bool,
                                 device=player_visible.device)  # gets cast to uint8 for some reason..
     mask = torch.logical_or(pass_through, player_visible)
-    return mask
+    return mask.detach()
 
 test_deception_bonus()
 test_calculate_returns()

@@ -618,18 +618,8 @@ def profile():
 
     vec_env = make_env(scenarios=config.eval_scenarios, name="profile")
     algo = make_algo(vec_env)
-    algo.learn(algo.batch_size)  # just to warm it up
-
-    # run profiler
-    with profiler.profile(profile_memory=True, record_shapes=True, use_cuda=True) as prof:
-        algo.learn(algo.batch_size)
-
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=50))
-    print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=50))
-    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=50))
-
     # get a trace
-    with profiler.profile() as prof:
+    with profiler.profile(profile_memory=True, record_shapes=True, use_cuda=True) as prof:
         with profiler.record_function("train_step"):
             algo.learn(algo.batch_size)
     prof.export_chrome_trace("trace.json")
@@ -662,8 +652,6 @@ def main():
     parser.add_argument('--algo_params', type=str, default="{}")
     parser.add_argument('--verbose', type=int, default=1, help="Level of logging output, 0=off, 1=normal, 2=full.")
     parser.add_argument('--save_model', type=str, default="10", help="Enables model saving, [all|0..n|recent|none].")
-
-    parser.add_argument('--vary_team_player_counts', type=str2bool, nargs='?', const=True,  default=False, help="Use a random number of players turning training.")
 
     parser.add_argument('--n_steps', type=int, default=16)
     parser.add_argument('--max_window_size', type=int, default=None)

@@ -816,7 +816,7 @@ class SplitPolicyModel(nn.Module):
 
         return result, new_rnn_states
 
-def extract_roles(x, roles):
+def _old_extract_roles(x, roles):
     """
     x is [N, B, R, *shape]
     roles is [N, B]
@@ -827,3 +827,13 @@ def extract_roles(x, roles):
     for n in range(N):
         parts.append(x[n:n+1, range(B), roles[n]])
     return torch.cat(parts, dim=0)
+
+def extract_roles(x, roles):
+    """
+    x is [N, B, R, *shape]
+    roles is [N, B]
+    output is [N, B, *shape]
+    """
+    N, B, R, *shape = x.shape
+    assert roles.shape == (N, B)
+    return (x.reshape(N*B, R, *shape)[range(N*B), roles.reshape(N*B)]).reshape(N, B, *shape)
