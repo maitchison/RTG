@@ -38,6 +38,28 @@ class RescueTheGeneralScenario():
 
     SCENARIOS = {
 
+        "alt": {
+            "description": "Alternative version of the game",
+            "map_width": 48,
+            "map_height": 48,
+            "team_counts": (2, 2, 2),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+            "hidden_roles": "default",
+            "timeout_mean": 500,
+            "max_view_distance": 5,
+            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see him
+            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
+            "team_view_distance": (5, 5, 5),  # red can see further
+            "team_shoot_range": (5, 5, 5),
+            "general_initial_health": 99,  # general can not be killed
+            "players_to_move_general": 2,    # 2 players are required to move the general
+            "blue_general_indicator": "distance",
+            "starting_locations": "together",  # players start together
+            "team_shoot_timeout": (10, 10, 10),
+            "red_wins_if_sees_general": True,   # blue must make sure red never reveals the location of the general
+        },
+
         "full": {
             "description": "The full game",
             "map_width": 48,
@@ -52,24 +74,6 @@ class RescueTheGeneralScenario():
             "team_view_distance": (6, 5, 5),    # red can see further
             "team_shoot_range": (5, 5, 5),
             "starting_locations": "together",   # players start together
-            "team_shoot_timeout": (20, 20, 20),
-        },
-
-        "full_training": {
-            "description": "The full game, but we vary the number of players in each team.",
-            "map_width": 48,
-            "map_height": 48,
-            "team_counts": (2, 2, 2),
-            "initial_random_kills": 0.5,        # we occasionally kill a player from random team at the start of the game.
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            "max_view_distance": 6,
-            "team_shoot_damage": (10, 5, 5),
-            "team_view_distance": (6, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "starting_locations": "together",  # players start together
             "team_shoot_timeout": (20, 20, 20),
         },
 
@@ -383,6 +387,12 @@ class RescueTheGeneralScenario():
         }
     }
 
+    # add training verisons
+    for k,v in SCENARIOS.copy().items():
+        training_key = k+"_training"
+        if training_key not in SCENARIOS:
+            SCENARIOS[training_key] = {**v, **{"initial_random_kills": 0.5}}
+
     def __init__(self, scenario_name=None, **kwargs):
 
         # defaults
@@ -403,9 +413,8 @@ class RescueTheGeneralScenario():
         self.zero_sum = False           # if enabled any points scored by one team will be counted as negative points for all other teams.
 
         self.timeout_mean = 500
-        self.timeout_rnd = 0.1      # this helps make sure games are not always in sync, which can happen if lots of
+        self.timeout_rnd = 0        # this helps make sure games are not always in sync, which can happen if lots of
                                     # games timeout.
-        self.general_always_visible = False
         self.general_initial_health = 10
         self.player_initial_health = 10
         self.battle_royale = False   # removes general from game, and teams can win by eliminating all others teams
@@ -421,6 +430,9 @@ class RescueTheGeneralScenario():
         self.local_team_colors = True
         self.frame_blanking = 0     # fraction of frames to zero out (tests memory)
         self.initial_random_kills = 0 # enables random killing of players at the start of the game, can be helpful to make winning viable for a team.
+
+        self.players_to_move_general = 1 # number of players required to move the general
+        self.red_wins_if_sees_general = False
 
         # how many point a player gets for killing a player
         # ordered as points_for_kill[shooting_player_team, killed_player_team]
@@ -441,6 +453,8 @@ class RescueTheGeneralScenario():
         # none is all roles are visible
 
         self.hidden_roles = "default"
+
+        self.blue_general_indicator = "direction"
 
         self.reveal_team_on_death = False
 

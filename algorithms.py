@@ -439,6 +439,11 @@ class PMAlgorithm(MarlAlgorithm):
             data['deception_model_state_dict'] = self.deception_model.state_dict()
             data['deception_optimizer_state_dict'] = self.deception_optimizer.state_dict()
 
+
+        if self.uses_gv_model:
+            data['gv_model_state_dict'] = self.gv_model.state_dict()
+            data['gv_optimizer_state_dict'] = self.gv_model.state_dict()
+
         if self.normalize_intrinsic_rewards:
             data['ems_norm'] = self.ems_norm
             data['intrinsic_returns_rms'] = self.intrinsic_returns_rms,
@@ -531,12 +536,21 @@ class PMAlgorithm(MarlAlgorithm):
         return micro_batch_size
 
     def reset(self):
+
         # initialize agent
+        print(" - environment reset")
         self.agent_obs = self.vec_env.reset()
         self.agent_rnn_state *= 0
         self.episode_score *= 0
         self.episode_len *= 0
         self.terminals *= 0
+
+        # start each game at a different point. This makes sure that games do not to through in sync, which can
+        # cause problems with training as the parallel environments are not IID.
+        for game in self.vec_env.games:
+            start_timestep = np.random.randint(500)
+            for _ in range(start_timestep):
+                game.step([0]*game.n_players)
 
     def calculate_deception_bonus_from_observations(
             self,
@@ -754,7 +768,7 @@ class PMAlgorithm(MarlAlgorithm):
 
             for t in range(self.n_steps):
 
-                self.batch_rnn_states[t, :] = self.agent_rnn_state.cpu()[:]
+                self.batch_rnn_states[t] = self.agent_rnn_state.cpu()
 
                 # get time stamps from environment
                 ts = []
@@ -887,7 +901,7 @@ class PMAlgorithm(MarlAlgorithm):
                 for i, terminal in enumerate(self.terminals):
                     if terminal:
                         # reset the internal state on episode completion
-                        self.agent_rnn_state[i] *= 0
+                        self.agent_rnn_state[i] = 0
                         # reset is handled automatically by vectorized environments
                         # so just need to keep track of book-keeping
                         self.log.watch_full("ep_score", self.episode_score[i], display_width=0)

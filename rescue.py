@@ -530,6 +530,17 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             # move general by one tile if we are standing next to them
             player_distance_from_general = l1_distance(*player.pos, *self.general_location)
 
+            # make sure there are enough other players to move the general
+            players_nearby = 0
+            for other_player in self.players:
+                if other_player.is_dead:
+                    continue
+                if max_distance(*player.pos, *other_player.pos) <= 1:
+                    players_nearby += 1 # this includes ourself.
+
+            if players_nearby < self.scenario.players_to_move_general:
+                continue
+
             if player_distance_from_general == 1:
                 previous_general_location = self.general_location
                 self.general_location = player.pos
@@ -559,19 +570,26 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # ------------------------
         # generate team rewards and look for outcomes
 
-        result_general_killed = self.general_health <= 0
         result_general_rescued = self.general_tiles_from_edge == 0
         result_game_timeout = self.round_timer >= (self.timeout - 1)
         result_all_players_dead = all(player.is_dead for player in self.players)
         result_red_victory = False
         result_blue_victory = False
         result_green_victory = False
+        red_seen_general = False
 
         team_rewards[self.TEAM_GREEN] += green_tree_harvest_counter * self.scenario.reward_per_tree
 
         for player in self.players:
             if not player.is_dead:
                 team_players_alive[player.team] += 1
+
+        for player in self.players:
+            if not player.is_dead and player.team == self.TEAM_RED:
+                if player.in_vision(*self.general_location, self.scenario.team_general_view_distance[self.TEAM_RED]):
+                    red_seen_general = True
+
+        result_general_killed = self.general_health <= 0 or (self.scenario.red_wins_if_sees_general and red_seen_general)
 
         if np.sum(team_players_alive) == team_players_alive[self.TEAM_GREEN] and team_players_alive[self.TEAM_GREEN] >= 1:
             # check for harvesting complete
@@ -634,7 +652,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             elif result_general_rescued:
                 team_rewards[self.TEAM_RED] -= 10
                 team_rewards[self.TEAM_BLUE] += self.blue_rewards_for_winning
-
 
         # apply zero sum rules
         if self.scenario.zero_sum:
@@ -1097,18 +1114,23 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 (128, 255, 128), # health
                 (255, 255, 0),   # timeout
                 (255, 255, 0),   # shooting timeout (warming up)
+                (255, 255, 255),   # general distance
             ]
+
+            general_distance = max_distance(*player.pos, *self.general_location) / max(
+                self.scenario.map_width, self.scenario.map_height)
 
             status_values = [
                 player.x / self.scenario.map_width,
                 player.y / self.scenario.map_height,
                 player.health / self.scenario.player_initial_health,
                 self.round_timer / self.timeout,
-                player.turns_until_we_can_shoot / player.shooting_timeout if player.shooting_timeout > 0 else 0,
+                1-(player.turns_until_we_can_shoot / player.shooting_timeout) if player.shooting_timeout > 0 else 1,
+                general_distance if player.team == self.TEAM_BLUE and self.scenario.blue_general_indicator == "distance" else 0
             ]
 
             # change color if agent is able to shoot
-            if player.turns_until_we_can_shoot == 0:
+            if player.can_shoot == 0:
                 status_colors[4] = (255, 0, 0) # red for able to shoot
 
             for i, (col, value) in enumerate(zip(status_colors, status_values)):
@@ -1126,7 +1148,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 obs[action_hint*3:(action_hint+1)*3, 0:3] = (0, 255, 255)
 
         # show general off-screen location
-        if (observer is not None) and (observer.team == self.TEAM_BLUE or self.scenario.general_always_visible):
+        if (observer is not None) and (observer.team == self.TEAM_BLUE and self.scenario.blue_general_indicator == "direction"):
 
             dx = self.general_location[0] - observer.x
             dy = self.general_location[1] - observer.y
