@@ -105,7 +105,10 @@ class PMAlgorithm(MarlAlgorithm):
 
             amp=False,  # automatic mixed precision
             device="cuda",
-            policy_memory_units=512,   # >128 is required if we want to predict roles using policy module, 512 is standard.
+            pm_memory_units=512,   # >128 is required if we want to predict roles using policy module, 512 is standard.
+            pm_out_features=512,
+            pm_lstm_mode="residual",
+
             model_name="default",
             micro_batch_size: Union[str, int] = "auto",
             # the type of prediction to use for deception.  Observation is much slower to process
@@ -127,13 +130,13 @@ class PMAlgorithm(MarlAlgorithm):
             vf_coef=0.5,
             ppo_epsilon=0.2,
             max_grad_norm=5.0,
-            lstm_mode="residual",
             deception_bonus: tuple = (0,0,0),            # scale of deception bonus for each team (requires deception module to be enabled)
             deception_bonus_start_timestep: int = 10e6,  # deception bonus starts at 0, and ramps up linearly until this timestep
             use_global_value_module=False,  # enables a global value function estimator, which improves training
 
             nan_check=False,                # if enabled checks for nans, and logs extreme values (slows things down)
             max_window_size:Union[int, None]=None,
+
 
             # ------ deception module settings ----------------
             gvm_memory_units = 512,          # global value requires additional memory units to work well.
@@ -197,16 +200,16 @@ class PMAlgorithm(MarlAlgorithm):
         self.split_policy = split_policy
         policy_fn = SplitPolicyModel if self.split_policy else PolicyModel
 
-        model = policy_fn(vec_env, device=device, memory_units=policy_memory_units, model=model_name,
-                            data_parallel=data_parallel, out_features=policy_memory_units,
-                            lstm_mode=lstm_mode, nan_check=nan_check)
+        model = policy_fn(vec_env, device=device, memory_units=pm_memory_units, model=model_name,
+                          data_parallel=data_parallel, out_features=pm_out_features,
+                          lstm_mode=pm_lstm_mode, nan_check=nan_check)
 
         if use_global_value_module:
             print("Enabling Global Value Module.")
             self.gv_model = GlobalValueModel(
                 vec_env, device=device, memory_units=gvm_memory_units, model=model_name,
                 data_parallel=data_parallel, out_features=gvm_memory_units,
-                lstm_mode=lstm_mode, nan_check=nan_check
+                lstm_mode=pm_lstm_mode, nan_check=nan_check
             )
         else:
             self.gv_model = None
@@ -233,7 +236,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         assert self.obs_shape[0] == 3, f"Model assumes RGB 3-channel input, but found {self.obs_shape}"
 
-        states_needed = policy_memory_units
+        states_needed = pm_memory_units
 
         if self.uses_deception_model:
             # to handle the deception rnn states just concatenate the h,c states together
@@ -250,7 +253,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.verbose = verbose
         self.log = Logger()
         self.vec_env = vec_env
-        self.policy_memory_units = policy_memory_units
+        self.policy_memory_units = pm_memory_units
         self.nan_check = nan_check
 
         self.normalize_advantages = normalize_advantages
@@ -1683,8 +1686,8 @@ class PMAlgorithm(MarlAlgorithm):
                                 mini_batch_data[key] = value.to(device=model.device, non_blocking=True)
 
                         # verify the data, but only occasionally
-                        #if np.random.rand() < 0.05:
-                        #    self._verify_minibatch_data(mini_batch_data)
+                        if np.random.rand() < 0.02:
+                            self._verify_minibatch_data(mini_batch_data)
 
                         forward_func(mini_batch_data)
                         micro_batch_counter += 1

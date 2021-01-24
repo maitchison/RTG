@@ -38,7 +38,14 @@ class DefaultEncoder(BaseEncoder):
         self.conv1 = nn.Conv2d(self.input_dims[0], 32, kernel_size=3)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.fc = nn.Linear(utils.prod(self.final_dims), self.out_features)
+
+        if out_features is None:
+            # setting out_features to none removes the final layer
+            print("  (final linear layer is disabled)")
+            self.fc = nn.Identity()
+            self.out_features = utils.prod(self.final_dims)
+        else:
+            self.fc = nn.Linear(utils.prod(self.final_dims), self.out_features)
 
         print(f" -created default encoder, final dims {self.final_dims}")
 

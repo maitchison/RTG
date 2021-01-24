@@ -365,7 +365,6 @@ def make_algo(vec_env: MultiAgentVecEnv, model_name = None):
     )
 
     algorithm.log_folder = config.log_folder
-    #algorithm.write_to_tensorboard(config.log_folder)
 
     print(f" -model created using batch size of {algorithm.batch_size} and mini-batch size of {algorithm.mini_batch_size}")
 
