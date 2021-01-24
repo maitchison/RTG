@@ -538,7 +538,7 @@ class PMAlgorithm(MarlAlgorithm):
     def reset(self):
 
         # initialize agent
-        print(" - environment reset")
+        print(" - resetting environment...")
         self.agent_obs = self.vec_env.reset()
         self.agent_rnn_state *= 0
         self.episode_score *= 0
@@ -551,6 +551,7 @@ class PMAlgorithm(MarlAlgorithm):
             start_timestep = np.random.randint(500)
             for _ in range(start_timestep):
                 game.step([0]*game.n_players)
+        print(" - done.")
 
     def calculate_deception_bonus_from_observations(
             self,
