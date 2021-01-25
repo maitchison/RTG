@@ -126,7 +126,6 @@ class PMAlgorithm(MarlAlgorithm):
             batch_epochs=4,
             entropy_bonus=0.01,
             mini_batch_size=2048,
-            use_clipped_value_loss=False,  # shown to be not effective
             vf_coef=0.5,
             ppo_epsilon=0.2,
             max_grad_norm=5.0,
@@ -247,6 +246,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         self.rnn_state_shape = [2, states_needed]
 
+        self.env_noop_count = 500
         self.name = name
         self.amp = amp
         self.data_parallel = data_parallel
@@ -263,7 +263,6 @@ class PMAlgorithm(MarlAlgorithm):
         self.batch_epochs = batch_epochs
         self.entropy_bonus = entropy_bonus
         self.mini_batch_size = mini_batch_size
-        self.use_clipped_value_loss = use_clipped_value_loss
         self.vf_coef = vf_coef
         self.ppo_epsilon = ppo_epsilon
         self.max_grad_norm = max_grad_norm
@@ -538,20 +537,27 @@ class PMAlgorithm(MarlAlgorithm):
     def reset(self):
 
         # initialize agent
-        print(" - resetting environment...")
+        print(" -resetting environment...")
         self.agent_obs = self.vec_env.reset()
         self.agent_rnn_state *= 0
         self.episode_score *= 0
         self.episode_len *= 0
         self.terminals *= 0
 
+        # note for RTG this could be done much quicker by just settings 't' to the value we want,
+        # doing things this way does add a minute or so to startup, which can be a problem when wanting to run
+        # a quick test.
+        # however running no-op actions through the environment is a much more general way to achieve this.
+        # an alternative would be to adjust the timeout before the first reset.
+
         # start each game at a different point. This makes sure that games do not to through in sync, which can
         # cause problems with training as the parallel environments are not IID.
-        for game in self.vec_env.games:
-            start_timestep = np.random.randint(500)
-            for _ in range(start_timestep):
-                game.step([0]*game.n_players)
-        print(" - done.")
+        if self.env_noop_count > 0:
+            for game in self.vec_env.games:
+                start_timestep = np.random.randint(self.env_noop_count)
+                for _ in range(start_timestep):
+                    game.step([0]*game.n_players)
+        print(" -done.")
 
     def calculate_deception_bonus_from_observations(
             self,
@@ -858,10 +864,13 @@ class PMAlgorithm(MarlAlgorithm):
                 # ---------------------------------------------------------------
 
                 self.terminals[:] = new_terminals
-
-                # work out our intrinsic rewards
-                int_value = model_out["int_value"].detach().cpu().numpy()
                 int_rewards = np.zeros_like(ext_rewards)
+
+                # get our intrinsic rewards
+                if "role_int_value" in model_out:
+                    int_value = extract_roles(model_out["role_int_value"][None, :, :].detach().cpu().numpy(), roles[None, :])[0, :]
+                else:
+                    int_value = np.zeros_like(ext_value)
 
                 if self.uses_deception_model:
                     raw_deception_bonus = self.calculate_deception_bonus(
@@ -936,8 +945,12 @@ class PMAlgorithm(MarlAlgorithm):
             )
 
             self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
-            if "int_value" in model_out:
-                self.int_final_value_estimate = model_out["int_value"].detach().cpu().numpy()
+
+            if "role_int_value" in model_out:
+                self.int_final_value_estimate = extract_roles(model_out["role_int_value"][None, :, :].detach().cpu().numpy(),
+                                          roles[None, :])[0, :]
+            else:
+                self.int_final_value_estimate = np.zeros_like(self.ext_final_value_estimate)
 
         self.calculate_returns()
 
@@ -1104,27 +1117,14 @@ class PMAlgorithm(MarlAlgorithm):
         # Calculate loss_value
         # -------------------------------------------------------------------------
 
-        value_heads = ["ext", "int"]
-
-
-        for value_head in value_heads:
+        for value_head in ["ext", "int"]:
 
             # value predictions will come out as [N * B, n_players], so we need to index in to find the correct ones
             value_prediction = model_out["global_{}_value".format(value_head)][range(len(ids)), ids]
             returns = merge_down(data["{}_returns".format(value_head)])
-            old_pred_values = merge_down(data["{}_value".format(value_head)])
 
-            if self.use_clipped_value_loss:
-                # is is essentially trust region for value learning, and seems to help a lot.
-                value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
-                                                                         -self.ppo_epsilon, +self.ppo_epsilon)
-                vf_losses1 = (value_prediction - returns).pow(2)
-                vf_losses2 = (value_prediction_clipped - returns).pow(2)
-                loss_value = self.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2) * weights)
-            else:
-                # simpler version, just use MSE.
-                vf_losses1 = (value_prediction - returns).pow(2)
-                loss_value = self.vf_coef * 0.5 * torch.mean(vf_losses1 * weights)
+            vf_losses1 = (value_prediction - returns).pow(2)
+            loss_value = self.vf_coef * 0.5 * torch.mean(vf_losses1 * weights)
 
             self.log.watch_mean("gvl_v_" + value_head, loss_value, history_length=64)
             loss = loss + loss_value
@@ -1346,24 +1346,14 @@ class PMAlgorithm(MarlAlgorithm):
 
         with profiler.record_function("pfm_value"):
 
-            value_heads = ["ext", "int"]
+            value_heads = ["ext"]
 
             for value_head in value_heads:
                 value_prediction = model_out["{}_value".format(value_head)]
                 returns = merge_down(data["{}_returns".format(value_head)])
-                old_pred_values = merge_down(data["{}_value".format(value_head)])
 
-                if self.use_clipped_value_loss:
-                    # is is essentially trust region for value learning, and seems to help a lot.
-                    value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
-                                                                             -self.ppo_epsilon, +self.ppo_epsilon)
-                    vf_losses1 = (value_prediction - returns).pow(2)
-                    vf_losses2 = (value_prediction_clipped - returns).pow(2)
-                    loss_value = -self.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2) * weights)
-                else:
-                    # simpler version, just use MSE.
-                    vf_losses1 = (value_prediction - returns).pow(2)
-                    loss_value = -self.vf_coef * 0.5 * torch.mean(vf_losses1 * weights)
+                vf_losses1 = (value_prediction - returns).pow(2)
+                loss_value = -self.vf_coef * 0.5 * torch.mean(vf_losses1 * weights)
 
                 self.deferred_watch_mean("loss_v_" + value_head, loss_value, history_length=64)
                 loss = loss + loss_value
@@ -1424,6 +1414,7 @@ class PMAlgorithm(MarlAlgorithm):
         N, B, *obs_shape = prev_obs.shape
         n_players = self.vec_env.max_players
         n_roles = 3
+        weights = 1
 
         with profiler.record_function("dfm_vision_mask"):
             player_visible = data["player_visible"]
@@ -1436,6 +1427,23 @@ class PMAlgorithm(MarlAlgorithm):
                 rnn_states=rnn_states,
                 terminals=terminals
             )
+
+        # -------------------------------------------------------------------------
+        # Calculate loss_value
+        # -------------------------------------------------------------------------
+
+        with profiler.record_function("dfm_value"):
+
+            for value_head in ["int"]:
+                value_prediction = extract_roles(model_out["role_{}_value".format(value_head)], data["roles"])
+                value_prediction = merge_down(value_prediction)
+                returns = merge_down(data["{}_returns".format(value_head)])
+
+                vf_losses1 = (value_prediction - returns).pow(2)
+                loss_value = self.vf_coef * 0.5 * torch.mean(vf_losses1 * weights)
+
+                self.deferred_watch_mean("dm_loss_v_" + value_head, loss_value, history_length=64)
+                loss = loss + loss_value
 
         # -------------------------------------------------------------------------
         # Calculate loss_role
@@ -1725,6 +1733,8 @@ class PMAlgorithm(MarlAlgorithm):
         batch_data["player_roles"] = self.batch_player_roles
         batch_data["log_policy"] = self.batch_log_policy
         batch_data["role_log_policies"] = self.batch_role_log_policies
+        batch_data["int_returns"] = self.batch_int_returns              # needed for training int_value
+
         batch_data["rnn_states"] = self.extract_deception_rnn_states(self.batch_rnn_states)
         if self.batch_player_role_predictions is not None:
             batch_data["player_role_predictions"] = self.batch_player_role_predictions

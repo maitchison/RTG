@@ -423,6 +423,8 @@ class DeceptionModel(BaseModel):
         self.action_prediction_head = None
         self.action_backwards_prediction_head = None
 
+        self.local_int_value_head = nn.Linear(self.encoder_output_features, self.n_roles)
+
         if predict_observations:
             if self.predict in ['forward', 'full']:
                 self.observation_prediction_head = decoder_fn(
@@ -482,6 +484,12 @@ class DeceptionModel(BaseModel):
             result['role_backwards_prediction'] = role_backwards_prediction
 
         # ------------------------------
+        # int value prediction
+        # ------------------------------
+        int_value = self.local_int_value_head(encoder_output)
+        result['role_int_value'] = int_value
+
+        # ------------------------------
         # obs forward prediction
         # ------------------------------
 
@@ -512,7 +520,7 @@ class DeceptionModel(BaseModel):
             result["obs_backwards_prediction"] = restack_observations(obs_pp)
 
         # ------------------------------
-        # action forwards prediction
+        # action forward prediction
         # ------------------------------
 
         if self.action_prediction_head is not None:
@@ -663,7 +671,6 @@ class PolicyModel(BaseModel):
         self.policy_head = nn.Linear(self.encoder_output_features, self.roles * self.n_actions)
         torch.nn.init.xavier_uniform_(self.policy_head.weight, 0.01) # helps with exploration
 
-        self.local_int_value_head = nn.Linear(self.encoder_output_features, roles)
         self.local_ext_value_head = nn.Linear(self.encoder_output_features, roles)
         # this is just here as an aux task. During voting it is important that the agent is aware of who is who
         if predict_roles:
@@ -678,11 +685,9 @@ class PolicyModel(BaseModel):
         Forwards sequence through model. If roles are provided returns the appropriate policy and value as
             log_policy: tensor [N, B, *policy_shape]
             ext_value: tensor [N, B]
-            int_value: tensor [N, B]
         Regardless all role policy and values are returned as
             log_policies: tensor [N, B, R, *policy_shape]
             ext_values: tensor [N, B, R]
-            int_values: tensor [N, B, R]
 
         Tensors will be uploaded to correct device
 
@@ -715,12 +720,10 @@ class PolicyModel(BaseModel):
         policy_outputs = self.policy_head(encoder_output).reshape(N, B, self.roles, self.n_actions)
         log_policy = torch.log_softmax(policy_outputs, dim=-1)
         ext_value = self.local_ext_value_head(encoder_output)
-        int_value = self.local_int_value_head(encoder_output)
 
         result = {
             'role_log_policy': log_policy,
             'role_ext_value': ext_value,
-            'role_int_value': int_value
         }
 
         # these will come out as [N, B, n_players * n_roles] but we need [N, B, n_players, n_roles] for normalization
@@ -733,7 +736,6 @@ class PolicyModel(BaseModel):
         if roles is not None:
             result['log_policy'] = extract_roles(log_policy, roles)
             result['ext_value'] = extract_roles(ext_value, roles)
-            result['int_value'] = extract_roles(int_value, roles)
 
         if self.nan_check:
             self._check_for_nans([(k,v) for k,v in result.items()] + [('rnn_states', new_rnn_states)])
