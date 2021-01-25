@@ -1129,24 +1129,25 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 (128, 255, 128), # health
                 (255, 255, 0),   # timeout
                 (255, 255, 0),   # shooting timeout (warming up)
-                (255, 255, 255),   # general distance
             ]
-
-            general_distance = max_distance(*player.pos, *self.general_location) / max(
-                self.scenario.map_width, self.scenario.map_height)
 
             status_values = [
                 player.x / self.scenario.map_width,
                 player.y / self.scenario.map_height,
                 player.health / self.scenario.player_initial_health,
                 self.round_timer / self.timeout,
-                1-(player.turns_until_we_can_shoot / player.shooting_timeout) if player.shooting_timeout > 0 else 1,
-                general_distance if player.team == self.TEAM_BLUE and self.scenario.blue_general_indicator == "distance" else 0
+                1-(player.turns_until_we_can_shoot / player.shooting_timeout) if player.shooting_timeout > 0 else 1
             ]
 
             # change color if agent is able to shoot
             if player.can_shoot == 0:
                 status_colors[4] = (255, 0, 0) # red for able to shoot
+
+            if self.scenario.blue_general_indicator == "distance":
+                general_distance = max_distance(*player.pos, *self.general_location) / max(
+                    self.scenario.map_width, self.scenario.map_height)
+                status_colors.append((255, 255, 255))  # general distance
+                status_values.append(general_distance if player.team == self.TEAM_BLUE and self.scenario.blue_general_indicator == "distance" else 0)
 
             for i, (col, value) in enumerate(zip(status_colors, status_values)):
                 c = np.asarray(np.asarray(col, dtype=np.float32) * value, dtype=np.uint8)
@@ -1171,8 +1172,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             if abs(dx) > observer.view_distance or abs(dy) > observer.view_distance:
                 dx += self.scenario.max_view_distance
                 dy += self.scenario.max_view_distance
-                dx = min(max(dx, 0), observer.view_distance * 2)
-                dy = min(max(dy, 0), observer.view_distance * 2)
+                dx = min(max(dx, 0), self.scenario.max_view_distance * 2)
+                dy = min(max(dy, 0), self.scenario.max_view_distance * 2)
                 self.draw_tile(obs, dx + 1, dy + 1, self.GENERAL_COLOR)
 
         # overlay the voting screen (if we are voting)
