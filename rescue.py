@@ -1265,7 +1265,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         elif self.scenario.starting_locations == "together":
             # players are placed together but not right ontop of the general
 
-            min_distance_from_general = min([4, self.scenario.map_width//4, self.scenario.map_height//4])
+            min_distance_from_general = min([8, self.scenario.map_width//4, self.scenario.map_height//4])
 
             general_filter = lambda p: \
                 abs(p[0] - self.general_location[0]) >= min_distance_from_general and \
