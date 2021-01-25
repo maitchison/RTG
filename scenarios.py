@@ -47,17 +47,17 @@ class RescueTheGeneralScenario():
             "reward_per_tree": 1,
             "hidden_roles": "default",
             "timeout_mean": 500,             # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 6,
+            "max_view_distance": 7,
             "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
             "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (6, 5, 5),  # red can see further
+            "team_view_distance": (7, 5, 5),  # red can see further
             "team_shoot_range": (5, 5, 5),
             "general_initial_health": 1,  # general can not be killed
             "players_to_move_general": 2,
             "blue_general_indicator": "direction",
             "starting_locations": "together",  # players start together
             "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False, 
+            "red_wins_if_sees_general": False,
         },
 
         "full": {

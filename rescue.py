@@ -234,7 +234,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.general_health = int()
         self.general_closest_tiles_from_edge = int()
         self.blue_has_stood_next_to_general = bool()
+        self.red_has_seen_general = bool()
         self.blue_rewards_for_winning = int()
+        self.red_rewards_for_winning = int()
         self.location_encoding = location_encoding
         self.channels_first = channels_first
         self.button_location = (0, 0)
@@ -535,7 +537,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             for other_player in self.players:
                 if other_player.is_dead:
                     continue
-                if max_distance(*player.pos, *other_player.pos) <= 1:
+                if max_distance(*player.pos, *other_player.pos) <= 2:
                     players_nearby += 1 # this includes ourself.
 
             if players_nearby < self.scenario.players_to_move_general:
@@ -603,6 +605,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             team_rewards[self.TEAM_BLUE] += small_reward
             self.blue_rewards_for_winning -= small_reward # make sure blue always gets the same number of points for winning
 
+        if red_seen_general and not self.red_has_seen_general:
+            # partial rewards for red seeing general
+            team_rewards[self.TEAM_RED] += 3
+            team_rewards[self.TEAM_BLUE] -= 3
+            self.red_rewards_for_winning -= 3
+            self.red_has_seen_general = True
+
         blue_player_standing_next_to_general = False
         for player in self.living_players:
             if player.team == self.TEAM_BLUE:
@@ -647,8 +656,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 result_blue_victory = True
         else:
             if result_general_killed:
-                team_rewards[self.TEAM_RED] += 10
-                team_rewards[self.TEAM_BLUE] -= 10
+                team_rewards[self.TEAM_RED] += self.red_rewards_for_winning
+                team_rewards[self.TEAM_BLUE] -= self.red_rewards_for_winning
             elif result_general_rescued:
                 team_rewards[self.TEAM_RED] -= 10
                 team_rewards[self.TEAM_BLUE] += self.blue_rewards_for_winning
@@ -1227,7 +1236,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.general_health = self.scenario.general_initial_health
         self.general_closest_tiles_from_edge = self.general_tiles_from_edge
         self.blue_has_stood_next_to_general = False
+        self.red_has_seen_general = False
         self.blue_rewards_for_winning = 10
+        self.red_rewards_for_winning = 10
 
         self.vote_cooldown = 0
 
