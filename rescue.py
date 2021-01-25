@@ -1160,8 +1160,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             dy = self.general_location[1] - observer.y
 
             if abs(dx) > observer.view_distance or abs(dy) > observer.view_distance:
-                dx += observer.view_distance
-                dy += observer.view_distance
+                dx += self.scenario.max_view_distance
+                dy += self.scenario.max_view_distance
                 dx = min(max(dx, 0), observer.view_distance * 2)
                 dy = min(max(dy, 0), observer.view_distance * 2)
                 self.draw_tile(obs, dx + 1, dy + 1, self.GENERAL_COLOR)

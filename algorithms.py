@@ -559,73 +559,6 @@ class PMAlgorithm(MarlAlgorithm):
                     game.step([0]*game.n_players)
         print(" -done.")
 
-    def calculate_deception_bonus_from_observations(
-            self,
-            player_observation_prediction_predictions: torch.Tensor,
-            prior_role_belief: torch.Tensor,
-            believed_policy_rnn_states: torch.Tensor,
-            terminals: torch.Tensor,
-            true_role: torch.Tensor,
-            mask: torch.Tensor,
-            actions: torch.Tensor,
-        ):
-        """
-        Calculates a deception bonus based on modifiying other agents belief under the assumption that they are
-        baysian agents, and using our own estimations of their estimations of our likely actions for each role.
-
-        :param player_observation_prediction_predictions: Sequence of observations that represent agent i's belief about agent j's
-            belief about i's observations.
-            Tensor of dims [B, n_players, *obs_space] of type uint8
-        :param prior_role_belief: Agent i's belief about agent j's belief about agent i's true role. These should be log probabilities
-            Tensor of dims [B, n_players, n_roles] of type float32
-
-        :param believed_policy_rnn_states: the players current estimate of the policy rnn states for the other players
-            Tensor of dims [B, n_players, *rnn_policy_state_space] of type float32
-
-        :param terminals: The true terminals for each player, of shape [B, n_players] of type bool
-        :param true_role: The true roles for each player, of shape [B] of type long
-        :param mask: A mask indicating which players we are trying to deceive, and therefore get a bonus for.
-            This can be used to mask out invisible players
-            Tensor of dims [B, n_players] of type bool
-
-        :param actions: Actions for each agent
-            Tensor of dims [B] of type long
-
-        :return: A tuple containing
-            The bonus for each player summed over other players, tensor of dims [B],
-            The updated rnn_states, tensor of dims [B, n_players, *rnn_policy_state_space
-        """
-
-        assert player_observation_prediction_predictions.dtype == torch.uint8
-
-        B, n_players, *obs_shape = player_observation_prediction_predictions.shape
-
-        # upload rnn_states if needed
-        believed_policy_rnn_states = believed_policy_rnn_states.to(device=self.policy_model.device)
-
-        # first get policy output for predicted observations, the output will include policy for each role
-        with torch.no_grad():
-            pred_policy_out, new_rnn_states = self.policy_model.forward_sequence(
-                player_observation_prediction_predictions.reshape(1, B * n_players, *self.obs_shape),
-                rnn_states=believed_policy_rnn_states.reshape((B * n_players, 2, self.policy_memory_units)),
-                terminals=terminals.reshape(1, B * n_players)
-            )
-
-        # this will be [1, B*n_players, n_roles, n_actions], so drop first dim, and reshape
-        _, _, n_roles, n_actions = pred_policy_out["role_log_policy"].shape
-        role_log_policy = pred_policy_out["role_log_policy"].reshape(B, n_players, n_roles, n_actions)
-        # states need to be reshaped too
-        new_rnn_states = new_rnn_states.reshape(B, n_players, 2, self.policy_memory_units)
-
-        return calculate_deception_bonus_from_actions(
-            player_action_prediction_predictions=role_log_policy,
-            prior_role_belief=prior_role_belief,
-            true_role=true_role,
-            mask=mask,
-            actions=actions,
-            device=self.deception_model.device
-        ), new_rnn_states
-
     def _duplicate_players(self, x:np.ndarray, n_players):
         """ Returns a copy of data with players duplicated.
             If input is
@@ -709,22 +642,6 @@ class PMAlgorithm(MarlAlgorithm):
                 device=self.deception_model.device
             )
             deception_bonus += db_actions.cpu().detach().numpy()
-
-        if self.predicts_observations:
-            expanded_terminals = torch.from_numpy(
-                self._duplicate_players(prev_terminals, n_players)).to(device=self.policy_model.device)
-            obs_backwards_predictions = image_to_uint8(model_out["obs_backwards_prediction"])
-            db_observations, new_believed_other_rnn_states = self.calculate_deception_bonus_from_observations(
-                player_observation_prediction_predictions=obs_backwards_predictions,
-                prior_role_belief=model_out["role_backwards_prediction"],
-                believed_policy_rnn_states=believed_other_rnn_states,
-                terminals=expanded_terminals,
-                true_role=torch.from_numpy(roles),
-                mask=bonus_mask,  # for the moment don't mask non-visible players
-                actions=torch.from_numpy(actions)
-            )
-            believed_other_rnn_states[:] = new_believed_other_rnn_states # copy across new state
-            deception_bonus += db_observations.cpu().detach().numpy()
 
         return deception_bonus
 
