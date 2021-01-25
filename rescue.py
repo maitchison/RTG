@@ -435,19 +435,19 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 # nothing was hit, but still display shooting line
                 hit_x = player.x + self.DX[player.action - ACTION_SHOOT_UP] * player.shoot_range
                 hit_y = player.y + self.DY[player.action - ACTION_SHOOT_UP] * player.shoot_range
-                self.shooting_lines.append((*player.pos, hit_x, hit_y))
+                #self.shooting_lines.append((*player.pos, hit_x, hit_y))
                 continue
             elif target == 'general':
                 # general was hit
                 self.general_health -= self.scenario.team_shoot_damage[player.team]
                 self.stats_general_shot[player.team] += 1
                 self._needs_repaint = True
-                self.shooting_lines.append((*player.pos, *self.general_location))
+                #self.shooting_lines.append((*player.pos, *self.general_location))
             else:
                 # target was another player, so damage them and display shooting line
                 target.damage(self.scenario.team_shoot_damage[player.team])
                 self.stats_player_hit[player.team, target.team] += 1
-                self.shooting_lines.append((*player.pos, *target.pos))
+                #self.shooting_lines.append((*player.pos, *target.pos))
 
                 # look for witnesses
                 for witness in self.players:
@@ -869,6 +869,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         obs[draw_x - 1:draw_x + 2, draw_y - 1:draw_y + 2] = id_color
         obs[draw_x, draw_y] = team_color
+
+        # show shooting
+        if player.action in SHOOT_ACTIONS:
+            index = player.action - ACTION_SHOOT_UP
+            dx, dy = self.DX[index], self.DY[index]
+            obs[draw_x+dx, draw_y+dy] = self.FIRE_COLOR
 
     def _draw_general(self, obs, padding=(0, 0)):
 

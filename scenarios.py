@@ -56,7 +56,7 @@ class RescueTheGeneralScenario():
             "players_to_move_general": 2,
             "blue_general_indicator": "direction",
             "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (2, 2, 2),
+            "team_shoot_timeout": (10, 10, 10),
             "red_wins_if_sees_general": True,   # blue must make sure red never reveals the location of the general
         },
 
