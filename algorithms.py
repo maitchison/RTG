@@ -274,15 +274,15 @@ class PMAlgorithm(MarlAlgorithm):
         self.intrinsic_reward_scale = max(deception_bonus)
         self.log_folder = "."
 
-        self.policy_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=learning_rate, eps=adam_epsilon)
+        self.pm_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=learning_rate, eps=adam_epsilon)
 
         if self.uses_gv_model:
-            self.gv_optimizer = torch.optim.Adam(self.gv_model.parameters(), lr=learning_rate, eps=adam_epsilon)
+            self.gvm_optimizer = torch.optim.Adam(self.gv_model.parameters(), lr=learning_rate, eps=adam_epsilon)
 
         if self.deception_model is not None:
             # optimal settings for deception optimizer are different than the policy optimizer
-            self.deception_optimizer = torch.optim.Adam(self.deception_model.parameters(), lr=self.dm_learning_rate,
-                                                        eps=1e-8)
+            self.dm_optimizer = torch.optim.Adam(self.deception_model.parameters(), lr=self.dm_learning_rate,
+                                                 eps=1e-8)
 
         self.t = 0
         self.learn_steps = 0
@@ -430,24 +430,46 @@ class PMAlgorithm(MarlAlgorithm):
 
         data = {
             'step': self.t,
-            'model_state_dict': self.policy_model.state_dict(),
-            'optimizer_state_dict': self.policy_optimizer.state_dict()
+            'pm_state_dict': self.policy_model.state_dict(),
+            'pm_optimizer_state_dict': self.pm_optimizer.state_dict()
         }
 
         if self.uses_deception_model:
-            data['deception_model_state_dict'] = self.deception_model.state_dict()
-            data['deception_optimizer_state_dict'] = self.deception_optimizer.state_dict()
-
+            data['dm_state_dict'] = self.deception_model.state_dict()
+            data['dm_optimizer_state_dict'] = self.dm_optimizer.state_dict()
 
         if self.uses_gv_model:
-            data['gv_model_state_dict'] = self.gv_model.state_dict()
-            data['gv_optimizer_state_dict'] = self.gv_model.state_dict()
+            data['gvm_state_dict'] = self.gv_model.state_dict()
+            data['gvm_optimizer_state_dict'] = self.gv_model.state_dict()
 
         if self.normalize_intrinsic_rewards:
             data['ems_norm'] = self.ems_norm
             data['intrinsic_returns_rms'] = self.intrinsic_returns_rms,
 
         torch.save(data, filename)
+
+    def load(self, filename):
+        """
+        Restores model from checkpoint. No configuration options are changed, just model and optimizer parameters.
+        :param filename: full path to checkpoint (.pt) file.
+        :return: None
+        """
+
+        data = torch.load(filename)
+
+        self.t = data['t']
+        self.policy_model.load_state_dict(data['pm_state_dict'])
+        self.pm_optimizer.load_state_dict(data['pm_optimizer_state_dict'])
+        if self.uses_deception_model:
+            self.deception_model.load_state_dict(data['dm_state_dict'])
+            self.dm_optimizer.load_state_dict(data['dm_optimizer_state_dict'])
+        if self.uses_gv_model:
+            self.gv_model.load_state_dict(data['gvm_state_dict'])
+            self.gvm_optimizer.load_state_dict(data['gvm_optimizer_state_dict'])
+
+        if self.normalize_intrinsic_rewards:
+            self.ems_norm = data['ems_norm']
+            self.intrinsic_returns_rms = data['intrinsic_returns_rms']
 
     def _eval(self):
         self.policy_model.eval()
@@ -1671,7 +1693,7 @@ class PMAlgorithm(MarlAlgorithm):
         self._train_model(
             batch_data,
             self.deception_model,
-            self.deception_optimizer,
+            self.dm_optimizer,
             self.forward_deception_mini_batch,
             epochs=self.batch_epochs * windows_per_segment,
             mini_batch_size=self.dm_mini_batch_size,
@@ -1707,7 +1729,7 @@ class PMAlgorithm(MarlAlgorithm):
         self._train_model(
             batch_data,
             self.gv_model,
-            self.gv_optimizer,
+            self.gvm_optimizer,
             self.forward_gv_mini_batch,
             epochs=self.batch_epochs * windows_per_segment,
             mini_batch_size=mini_batch_size,
@@ -1746,7 +1768,7 @@ class PMAlgorithm(MarlAlgorithm):
         self._train_model(
             batch_data,
             self.policy_model,
-            self.policy_optimizer,
+            self.pm_optimizer,
             self.forward_policy_mini_batch,
             epochs=self.batch_epochs * windows_per_segment,
             mini_batch_size=mini_batch_size,

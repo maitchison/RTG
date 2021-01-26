@@ -315,7 +315,7 @@ def train_model():
         elif config.save_model == "none":
             pass
         elif config.save_model == "recent":
-            algorithm.save(f"{config.log_folder}/model_M.pt")
+            algorithm.save(f"{config.log_folder}/model.pt")
         else:
             try:
                 save_every = int(config.save_model)
@@ -323,7 +323,7 @@ def train_model():
                     algorithm.save(f"{config.log_folder}/model_{epoch:03}_M.pt")
             except:
                 raise ValueError("Invalid save model parameter, use [none|recent|all|0..n].")
-            algorithm.save(f"{config.log_folder}/model_M.pt")
+            algorithm.save(f"{config.log_folder}/model.pt")
 
         step_counter = learn(algorithm, step_counter, (epoch+1)*1e6, verbose=config.verbose == 1)
         print()

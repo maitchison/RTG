@@ -537,14 +537,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             for other_player in self.players:
                 if other_player.is_dead:
                     continue
-                if max_distance(*player.pos, *other_player.pos) <= 2:
+                if max_distance(*player.pos, *other_player.pos) <= self.scenario.help_distance:
                     players_nearby += 1 # this includes ourself.
 
             if players_nearby < self.scenario.players_to_move_general:
                 continue
 
             if player_distance_from_general == 1:
-                previous_general_location = self.general_location
                 self.general_location = player.pos
                 # moving the general is a once per turn thing
                 general_has_been_moved = True
@@ -612,13 +611,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             self.red_rewards_for_winning -= 3
             self.red_has_seen_general = True
 
-        blue_player_standing_next_to_general = False
+        blue_players_standing_next_to_general = 0
         for player in self.living_players:
             if player.team == self.TEAM_BLUE:
                 if l1_distance(*player.pos, *self.general_location) == 1:
-                    blue_player_standing_next_to_general = True
+                    blue_players_standing_next_to_general += 1
 
-        if blue_player_standing_next_to_general and not self.blue_has_stood_next_to_general:
+        if blue_players_standing_next_to_general >= self.scenario.blue_players_near_general_to_get_reward and not self.blue_has_stood_next_to_general:
             # very small bonus for standing next to general for the first time, might remove this later?
             # or have it as an option maybe. I think it's needed for fast training on blue2 scenario
             small_reward = 1
@@ -637,6 +636,10 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                         # must be mean otherwise rewards are stochastic
                         # this makes rewards total to ~10
                         rewards[index] += 10 / bonus_count
+
+        if result_game_timeout:
+            for team in [self.TEAM_RED, self.TEAM_GREEN, self.TEAM_BLUE]:
+                team_rewards[team] += self.scenario.timeout_penalty[team]
 
         # record who is left
         living_red_players = sum(not player.is_dead for player in self.players if player.team == self.TEAM_RED)
@@ -675,7 +678,6 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         for player in self.players:
             rewards[player.index] += team_rewards[player.team]
-
 
         self.round_team_scores += team_rewards
 
