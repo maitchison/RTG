@@ -108,8 +108,8 @@ class RescueTheGeneralScenario():
 
         "rescue_d": {
             "description": "The main game",
-            "map_width": 32,
-            "map_height": 32,
+            "map_width": 48,
+            "map_height": 48,
             "team_counts": (1, 2, 3),
             "n_trees": 10,
             "reward_per_tree": 1,
