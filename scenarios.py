@@ -38,8 +38,8 @@ class RescueTheGeneralScenario():
 
     SCENARIOS = {
 
-        "alta": {
-            "description": "Alternative version of the game",
+        "rescue_a": {
+            "description": "The main game",
             "map_width": 32,
             "map_height": 32,
             "team_counts": (1, 2, 3),
@@ -57,406 +57,76 @@ class RescueTheGeneralScenario():
             "blue_general_indicator": "direction",
             "starting_locations": "together",  # players start together
             "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "altb": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (2, 2, 4),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "altc": {
-            "description": "Alternative version of the game",
-            "map_width": 48,
-            "map_height": 48,
-            "team_counts": (1, 2, 3),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "altd": {
-            "description": "Alternative version of the game",
-            "map_width": 48,
-            "map_height": 48,
-            "team_counts": (1, 2, 3),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 5,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (5, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "alte": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 2, 3),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 1,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "altf": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 2, 3),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (10, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 1,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "altg": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 2, 3),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (7, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "alth": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 2, 3),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "help_distance": 4,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "alti": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 1, 4),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "help_distance": 7,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "altj": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 1, 4),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "help_distance": 3,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "altk": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 1, 4),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "blue_players_near_general_to_get_reward": 2,
-            "help_distance": 3,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "altl": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (0, 0, 4),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,             # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "altm": {
-            "description": "Alternative version of the game",
-            "map_width": 24,
-            "map_height": 24,
-            "team_counts": (0, 0, 4),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 5,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (0, 0, 0),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (5, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "altn": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 1, 6),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 5,
-            "team_general_view_distance": (1, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (5, 5, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (5, 5, 5),  # red can see further
-            "team_shoot_range": (2, 2, 2),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-        },
-
-        "alto": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 1, 4),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-            "timeout_penalty": (0, 0, -5),
-        },
-
-        "altp": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 1, 4),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
-            "timeout_penalty": (0, 0, -10),
-        },
-
-        "altq": {
-            "description": "Alternative version of the game",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 1, 4),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "timeout_mean": 500,
-            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
-            "max_view_distance": 7,
-            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
-            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
-            "team_view_distance": (7, 5, 5),  # red can see further
-            "team_shoot_range": (5, 5, 5),
-            "general_initial_health": 1,  # general can not be killed
-            "players_to_move_general": 2,
-            "blue_general_indicator": "direction",
-            "starting_locations": "together",  # players start together
-            "team_shoot_timeout": (10, 10, 10),
-            "red_wins_if_sees_general": False,
             "timeout_penalty": (5, 0, -5),
         },
 
-        "full": {
-            "description": "The full game",
-            "map_width": 48,
-            "map_height": 48,
-            "team_counts": (2, 2, 2),
+        "rescue_b": {
+            "description": "The main game",
+            "map_width": 32,
+            "map_height": 32,
+            "team_counts": (1, 1, 4),
             "n_trees": 10,
             "reward_per_tree": 1,
             "hidden_roles": "default",
             "timeout_mean": 500,
-            "max_view_distance": 6,
-            "team_shoot_damage": (10, 5, 5),
-            "team_view_distance": (6, 5, 5),    # red can see further
+            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
+            "max_view_distance": 7,
+            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
+            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
+            "team_view_distance": (7, 5, 5),  # red can see further
             "team_shoot_range": (5, 5, 5),
-            "starting_locations": "together",   # players start together
-            "team_shoot_timeout": (20, 20, 20),
+            "general_initial_health": 1,  # general can not be killed
+            "players_to_move_general": 2,
+            "blue_general_indicator": "direction",
+            "starting_locations": "together",  # players start together
+            "team_shoot_timeout": (10, 10, 10),
+            "timeout_penalty": (5, 0, -5),
         },
 
-        "blue4": {
-            "description": "four blue two red, no green, smaller map",
+        "rescue_c": {
+            "description": "The main game",
             "map_width": 32,
             "map_height": 32,
-            "team_counts": (2, 0, 4),
+            "team_counts": (1, 2, 3),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+            "hidden_roles": "default",
+            "timeout_mean": 500,
+            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
+            "max_view_distance": 5,
+            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
+            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
+            "team_view_distance": (5, 5, 5),  # red can see further
+            "team_shoot_range": (5, 5, 5),
+            "general_initial_health": 1,  # general can not be killed
+            "players_to_move_general": 2,
+            "blue_general_indicator": "direction",
+            "starting_locations": "together",  # players start together
+            "team_shoot_timeout": (10, 10, 10),
+            "timeout_penalty": (5, 0, -5),
+        },
+
+        "rescue_d": {
+            "description": "The main game",
+            "map_width": 32,
+            "map_height": 32,
+            "team_counts": (1, 2, 3),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+            "hidden_roles": "default",
+            "timeout_mean": 500,
+            # this gives red enough time to find the general, otherwise blue might learn to force a draw.
+            "max_view_distance": 7,
+            "team_general_view_distance": (2, 5, 5),  # how close you need to be to the general to see them
+            "team_shoot_damage": (2, 2, 10),  # blue can 1-shot other players, but red and green can not.
+            "team_view_distance": (7, 5, 5),  # red can see further
+            "team_shoot_range": (5, 5, 5),
+            "general_initial_health": 1,  # general can not be killed
+            "players_to_move_general": 2,
+            "blue_general_indicator": "direction",
+            "starting_locations": "together",  # players start together
+            "team_shoot_timeout": (10, 10, 10),
+            "timeout_penalty": (5, 0, -5),
         },
 
         "r2g2": {
@@ -475,67 +145,7 @@ class RescueTheGeneralScenario():
             "team_shoot_timeout": (5, 5, 5)      # green is much slower at shooting
         },
 
-        "r2g2_rp": {
-            "description": "Smaller version of r2g2, used for testing role prediction",
-            "map_width": 24,
-            "map_height": 24,
-            "team_counts": (2, 2, 0),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "none",
-            "max_view_distance": 5,  # makes thins a bit faster
-            "team_view_distance": (5, 5, 5),  # no bonus vision for red
-            "team_shoot_range": (4, 4, 4),
-            "starting_locations": "random",  # random start locations
-            "team_shoot_timeout": (5, 5, 5)  # green is much slower at shooting
-        },
-
-        "r2g2_hrp": {
-            "description": "Smaller version of r2g2, used for testing role prediction with hidden roles",
-            "map_width": 24,
-            "map_height": 24,
-            "team_counts": (2, 2, 0),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "default",
-            "max_view_distance": 5,  # makes thins a bit faster
-            "team_view_distance": (5, 5, 5),  # no bonus vision for red
-            "team_shoot_range": (4, 4, 4),
-            "starting_locations": "random",  # random start locations
-            "team_shoot_timeout": (5, 5, 5)  # green is much slower at shooting
-        },
-
-        "r2g3": {
-            "description": "Two red players and three green players on a medium map",
-            "map_width": 48,
-            "map_height": 48,
-            "team_counts": (2, 3, 0),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "none",
-            "max_view_distance": 5,  # makes thins a bit faster
-            "team_view_distance": (5, 5, 5),  # no bonus vision for red
-            "team_shoot_range": (4, 4, 4),
-            "starting_locations": "random",  # random start locations
-            "team_shoot_timeout": (5, 5, 5)  # green is much slower at shooting
-        },
-
-        "r2g4": {
-            "description": "Two red players and two green players on a medium map",
-            "map_width": 48,
-            "map_height": 48,
-            "team_counts": (2, 4, 0),
-            "n_trees": 10,
-            "reward_per_tree": 1,
-            "hidden_roles": "none",
-            "max_view_distance": 5,  # makes thins a bit faster
-            "team_view_distance": (5, 5, 5),  # no bonus vision for red
-            "team_shoot_range": (4, 4, 4),
-            "starting_locations": "random",  # random start locations
-            "team_shoot_timeout": (5, 5, 5)  # green is much slower at shooting
-        },
-
-        "wolfa": {
+        "wolf_a": {
             "description": "A wolf among the sheep",
             "map_width": 32,
             "map_height": 32,
@@ -561,7 +171,7 @@ class RescueTheGeneralScenario():
         },
 
         # two wolves
-        "wolfb": {
+        "wolf_b": {
             "description": "A wolf among the sheep",
             "map_width": 32,
             "map_height": 32,
@@ -587,7 +197,7 @@ class RescueTheGeneralScenario():
         },
 
         # larger map
-        "wolfc": {
+        "wolf_c": {
             "description": "A wolf among the sheep",
             "map_width": 48,
             "map_height": 48,
@@ -605,53 +215,6 @@ class RescueTheGeneralScenario():
             "battle_royale": True,  # removes general, and ends game if all green players are killed, or
             # if green eliminates red players and harvests all trees
             "zero_sum": True,
-            "points_for_kill": np.asarray((  # loose a point for self kill, gain one for other team kill
-                (-1, +3.33, +1),
-                (+1, -1, +1),
-                (+1, +1, -1),
-            ))
-        },
-
-        "5p": {
-            "description": "A five player game",
-            "map_width": 48,
-            "map_height": 48,
-            "team_counts": (1, 2, 2),
-            "n_trees": 18,
-            "reward_per_tree": 0.5,
-            "hidden_roles": "all",
-            "timeout_mean": 400,  # make sure games don't last too long, 400 is plenty of time for green
-            # to harvest all the trees
-            "max_view_distance": 5,  # makes things a bit faster having smaller vision
-            "team_shoot_damage": (10, 5, 5),
-            "team_view_distance": (5, 5, 5),  # no bonus vision for red
-            "team_shoot_range": (5, 5, 5),
-            "starting_locations": "together",  # random start locations
-            "team_shoot_timeout": (20, 20, 20),
-            "enable_voting": False,
-            "voting_button": False,          # place a voting button at the start
-        },
-
-        "wolf_sheep_nv": {
-            "description": "A wolf among the sheep, no voting",
-            "map_width": 32,
-            "map_height": 32,
-            "team_counts": (1, 3, 0),
-            "n_trees": 18,
-            "reward_per_tree": 0.5,
-            "hidden_roles": "all",
-            "timeout_mean": 400,  # make sure games don't last too long, 400 is plenty of time for green
-            # to harvest all the trees
-            "max_view_distance": 5,  # makes things a bit faster having smaller vision
-            "team_view_distance": (5, 5, 5),
-            "team_shoot_damage": (10, 5, 5),
-            "team_shoot_range": (5, 5, 5),
-            "starting_locations": "together",  # random start locations
-            "team_shoot_timeout": (20, 20, 20),
-            "enable_voting": False,
-            "zero_sum": True,
-            "battle_royale": True,  # removes general, and ends game if all green players are killed, or
-            # if green eliminates red players and harvests all trees
             "points_for_kill": np.asarray((  # loose a point for self kill, gain one for other team kill
                 (-1, +3.33, +1),
                 (+1, -1, +1),
@@ -692,123 +255,6 @@ class RescueTheGeneralScenario():
             "reward_per_tree": 1,
             "timeout_mean": 1000
         },
-
-        "mem0": {
-            "description": "A test to make sure memory works.",
-            "map_width": 24,
-            "map_height": 24,
-            "team_counts": (2, 0, 0),
-            "max_view_distance": 5,
-            "team_view_distance": (5, 5, 5),
-            "bonus_actions": True,
-            "bonus_actions_delay": 0,
-            "timeout_mean": 200,
-            "player_initial_health": 9999,
-            "general_initial_health": 9999, # game won't end until timeout
-        },
-
-        "mem1": {
-            "description": "A test to make sure memory works.",
-            "map_width": 24,
-            "map_height": 24,
-            "team_counts": (2, 0, 0),
-            "max_view_distance": 5,
-            "team_view_distance": (5, 5, 5),
-            "bonus_actions": True,
-            "bonus_actions_delay": 1,
-            "timeout_mean": 200,
-            "player_initial_health": 9999,
-            "general_initial_health": 9999,  # game won't end until timeout
-        },
-
-        "mem2": {
-            "description": "A test to make sure memory works.",
-            "map_width": 24,
-            "map_height": 24,
-            "team_counts": (2, 0, 0),
-            "max_view_distance": 5,
-            "team_view_distance": (5, 5, 5),
-            "bonus_actions": True,
-            "bonus_actions_delay": 2,
-            "timeout_mean": 200,
-            "player_initial_health": 9999,
-            "general_initial_health": 9999,  # game won't end until timeout
-        },
-
-        "mem2b": {
-            "description": "A test to make sure memory works.",
-            "map_width": 24,
-            "map_height": 24,
-            "team_counts": (2, 0, 0),
-            "max_view_distance": 5,
-            "team_view_distance": (5, 5, 5),
-            "bonus_actions": True,
-            "bonus_actions_one_at_a_time": True,
-            "bonus_actions_delay": 2,
-            "timeout_mean": 200,
-            "player_initial_health": 9999,
-            "general_initial_health": 9999,  # game won't end until timeout
-        },
-
-        "mem4": {
-            "description": "A test to make sure memory works.",
-            "map_width": 24,
-            "map_height": 24,
-            "team_counts": (2, 0, 0),
-            "max_view_distance": 5,
-            "team_view_distance": (5, 5, 5),
-            "bonus_actions": True,
-            "bonus_actions_delay": 4,
-            "timeout_mean": 200,
-            "player_initial_health": 9999,
-            "general_initial_health": 9999,  # game won't end until timeout
-        },
-
-        "mem4b": {
-            "description": "A test to make sure memory works.",
-            "map_width": 24,
-            "map_height": 24,
-            "team_counts": (2, 0, 0),
-            "max_view_distance": 5,
-            "team_view_distance": (5, 5, 5),
-            "bonus_actions": True,
-            "bonus_actions_one_at_a_time": True,
-            "bonus_actions_delay": 4,
-            "timeout_mean": 200,
-            "player_initial_health": 9999,
-            "general_initial_health": 9999,  # game won't end until timeout
-        },
-
-        "mem10": {
-            "description": "A test to make sure memory works.",
-            "map_width": 24,
-            "map_height": 24,
-            "team_counts": (2, 0, 0),
-            "max_view_distance": 5,
-            "team_view_distance": (5, 5, 5),
-            "bonus_actions": True,
-            "bonus_actions_delay": 10,
-            "timeout_mean": 200,
-            "player_initial_health": 9999,
-            "general_initial_health": 9999,  # game won't end until timeout
-        },
-
-        # the idea here is to try and learn the other players identity
-        "royale": {
-            "description": "Red vs Blue, two soldiers each, in hidden roles battle royale.",
-            "map_width": 24,
-            "map_height": 24,
-            "team_counts": (2, 0, 2),
-            "n_trees": 0,
-            "hidden_roles": "all",
-            "battle_royale": True,
-            "points_for_kill": np.asarray((  # loose a point for self kill, gain one for other team kill
-                (-1, +1, +1),
-                (+1, -1, +1),
-                (+1, +1, -1),
-            )),
-            "reveal_team_on_death": True
-        }
     }
 
     # add training verisons
