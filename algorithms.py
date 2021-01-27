@@ -457,7 +457,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         data = torch.load(filename)
 
-        self.t = data['t']
+        self.t = data['step']
         self.policy_model.load_state_dict(data['pm_state_dict'])
         self.pm_optimizer.load_state_dict(data['pm_optimizer_state_dict'])
         if self.uses_deception_model:

@@ -4,8 +4,10 @@ Fight agents against eachother, and against scripted responses
 
 from typing import List, Union
 from algorithms import PMAlgorithm
-from train import make_env
+from support import make_env, make_algo, Config
 from marl_env import MultiAgentVecEnv
+import rescue
+import pickle
 
 import ast
 import os
@@ -21,60 +23,65 @@ class Controller():
     """
     pass
 
-def load_checkpoint(path, epoch:Union[int, None]=None):
+def load_checkpoint(path) -> PMAlgorithm:
     """
     Loads a model from a checkpoint file (.pt) and returns it
     :param path:
     :return:
     """
+    with open(os.path.join(os.path.split(path)[0], 'config.txt'), 'r') as f:
+        kwargs = ast.literal_eval(f.read())
 
-    with open(os.path.join(path, 'config.txt'), 'rb') as f:
-        kwargs = ast.literal_eval(f.readlines())
-    algo = PMAlgorithm(**kwargs)
+    scenario = kwargs["eval_scenarios"][0][0]
 
-    if epoch is not None:
-        epoch_str = f'_{epoch}_M'
-    else:
-        epoch_str = ''
-    algo.load(os.path.join(path, f'model{epoch_str}.pt'))
+    kwargs["log_folder"] = '.'
+    kwargs["train_scenarios"] = scenario
+    kwargs["eval_scenarios"] = scenario
 
+    config = Config()
+    config.setup(kwargs)
 
-def play_game(env: MultiAgentVecEnv, red_controller, green_controller, blue_controller):
-    """
-    Plays a game with the given controllers. The environment is vectorized so multiple games can be played in parallel.
-    Returns the outcome of the game. Optionally a video can be recorded.
-    :param env:
-    :param red_controller:
-    :param green_controller:
-    :param blue_controller:
-    :return:
-    """
-    pass
+    vec_env = make_env(scenario, config.parallel_envs)
+    algo = make_algo(vec_env, config)
 
-def run_arena(controllers: List[Controller]):
-    """
-    Run an arena with the given controllers.
+    algo.load(path)
+    return algo
 
-    Each controller is run against an equal mixture of the other controllers,
-    For red and blue their pairwise average scores are recorded, as well as their overall average score.
+# def play_game(env: MultiAgentVecEnv, red_controller, green_controller, blue_controller):
+#     """
+#     Plays a game with the given controllers. The environment is vectorized so multiple games can be played in parallel.
+#     Returns the outcome of the game. Optionally a video can be recorded.
+#     :param env:
+#     :param red_controller:
+#     :param green_controller:
+#     :param blue_controller:
+#     :return:
+#     """
+#     pass
 
-    :param controlers:
-    :return: average score for each controler, and pairwise scores for each red/blue combination
-    """
+# def run_arena(controllers: List[Controller]):
+#     """
+#     Run an arena with the given controllers.
+#
+#     Each controller is run against an equal mixture of the other controllers,
+#     For red and blue their pairwise average scores are recorded, as well as their overall average score.
+#
+#     :param controlers:
+#     :return: average score for each controler, and pairwise scores for each red/blue combination
+#     """
+#
+#     red_controllers = []
+#     green_controllers = []
+#     blue_controllers = []
+#
+#     env = ...
+#
+#     for red in red_controllers:
+#         for blue in blue_controllers:
+#             for green in green_controllers:
+#                 result[(red, blue)] += play_game(env, red, green, blue)
 
-    red_controllers = []
-    green_controllers = []
-    blue_controllers = []
-
-    env = ...
-
-    for red in red_controllers:
-        for blue in blue_controllers:
-            for green in green_controllers:
-                result[(red, blue)] += play_game(env, red, green, blue)
-
-
-def run_evaluation(output_path, algorithm:PMAlgorithm, scenario:str, trials=100,):
+def run_evaluation(algorithm:PMAlgorithm, scenario:str, log_path:str, trials=100):
     """
     :param model_path: path to model
     :param scenario: name of scenario to test on.
@@ -83,8 +90,8 @@ def run_evaluation(output_path, algorithm:PMAlgorithm, scenario:str, trials=100,
 
     # run them all in parallel at once and make sure we get exactly 'trials' number of environments by forcing
     # them to only once (no reset)
-    os.makedirs(output_path, exist_ok=True)
-    vec_env = make_env(scenario, name="eval", log_path=output_path, parallel_envs=trials)
+    os.makedirs(log_path, exist_ok=True)
+    vec_env = make_env(scenario, trials, name="eval", log_path=log_path)
     env_obs = vec_env.reset()
 
     rnn_states = algorithm.get_initial_rnn_state(vec_env.num_envs)
@@ -114,13 +121,10 @@ def run_evaluation(output_path, algorithm:PMAlgorithm, scenario:str, trials=100,
             if env.round_outcome != "":
                 results[i] = env.round_team_scores
 
-    # collate results
-    red_score = np.mean([r for r, g, b in results])
-    green_score = np.mean([g for r, g, b in results])
-    blue_score = np.mean([b for r, g, b in results])
-
     # make sure results have be written to env log
     rescue.flush_logs()
+
+    return results
 
 
 def get_checkpoints(path):
@@ -129,7 +133,14 @@ def get_checkpoints(path):
     :param path:
     :return:
     """
-    pass
+    results = []
+    for f in os.listdir(path):
+        if f.endswith('.pt'):
+            parts = f.split('_')
+            if len(parts) == 3:
+                epoch = int(parts[1])
+                results.append((epoch, os.path.join(path, f)))
+    return results
 
 def evaluate_vs_self(model_path, scenario):
     """
@@ -140,38 +151,69 @@ def evaluate_vs_self(model_path, scenario):
     :return:
     """
 
-    sub_folder = os.path.join(model_path, 'arena')
+    log_folder = os.path.join(model_path, 'arena')
 
     results = []
 
     for epoch, checkpoint_path in get_checkpoints(model_path):
+        print(f"[{epoch}]: {checkpoint_path}")
         algo = load_checkpoint(checkpoint_path)
-        result = run_evaluation(sub_folder, algo, scenario)
+        result = run_evaluation(algo, scenario, log_folder)
         results.append((epoch, result))
+        print(f" -{get_mean_scores(result)}")
+
+        # dump results as we go
+        save_and_plot(results, log_folder, "Vs Self")
 
     return results
+
+def get_mean_scores(result_set):
+    """
+    Returns mean scores for each team
+    :param result_set: A list of tuples (r,g,b) for each game played.
+    :return: tuple (r,g,b) containing mean_scores
+    """
+    r = np.mean([r for r, g, b in result_set])
+    g = np.mean([g for r, g, b in result_set])
+    b = np.mean([b for r, g, b in result_set])
+    return r,g,b
+
 
 def save_and_plot(results, output_folder, title):
     """
     Save a copy of the results and plot
-    :param results:
+    :param results: A list of tuples (epoch, result), where result is a list of r,g,b scores
     """
-    xs = [epoch for epoch, (r,g,b) in results]
-    y_r = [r for epoch, (r,g,b) in results]
-    y_g = [g for epoch, (r, g, b) in results]
-    y_b = [b for epoch, (r, g, b) in result]
+
+    y_r = []
+    y_g = []
+    y_b = []
+
+    for epoch, result_set in results:
+        r,g,b = get_mean_scores(result_set)
+        y_r.append(r)
+        y_g.append(g)
+        y_b.append(b)
+
+
+    xs = [epoch for epoch, result_set in results]
 
     plt.figure(figsize=(8, 6))
 
     plt.title(title)
-    plt.plot(xs, y_r)
-    plt.plot(xs, y_g)
-    plt.plot(xs, y_b)
+    plt.grid(True)
+    plt.plot(xs, y_r, c='red')
+    plt.plot(xs, y_g, c='green')
+    plt.plot(xs, y_b, c='blue')
 
     plt.xlabel("Epoch")
     plt.ylabel("Score")
 
     plt.savefig(os.path.join(output_folder, f'{title}.png'))
+
+    with open(os.path.join(output_folder, 'results.dat'), 'wb') as f:
+        pickle.dump(results, f)
+
 
 
 def main():
@@ -180,14 +222,10 @@ def main():
     :return:
     """
 
-    run_path = './run/exp49a_alt_off'
-
-    # create an environment with 100 games for testing
-    vec_env = make_env('alta', 100)
+    run_path = './run/rescue410a_off [10ddd00d]'
 
     # evaluate against ourself over time
-    save_and_plot(evaluate_vs_self(run_path, 'alta'), run_path, 'Vs Self')
-
+    evaluate_vs_self(run_path, 'rescue_a')
 
     # evaluate against each other over time (with green being 50/50)
 
@@ -195,4 +233,6 @@ def main():
 
     # run arena at various points in time
 
+if __name__ == "__main__":
+    main()
 
