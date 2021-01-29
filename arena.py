@@ -14,7 +14,7 @@ Fight agents against eachother, and against scripted responses
 # for analysis start at 12:28... ran for ?? epochs, and took ?? minutes. (this was for just 8 trials though...)
 
 DEVICE = "cuda:1"
-TRIALS = 10 # stub should be 100
+TRIALS = 100
 
 from typing import List, Union
 import strategies
@@ -385,6 +385,10 @@ def get_mean_scores(result_set):
     b = np.mean([b for r, g, b in result_set])
     return r,g,b
 
+def load_results(output_folder, title):
+    with open(os.path.join(output_folder, f'results_{title}.dat'), 'wb') as f:
+        pickle.dump(results, f)
+
 
 def save_and_plot(results, output_folder, title):
     """
@@ -425,8 +429,8 @@ def save_and_plot(results, output_folder, title):
 
 def run_rescue_arena():
 
-    run_path_a = './run/rescue_db00'
-    run_path_b = './run/rescue_db10'
+    run_path_a = './run/rescue411_db00 [b8413538]'
+    run_path_b = './run/rescue411_db10 [cb3afd9c]'
 
     log_folder = './run/arena_rescue'
 
@@ -448,26 +452,26 @@ def run_rescue_arena():
 
     # evaluate against each other over time (with green being 50/50)
     evaluate_in_parallel(
-        run_path_a, [run_path_a, run_path_b], run_path_b,
+        run_path_a, [run_path_a, run_path_b], [run_path_a, run_path_b],
         scenario='rescue',
         log_folder=log_folder,
-        title="red_db00_vs_blue_db10",
+        title="red_db00_vs_mixture",
         trials=TRIALS
     )
 
     evaluate_in_parallel(
-        run_path_b, [run_path_a, run_path_b], run_path_a,
+        run_path_b, [run_path_a, run_path_b], [run_path_a, run_path_b],
         scenario='rescue',
         log_folder=log_folder,
-        title="red_db10_vs_blue_db00",
+        title="red_db10_vs_mixture",
         trials=TRIALS
     )
 
 
 def run_wolf_arena():
 
-    run_path_a = './run/wolf_db00'
-    run_path_b = './run/wolf_db10'
+    run_path_a = './run/wolf411_db00 [105807a0]'
+    run_path_b = './run/wolf411_db10 [8c8166b0]'
 
     log_folder = './run/arena_wolf'
 
@@ -475,31 +479,80 @@ def run_wolf_arena():
     wander = ScriptedController(strategies.wander, "wander")
     random = ScriptedController(strategies.random, "random")
 
-    # # evaluate against ourself over time
-    # for run_name, run_path in zip(["db00", "db10"], [run_path_a, run_path_b]):
-    #     evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, None, noop]], title=f"{run_name}_self",
-    #                         log_folder=log_folder, trials=TRIALS)
-    #     for script in [wander, random]:
-    #         evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, script, noop]],
-    #                             title=f"{run_name}_green_{script.name}", log_folder=log_folder, trials=TRIALS)
-    #
-    #     # todo, add a nice mixture including some models from specific checkpoints...?
-    #     # wander, rush_general, model_a, model_b, rush_general_cheat
+    # evaluate against ourself over time
+    for run_name, run_path in zip(["db00", "db10"], [run_path_a, run_path_b]):
+        evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, None, noop]], title=f"{run_name}_self",
+                            log_folder=log_folder, trials=TRIALS)
+        for script in [wander, random]:
+            evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, script, noop]],
+                                title=f"{run_name}_green_{script.name}", log_folder=log_folder, trials=TRIALS)
+
+        # todo, add a nice mixture including some models from specific checkpoints...?
+        # wander, rush_general, model_a, model_b, rush_general_cheat
 
     # evaluate against each other over time (with green being 50/50)
-    # evaluate_in_parallel(
-    #     run_path_a, run_path_b, None,
-    #     scenario='wolf',
-    #     log_folder=log_folder,
-    #     title="red_db00_vs_green_db10",
-    #     trials=TRIALS
-    # )
-
     evaluate_in_parallel(
-        run_path_b, run_path_a, None,
+        run_path_a, [run_path_a, run_path_b], None,
         scenario='wolf',
         log_folder=log_folder,
-        title="red_db10_vs_green_db00",
+        title="red_db00_vs_mixture",
+        trials=TRIALS
+    )
+
+    evaluate_in_parallel(
+        run_path_b, [run_path_a, run_path_b], None,
+        scenario='wolf',
+        log_folder=log_folder,
+        title="red_db10_vs_mixture",
+        trials=TRIALS
+    )
+
+
+def run_wolf2_arena():
+
+    run_path_a = './run/wolf412_db00 [667a7fe9]'
+    run_path_b = './run/wolf412_db03 [869dd8d2]'
+    run_path_c = './run/wolf412_db10 [83b7526f]'
+
+    log_folder = './run/arena_wolf2'
+
+    noop = NoopController()
+    wander = ScriptedController(strategies.wander, "wander")
+    random = ScriptedController(strategies.random, "random")
+
+    # evaluate against ourself over time
+    for run_name, run_path in zip(["db00", "db03", "db10"], [run_path_a, run_path_b, run_path_c]):
+        evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, None, noop]], title=f"{run_name}_self",
+                            log_folder=log_folder, trials=TRIALS)
+        for script in [wander, random]:
+            evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, script, noop]],
+                                title=f"{run_name}_green_{script.name}", log_folder=log_folder, trials=TRIALS)
+
+        # todo, add a nice mixture including some models from specific checkpoints...?
+        # wander, rush_general, model_a, model_b, rush_general_cheat
+
+    # evaluate against each other over time (with green being 50/50)
+    evaluate_in_parallel(
+        run_path_a, [run_path_a, run_path_b, run_path_c], None,
+        scenario='wolf',
+        log_folder=log_folder,
+        title="red_db00_vs_mixture",
+        trials=TRIALS
+    )
+
+    evaluate_in_parallel(
+        run_path_b, [run_path_a, run_path_b, run_path_c], None,
+        scenario='wolf',
+        log_folder=log_folder,
+        title="red_db03_vs_mixture",
+        trials=TRIALS
+    )
+
+    evaluate_in_parallel(
+        run_path_c, [run_path_a, run_path_b, run_path_c], None,
+        scenario='wolf',
+        log_folder=log_folder,
+        title="red_db10_vs_mixture",
         trials=TRIALS
     )
 
@@ -510,7 +563,8 @@ def main():
     :return:
     """
     run_wolf_arena()
-    #run_rescue_arena()
+    run_wolf2_arena()
+    run_rescue_arena()
 
 if __name__ == "__main__":
     main()
