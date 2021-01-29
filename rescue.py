@@ -670,6 +670,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
                 team_rewards[self.TEAM_BLUE] += self.blue_rewards_for_winning
 
         # zero out rewards for teams not involved in game
+        # makes sure does not affect the zero sum calculation
         for team in range(3):
             if self.scenario.team_counts[team] == 0:
                 team_rewards[team] = 0
@@ -677,9 +678,12 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # apply zero sum rules
         if self.scenario.zero_sum:
             new_team_rewards = team_rewards.copy()
-            new_team_rewards[0] -= (team_rewards[1] + team_rewards[2])
-            new_team_rewards[1] -= (team_rewards[0] + team_rewards[2])
-            new_team_rewards[2] -= (team_rewards[0] + team_rewards[1])
+            if self.scenario.team_counts[0] > 0:
+                new_team_rewards[0] -= (team_rewards[1] + team_rewards[2])
+            if self.scenario.team_counts[1] > 0:
+                new_team_rewards[1] -= (team_rewards[0] + team_rewards[2])
+            if self.scenario.team_counts[2] > 0:
+                new_team_rewards[2] -= (team_rewards[0] + team_rewards[1])
             team_rewards = new_team_rewards
 
         # ----------------------------------------
