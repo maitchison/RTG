@@ -92,86 +92,86 @@ class RTG_ScriptedEnv(MultiAgentEnv, Wrapper):
     def outcome(self):
         return self.env.round_outcome
 
-def stand_still(player:RTG_Player, env:RescueTheGeneralEnv):
+def stand_still(player:RTG_Player):
     """
     Agent presses random keys
     :return: the action
     """
     return rtg.ACTION_NOOP
 
-def random(player:RTG_Player, env:RescueTheGeneralEnv):
+def random(player:RTG_Player):
     """
     Agent presses random keys
     :return: the action
     """
-    return np.random.choice(range(env.action_space.n))
+    return np.random.choice(range(player.game.action_space.n))
 
-def wander(player:RTG_Player, env:RescueTheGeneralEnv):
+def wander(player:RTG_Player):
     """
     Agent wanders around map
     :return: the action
     """
     return np.random.choice(list(rtg.MOVE_ACTIONS))
 
-def stand_and_shoot(player:RTG_Player, env:RescueTheGeneralEnv):
+def stand_and_shoot(player:RTG_Player):
     """
     Agent wanders around map
     :return: the action
     """
     return np.random.choice(rtg.SHOOT_ACTIONS)
 
-def save_general(player:RTG_Player, env:RescueTheGeneralEnv):
+def save_general(player:RTG_Player):
     """
     Agent rushes to general to save them
     :return: the action
     """
-    assert player.team == env.TEAM_BLUE
+    assert player.team == player.game.TEAM_BLUE
 
     # move towards general, but offset a little
     # note right now this will typically only move the general left
-    dx = player.x - env.general_location[0]
-    dy = player.y - env.general_location[1]
+    dx = player.x - player.game.general_location[0]
+    dy = player.y - player.game.general_location[1]
 
     # we are standing left of general
     if (dx, dy) == (-1, 0):
         return rtg.ACTION_ACT
     else:
-        return move_to(player, env.general_location[0]-1, env.general_location[1])
+        return move_to(player, player.game.general_location[0]-1, player.game.general_location[1])
 
-def rush_general_cheat(player:RTG_Player, env:RescueTheGeneralEnv):
+def rush_general_cheat(player:RTG_Player):
     """
     Agent rushes to general to kill them. (not this agent cheats)
     :return: the action
     """
-    assert player.team != env.TEAM_BLUE
+    assert player.team != player.game.TEAM_BLUE
 
-    shoot_action = fire_at(player, env, *env.general_location)
+    shoot_action = fire_at(player, *player.game.general_location)
     if shoot_action != rtg.ACTION_NOOP:
         return shoot_action
     else:
-        return move_to(player, *env.general_location)
+        return move_to(player, *player.game.general_location)
 
-def rush_general(player:RTG_Player, env:RescueTheGeneralEnv):
+def rush_general(player:RTG_Player):
     """
     Agent moves randomly until they see the general they they rush / shoot them
     :return: the action
     """
-    assert player.team != env.TEAM_BLUE
+    assert player.team != player.game.TEAM_BLUE
 
-    dx = player.x - env.general_location[0]
-    dy = player.y - env.general_location[1]
+    dx = player.x - player.game.general_location[0]
+    dy = player.y - player.game.general_location[1]
 
     general_in_vision_range = abs(dx) + abs(dy) <= player.view_distance
-    general_covered = env.player_at_pos(*env.general_location, include_dead=True) is not None
+    general_covered = player.game.player_at_pos(*player.game.general_location, include_dead=True) is not None
 
     if general_in_vision_range and not general_covered:
-        return rush_general_cheat(player, env)
+        return rush_general_cheat(player)
     else:
         # pick a random direction to travel in
         if "rush_general_destination" not in player.custom_data:
             player.custom_data["rush_general_destination"] = (
-                np.random.randint(0, env.scenario.map_width),
-                np.random.randint(0, env.scenario.map_height)
+                np.random.randint(0, player.game.scenario.map_width),
+                np.random.randint(0, player.game.scenario.map_height)
             )
             player.custom_data["rush_general_timer"] = 100
 
@@ -188,7 +188,7 @@ def rush_general(player:RTG_Player, env:RescueTheGeneralEnv):
 # Helper functions
 # -------------------------------------------------
 
-def fire_at(player: RTG_Player, env: RescueTheGeneralEnv, target_x, target_y):
+def fire_at(player: RTG_Player, target_x, target_y):
     """
     Returns action to shoot at target, or no-op if target can not be hit.
     :param player:
@@ -241,7 +241,7 @@ def move_to(player:RTG_Player, target_x, target_y):
 # Not done yet
 # -------------------------------------------------
 
-def seek_and_destroy(player, env):
+def seek_and_destroy(player):
     """
     Roam around map looking for enemy players to destroy
     :return:
@@ -257,7 +257,7 @@ def seek_and_destroy(player, env):
 
     pass
 
-def follow(player, env):
+def follow(player):
     """
     Agent tries to follow other agents
     :return: the action
@@ -265,7 +265,7 @@ def follow(player, env):
     pass
 
 
-def avoid(player_vision, env):
+def avoid(player_vision):
     """
     Agent attempts to avoid other soldiers
     :return: the action

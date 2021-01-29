@@ -455,7 +455,7 @@ class PMAlgorithm(MarlAlgorithm):
         :return: None
         """
 
-        data = torch.load(filename)
+        data = torch.load(filename, map_location=self.policy_model.device)
 
         self.t = data['step']
         self.policy_model.load_state_dict(data['pm_state_dict'])

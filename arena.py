@@ -2,12 +2,30 @@
 Fight agents against eachother, and against scripted responses
 """
 
+# on CPU we have 32.2s for 16 trials.
+# on CUDA:0 we have 16.0s for 16 trials. (was running 2 jobs)
+# on CUDA:1 we have 13.0s for 16 trials. (was running 1 job)
+
+# on CUDA:1 we have 61.7s for 100 trials. (was running 1 job)
+
+# this means these results will take some time to generate (we run about 0.6s per trail, might get quicker when
+# games last for less time.
+
+# for analysis start at 12:28... ran for ?? epochs, and took ?? minutes. (this was for just 8 trials though...)
+
+DEVICE = "cuda:1"
+TRIALS = 10 # stub should be 100
+
 from typing import List, Union
-from algorithms import PMAlgorithm
+import strategies
 from support import make_env, make_algo, Config
-from marl_env import MultiAgentVecEnv
+
+import itertools
+
 import rescue
 import pickle
+import time
+import math
 
 import ast
 import os
@@ -17,75 +35,122 @@ import matplotlib.pyplot as plt
 
 import numpy as np
 
-class Controller():
+class BaseController():
     """
-    Controller for game, plays one side only
+    Controller for game, plays one side only, must maintain it's rnn states
     """
-    pass
 
-def load_checkpoint(path) -> PMAlgorithm:
+    def __init__(self, name="controller"):
+        self.players = None
+        self.name = name
+
+    def forward(self, observations):
+        """
+        Returns actions for each agent.
+        :param observations:
+        :return:
+        """
+        pass
+
+    def reset(self):
+        pass
+
+    def setup(self, players):
+        """
+        Assigns a player to each agent in the controller group
+        :param players:
+        :return:
+        """
+        roles = [player.team for player in players]
+        assert np.all(np.mean(roles) == roles), "Players in a controller group should all be on the same team."
+        self.players = players
+
+    def __repr__(self):
+        return self.name
+
+class ModelController(BaseController):
     """
-    Loads a model from a checkpoint file (.pt) and returns it
-    :param path:
-    :return:
+    Uses POAlgorithm to control agents for one role only
     """
-    with open(os.path.join(os.path.split(path)[0], 'config.txt'), 'r') as f:
-        kwargs = ast.literal_eval(f.read())
 
-    scenario = kwargs["eval_scenarios"][0][0]
+    def __init__(self, algorithm):
+        super().__init__(algorithm.name)
+        self.rnn_states = None
+        self.n_agents = 0
+        self.algorithm = algorithm
 
-    kwargs["log_folder"] = '.'
-    kwargs["train_scenarios"] = scenario
-    kwargs["eval_scenarios"] = scenario
+    def forward(self, observations):
+        """
+        Returns actions for each agent.
+        :param observations:
+        :return:
+        """
 
-    config = Config()
-    config.setup(kwargs)
+        assert self.players is not None, "Please call setup to assign players before forward."
 
-    vec_env = make_env(scenario, config.parallel_envs)
-    algo = make_algo(vec_env, config)
+        roles = torch.ones([self.n_agents], dtype=torch.long) * self.team
 
-    algo.load(path)
-    return algo
+        model_output, new_rnn_states = self.algorithm.forward(
+            obs=observations,
+            rnn_states=self.rnn_states,
+            roles=roles
+        )
+        self.rnn_states[:] = new_rnn_states
 
-# def play_game(env: MultiAgentVecEnv, red_controller, green_controller, blue_controller):
-#     """
-#     Plays a game with the given controllers. The environment is vectorized so multiple games can be played in parallel.
-#     Returns the outcome of the game. Optionally a video can be recorded.
-#     :param env:
-#     :param red_controller:
-#     :param green_controller:
-#     :param blue_controller:
-#     :return:
-#     """
-#     pass
+        log_policy = model_output["log_policy"].detach().cpu().numpy()
+        actions = utils.sample_action_from_logp(log_policy)
+        return actions
 
-# def run_arena(controllers: List[Controller]):
-#     """
-#     Run an arena with the given controllers.
-#
-#     Each controller is run against an equal mixture of the other controllers,
-#     For red and blue their pairwise average scores are recorded, as well as their overall average score.
-#
-#     :param controlers:
-#     :return: average score for each controler, and pairwise scores for each red/blue combination
-#     """
-#
-#     red_controllers = []
-#     green_controllers = []
-#     blue_controllers = []
-#
-#     env = ...
-#
-#     for red in red_controllers:
-#         for blue in blue_controllers:
-#             for green in green_controllers:
-#                 result[(red, blue)] += play_game(env, red, green, blue)
+    def reset(self):
+        self.rnn_states *= 0
 
-def run_evaluation(algorithm:PMAlgorithm, scenario:str, log_path:str, trials=100):
+    def setup(self, players):
+        super().setup(players)
+        self.n_agents = len(players)
+        self.rnn_states = self.algorithm.get_initial_rnn_state(self.n_agents)
+        self.team = players[0].team
+
+class ScriptedController(BaseController):
     """
-    :param model_path: path to model
-    :param scenario: name of scenario to test on.
-    :return: a list of tuples containing trials game scores.
+    Uses scripted response to control agents
+    """
+
+    def __init__(self, strategy, name="script"):
+        super().__init__(name)
+        self.strategy = strategy
+
+    def forward(self, observations):
+        """
+        Returns actions for each agent. Ignores observation and uses player directly.
+        :param observations:
+        :return:
+        """
+
+        assert self.players is not None, "Please call setup to assign players before forward."
+
+        # strategies ignore observations...
+        actions = []
+        for player in self.players:
+            actions.append(self.strategy(player))
+        return np.asarray(actions)
+
+
+
+
+def run_evaluation(
+        controllers: List[BaseController],  # controllers for each team
+        scenario:str,
+        log_path:str,
+        trials=100,
+    ):
+    """
+    Evalulate the performance of controllers in a given environment.
+
+    :param controllers: list of tuples (red,green,blue)
+    :param scenario: name of scenario to evaluate on
+    :param log_path: path to log to 
+    :param trials: number of games to run in evaluation
+    :return: 
     """
 
     # run them all in parallel at once and make sure we get exactly 'trials' number of environments by forcing
@@ -94,25 +159,27 @@ def run_evaluation(algorithm:PMAlgorithm, scenario:str, log_path:str, trials=100
     vec_env = make_env(scenario, trials, name="eval", log_path=log_path)
     env_obs = vec_env.reset()
 
-    rnn_states = algorithm.get_initial_rnn_state(vec_env.num_envs)
-    env_terminals = np.zeros([len(rnn_states)], dtype=np.bool)
+    # setup the controllers
+    for team, controller in enumerate(controllers):
+        controller.setup([player for player in vec_env.players if player.team == team])
+        controller.reset()
+
+    env_terminals = np.zeros([len(vec_env.players)], dtype=np.bool)
     vec_env.run_once = True
+
+    roles = vec_env.get_roles()
+    actions = np.zeros_like(roles)
 
     # play the game...
     results = [(0, 0, 0) for _ in range(trials)]
     while not all(env_terminals):
 
-        with torch.no_grad():
-            roles = vec_env.get_roles()
-            model_output, new_rnn_states = algorithm.forward(
-                obs=torch.from_numpy(env_obs),
-                rnn_states=rnn_states,
-                roles=torch.from_numpy(roles)
-            )
-            rnn_states[:] = new_rnn_states
+        actions *= 0
 
-            log_policy = model_output["log_policy"].detach().cpu().numpy()
-            actions = utils.sample_action_from_logp(log_policy)
+        # split players by team, and assign actions.
+        for team, controller in enumerate(controllers):
+            role_filter = (roles == team)
+            actions[role_filter] = controller.forward(torch.from_numpy(env_obs)[role_filter])
 
         env_obs, env_rewards, env_terminals, env_infos = vec_env.step(actions)
 
@@ -142,30 +209,154 @@ def get_checkpoints(path):
                 results.append((epoch, os.path.join(path, f)))
     return results
 
-def evaluate_vs_self(model_path, scenario):
+def load_algorithm(model_path, scenario):
+
+    # setup our algorithm
+    with open(os.path.join(model_path, 'config.txt'), 'r') as f:
+        kwargs = ast.literal_eval(f.read())
+
+    kwargs["log_folder"] = '.'
+    kwargs["train_scenarios"] = scenario
+    kwargs["eval_scenarios"] = scenario
+    kwargs["device"] = DEVICE
+
+    config = Config()
+    config.setup(kwargs)
+    vec_env = make_env(scenario, parallel_envs=1) # parallel envs is for training only
+    algo = make_algo(vec_env, config)
+    return algo
+
+def evaluate_vs_mixture(model_path, scenario, controller_sets: List, log_folder, title="mixture", trials=100):
     """
-    Evaluate model against itself over time in given environment
+    Evaluate model over time vs each set of controllers in list
 
     :param model_path:
     :param scenario:
-    :return:
+    :param controller_sets: A list of controllers for each team (controller_red, controller_green, controller_blue),
+        any controller that is none will be replaced with the checkpoint controller
+    :param trials: number of games to run per controller set per checkpoint.
+    :return: List of game outcomes for each checkpoint
     """
 
-    log_folder = os.path.join(model_path, 'arena')
+    algo = load_algorithm(model_path, scenario)
 
     results = []
 
     for epoch, checkpoint_path in get_checkpoints(model_path):
         print(f"[{epoch}]: {checkpoint_path}")
-        algo = load_checkpoint(checkpoint_path)
-        result = run_evaluation(algo, scenario, log_folder)
-        results.append((epoch, result))
-        print(f" -{get_mean_scores(result)}")
+        algo.load(checkpoint_path)
+
+        # run against each set of controllers, but override red to use the checkpoint model.
+
+        for controllers in controller_sets:
+            start_time = time.time()
+            # override controllers that are none
+            controllers = [controller if controller is not None else ModelController(algo) for controller in controllers]
+            result = run_evaluation(
+                controllers=controllers,
+                scenario=scenario,
+                log_path=log_folder,
+                trials=trials
+            )
+            results.append((epoch, result))
+            time_taken = time.time() - start_time
+            print(f" -{get_mean_scores(result)} (in {time_taken:.1f}s)")
 
         # dump results as we go
-        save_and_plot(results, log_folder, "Vs Self")
+        save_and_plot(results, log_folder, title)
 
     return results
+
+
+def evaluate_in_parallel(
+        model_paths_red: Union[str, List[str]],
+        model_paths_green: Union[str, List[str]],
+        model_paths_blue: Union[str, List[str]],
+        scenario,
+        log_folder,
+        title="mixture",
+        trials=100):
+    """
+    Loads models for red, green, and blue from checkpoint folders and evaluates them against eachother.
+    Evaluation use the cartesian product of the algorithms lists.
+    If any checkpoint is missing for any model that checkpoint will be skipped for all models.
+
+    :param model_path:
+    :param scenario:
+    :param controller_sets: A list of controllers for each team (controller_red, controller_green, controller_blue),
+        any controller that is none will be replaced with the checkpoint controller
+    :param trials: number of games to run per controller set per checkpoint.
+    :return: List of game outcomes for each checkpoint
+    """
+
+    def upgrade_str_to_list(x):
+        return [x] if type(x) is str else x
+
+    model_paths_red = upgrade_str_to_list(model_paths_red)
+    model_paths_green = upgrade_str_to_list(model_paths_green)
+    model_paths_blue = upgrade_str_to_list(model_paths_blue)
+
+    # load algorithms
+    algorithm_paths = model_paths_red + model_paths_green + model_paths_blue
+
+    algorithms = []
+    for algorithm_path in algorithm_paths:
+        algo = load_algorithm(algorithm_path, scenario)
+        algo.name = os.path.split(algorithm_path)[-1]
+        algorithms.append(algo)
+
+    results = []
+
+    # get checkpoints and filter down to only ones that exist in all paths
+    checkpoints_lists = [get_checkpoints(algorithm_path) for algorithm_path in algorithm_paths]
+    good_epochs = None
+    for checkpoint_list in checkpoints_lists:
+        epoch_list = set(epoch for epoch, _ in checkpoint_list)
+        good_epochs = epoch_list if good_epochs is None else good_epochs.intersection(epoch_list)
+
+    checkpoints = []
+    for checkpoint_list in checkpoints_lists:
+        checkpoints.append({})
+        for epoch, path in checkpoint_list:
+            checkpoints[-1][epoch] = path
+
+    for epoch in sorted(good_epochs):
+        print(f"[{epoch}]:")
+
+        # load each algorithm at this given checkpoint
+        for algo, checkpoint in zip(algorithms, checkpoints):
+            algo.load(checkpoint[epoch])
+
+        controllers = [ModelController(algo) for algo in algorithms]
+
+        # create controllers
+        red_controllers = controllers[:len(model_paths_red)]
+        green_controllers = controllers[len(model_paths_red):len(model_paths_red)+len(model_paths_green)]
+        blue_controllers = controllers[len(model_paths_red) + len(model_paths_green):]
+
+        # run evaluation on all combinations
+        epoch_results = []
+        test_sets = list(itertools.product(red_controllers, green_controllers, blue_controllers))
+        for controllers in test_sets:
+            start_time = time.time()
+            # override controllers that are none
+            result = run_evaluation(
+                controllers=list(controllers),
+                scenario=scenario,
+                log_path=log_folder,
+                trials=int(math.ceil(trials / len(test_sets)))
+            )
+            epoch_results += result
+            time_taken = time.time() - start_time
+            print(f" -{get_mean_scores(result)} {controllers} (in {time_taken:.1f}s)")
+
+        results.append((epoch, epoch_results))
+
+        # dump results as we go
+        save_and_plot(results, log_folder, title)
+
+    return results
+
 
 def get_mean_scores(result_set):
     """
@@ -211,7 +402,7 @@ def save_and_plot(results, output_folder, title):
 
     plt.savefig(os.path.join(output_folder, f'{title}.png'))
 
-    with open(os.path.join(output_folder, 'results.dat'), 'wb') as f:
+    with open(os.path.join(output_folder, f'results_{title}.dat'), 'wb') as f:
         pickle.dump(results, f)
 
 
@@ -222,16 +413,43 @@ def main():
     :return:
     """
 
-    run_path = './run/rescue410a_off [10ddd00d]'
+    run_path_a = './run/rescue_db00'
+    run_path_b = './run/rescue_db10'
 
-    # evaluate against ourself over time
-    evaluate_vs_self(run_path, 'rescue_a')
+    log_folder = './run/rescue_arena'
+
+    wander = ScriptedController(strategies.wander, "wander")
+    random = ScriptedController(strategies.random, "random")
+    rush_general = ScriptedController(strategies.rush_general, "rush")
+    rush_general_cheat = ScriptedController(strategies.rush_general_cheat, "rush_cheat")
+
+    # # evaluate against ourself over time
+    # for run_name, run_path in zip(["db00", "db10"], [run_path_a, run_path_b]):
+    #     evaluate_vs_mixture(run_path, 'rescue', controller_sets=[[None, None, None]], title=f"{run_name}_self",
+    #                         log_folder=log_folder, trials=TRIALS)
+    #     for script in [wander, random, rush_general, rush_general_cheat]:
+    #         evaluate_vs_mixture(run_path, 'rescue', controller_sets=[[script, None, None]],
+    #                             title=f"{run_name}_red_{script.name}", log_folder=log_folder, trials=TRIALS)
+    #
+    #     # todo, add a nice mixture including some models from specific checkpoints...?
+    #     # wander, rush_general, model_a, model_b, rush_general_cheat
 
     # evaluate against each other over time (with green being 50/50)
+    # evaluate_in_parallel(
+    #     run_path_a, [run_path_a, run_path_b], run_path_b,
+    #     scenario='rescue',
+    #     log_folder=log_folder,
+    #     title="red_db00_vs_blue_db10",
+    #     trials=TRIALS
+    # )
 
-    # evaluate against scripted responses over time
-
-    # run arena at various points in time
+    evaluate_in_parallel(
+        run_path_b, [run_path_a, run_path_b], run_path_a,
+        scenario='rescue',
+        log_folder='./run/arena',
+        title="red_db10_vs_blue_db00",
+        trials=TRIALS
+    )
 
 if __name__ == "__main__":
     main()

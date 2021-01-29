@@ -59,7 +59,7 @@ MOVE_ACTIONS = {ACTION_MOVE_UP, ACTION_MOVE_DOWN, ACTION_MOVE_LEFT, ACTION_MOVE_
 
 class RTG_Player():
 
-    def __init__(self, index, scenario: RescueTheGeneralScenario):
+    def __init__(self, index, game):
         # the player's index, this is fixed and used to index into the players array, i.e. self.players[id]
         self.index = index        
         # position of player
@@ -69,10 +69,14 @@ class RTG_Player():
         self.team = int()
         self.action = int()
         self.turns_until_we_can_shoot = int()
-        self.scenario = scenario
+        self.game = game
         self.was_hit_this_round = False
         self.invisible = False
         self.custom_data = dict()
+
+    @property
+    def scenario(self):
+        return self.game.scenario
 
     @property
     def team_color(self):
@@ -245,7 +249,7 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         self.vote_cooldown = 0
 
         # create players
-        self.players = [RTG_Player(index, self.scenario) for index in range(self.n_players)]
+        self.players = [RTG_Player(index, self) for index in range(self.n_players)]
 
         self.round_outcome = str()  # outcome of round
         self.game_outcomes = []     # list of outcomes for each round
