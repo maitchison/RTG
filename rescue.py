@@ -602,13 +602,13 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             if self.MAP_TREE not in unique:
                 result_green_victory = True
 
-        if general_is_closer_to_edge:
+        if general_is_closer_to_edge and not self.scenario.battle_royale:
             # give a very small reward for moving general closer to the edge
             small_reward = self.blue_rewards_for_winning / 20 # give 5% of remaining points
             team_rewards[self.TEAM_BLUE] += small_reward
             self.blue_rewards_for_winning -= small_reward # make sure blue always gets the same number of points for winning
 
-        if red_seen_general and not self.red_has_seen_general:
+        if red_seen_general and not self.red_has_seen_general and not self.scenario.battle_royale:
             # partial rewards for red seeing general
             team_rewards[self.TEAM_RED] += 3
             team_rewards[self.TEAM_BLUE] -= 3
@@ -668,6 +668,11 @@ class RescueTheGeneralEnv(MultiAgentEnv):
             elif result_general_rescued:
                 team_rewards[self.TEAM_RED] -= 10
                 team_rewards[self.TEAM_BLUE] += self.blue_rewards_for_winning
+
+        # zero out rewards for teams not involved in game
+        for team in range(3):
+            if self.scenario.team_counts[team] == 0:
+                team_rewards[team] = 0
 
         # apply zero sum rules
         if self.scenario.zero_sum:

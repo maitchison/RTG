@@ -184,7 +184,6 @@ class RescueTheGeneralScenario():
         self.initial_random_kills = 0 # enables random killing of players at the start of the game, can be helpful to make winning viable for a team.
         self.blue_players_near_general_to_get_reward = 1
 
-
         self.players_to_move_general = 1 # number of players required to move the general
         self.red_wins_if_sees_general = False
         self.timeout_penalty = (0,0,0) # score penality for each team if a timeout occurs.
