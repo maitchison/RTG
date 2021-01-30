@@ -271,7 +271,7 @@ class PMAlgorithm(MarlAlgorithm):
         self.intrinsic_reward_propagation = False
         self.normalize_intrinsic_rewards = True
         self.extrinsic_reward_scale = 1.0
-        self.intrinsic_reward_scale = max(deception_bonus)
+        self.intrinsic_reward_scale = max(abs(x) for x in deception_bonus)
         self.log_folder = "."
 
         self.pm_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=learning_rate, eps=adam_epsilon)
@@ -821,7 +821,7 @@ class PMAlgorithm(MarlAlgorithm):
                     self.batch_raw_deception_bonus[t] = raw_deception_bonus
 
                     # modulate deception bonus
-                    # note we multiply by max(deception_bonus) later on, so normalize it to 1 here
+                    # note we multiply by max(abs(deception_bonus) later on, so normalize it to 1 here
                     if self.deception_bonus is float:
                         deception_bonus = raw_deception_bonus
                     else:
@@ -829,7 +829,7 @@ class PMAlgorithm(MarlAlgorithm):
                             deception_bonus = raw_deception_bonus * 0
                         else:
                             deception_bonus = raw_deception_bonus * \
-                                np.asarray([self.deception_bonus[r] for r in roles]) / max(self.deception_bonus)
+                                np.asarray([self.deception_bonus[r] for r in roles]) / max(abs(x) for x in self.deception_bonus)
 
                     # make sure bonus is reasonable by setting nan to 0 and applying clipping
                     if np.any(np.isnan(deception_bonus)):
@@ -2001,7 +2001,6 @@ def calculate_deception_bonus_from_actions(
 
     # bonus is just neg log likelihood, and sum over other players we are trying to deceive
     # clip it so we can't get extremely high bonus
-    #bonus = -torch.clip(torch.log(likelihood_true_role), -10, +10)
     bonus = -torch.log(likelihood_true_role)
     bonus = bonus * mask
     bonus = torch.sum(bonus, dim=-1) # sum over players

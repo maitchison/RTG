@@ -13,7 +13,7 @@ Fight agents against eachother, and against scripted responses
 
 # for analysis start at 12:28... ran for ?? epochs, and took ?? minutes. (this was for just 8 trials though...)
 
-DEVICE = "cuda:1"
+DEVICE = "cpu" # "cuda:1"
 TRIALS = 100
 
 from typing import List, Union
@@ -250,9 +250,14 @@ def evaluate_vs_mixture(model_path, scenario, controller_sets: List, log_folder,
 
     algo = load_algorithm(model_path, scenario)
 
-    results = []
+    results = load_results(log_folder, title)
+    completed_epochs = set(epoch for epoch, result in results)
 
     for epoch, checkpoint_path in get_checkpoints(model_path):
+
+        if epoch in completed_epochs:
+            continue
+
         print(f"[{epoch}]: {checkpoint_path}")
         algo.load(checkpoint_path)
 
@@ -317,7 +322,8 @@ def evaluate_in_parallel(
         algo.name = os.path.split(algorithm_path)[-1]
         algorithms.append(algo)
 
-    results = []
+    results = load_results(log_folder, title)
+    completed_epochs = set(epoch for epoch, result in results)
 
     # get checkpoints and filter down to only ones that exist in all paths
     checkpoints_lists = [get_checkpoints(algorithm_path) for algorithm_path in algorithm_paths]
@@ -333,6 +339,10 @@ def evaluate_in_parallel(
             checkpoints[-1][epoch] = path
 
     for epoch in sorted(good_epochs):
+
+        if epoch in completed_epochs:
+            continue
+
         print(f"[{epoch}]:")
 
         # load each algorithm at this given checkpoint
@@ -386,8 +396,12 @@ def get_mean_scores(result_set):
     return r,g,b
 
 def load_results(output_folder, title):
-    with open(os.path.join(output_folder, f'results_{title}.dat'), 'wb') as f:
-        pickle.dump(results, f)
+    filename = os.path.join(output_folder, f'results_{title}.dat')
+    if not os.path.exists(filename):
+        return []
+    with open(filename, 'rb') as f:
+        results = pickle.load(f)
+    return results
 
 
 def save_and_plot(results, output_folder, title):
@@ -467,6 +481,21 @@ def run_rescue_arena():
         trials=TRIALS
     )
 
+    evaluate_in_parallel(
+        [run_path_a, run_path_b], [run_path_a, run_path_b], run_path_a,
+        scenario='rescue',
+        log_folder=log_folder,
+        title="blue_db00_vs_mixture",
+        trials=TRIALS
+    )
+
+    evaluate_in_parallel(
+        [run_path_a, run_path_b], [run_path_a, run_path_b], run_path_b,
+        scenario='rescue',
+        log_folder=log_folder,
+        title="blue_db10_vs_mixture",
+        trials=TRIALS
+    )
 
 def run_wolf_arena():
 
@@ -504,6 +533,22 @@ def run_wolf_arena():
         scenario='wolf',
         log_folder=log_folder,
         title="red_db10_vs_mixture",
+        trials=TRIALS
+    )
+
+    evaluate_in_parallel(
+        [run_path_a, run_path_b], run_path_a, None,
+        scenario='wolf',
+        log_folder=log_folder,
+        title="green_db00_vs_mixture",
+        trials=TRIALS
+    )
+
+    evaluate_in_parallel(
+        [run_path_a, run_path_b], run_path_b, None,
+        scenario='wolf',
+        log_folder=log_folder,
+        title="green_db10_vs_mixture",
         trials=TRIALS
     )
 
@@ -555,6 +600,31 @@ def run_wolf2_arena():
         title="red_db10_vs_mixture",
         trials=TRIALS
     )
+
+    evaluate_in_parallel(
+        [run_path_a, run_path_b, run_path_c], run_path_a, None,
+        scenario='wolf',
+        log_folder=log_folder,
+        title="green_db00_vs_mixture",
+        trials=TRIALS
+    )
+
+    evaluate_in_parallel(
+        [run_path_a, run_path_b, run_path_c], run_path_b, None,
+        scenario='wolf',
+        log_folder=log_folder,
+        title="green_db03_vs_mixture",
+        trials=TRIALS
+    )
+
+    evaluate_in_parallel(
+        [run_path_a, run_path_b, run_path_c], run_path_c, None,
+        scenario='wolf',
+        log_folder=log_folder,
+        title="green_db10_vs_mixture",
+        trials=TRIALS
+    )
+
 
 
 def main():
