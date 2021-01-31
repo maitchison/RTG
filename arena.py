@@ -508,16 +508,16 @@ def run_wolf_arena():
     wander = ScriptedController(strategies.wander, "wander")
     random = ScriptedController(strategies.random, "random")
 
-    # evaluate against ourself over time
-    for run_name, run_path in zip(["db00", "db10"], [run_path_a, run_path_b]):
-        evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, None, noop]], title=f"{run_name}_self",
-                            log_folder=log_folder, trials=TRIALS)
-        for script in [wander, random]:
-            evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, script, noop]],
-                                title=f"{run_name}_green_{script.name}", log_folder=log_folder, trials=TRIALS)
-
-        # todo, add a nice mixture including some models from specific checkpoints...?
-        # wander, rush_general, model_a, model_b, rush_general_cheat
+    # # evaluate against ourself over time
+    # for run_name, run_path in zip(["db00", "db10"], [run_path_a, run_path_b]):
+    #     evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, None, noop]], title=f"{run_name}_self",
+    #                         log_folder=log_folder, trials=TRIALS)
+    #     for script in [wander, random]:
+    #         evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, script, noop]],
+    #                             title=f"{run_name}_green_{script.name}", log_folder=log_folder, trials=TRIALS)
+    #
+    #     # todo, add a nice mixture including some models from specific checkpoints...?
+    #     # wander, rush_general, model_a, model_b, rush_general_cheat
 
     # evaluate against each other over time (with green being 50/50)
     evaluate_in_parallel(
@@ -566,15 +566,15 @@ def run_wolf2_arena():
     random = ScriptedController(strategies.random, "random")
 
     # evaluate against ourself over time
-    for run_name, run_path in zip(["db00", "db03", "db10"], [run_path_a, run_path_b, run_path_c]):
-        evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, None, noop]], title=f"{run_name}_self",
-                            log_folder=log_folder, trials=TRIALS)
-        for script in [wander, random]:
-            evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, script, noop]],
-                                title=f"{run_name}_green_{script.name}", log_folder=log_folder, trials=TRIALS)
-
-        # todo, add a nice mixture including some models from specific checkpoints...?
-        # wander, rush_general, model_a, model_b, rush_general_cheat
+    # for run_name, run_path in zip(["db00", "db03", "db10"], [run_path_a, run_path_b, run_path_c]):
+    #     evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, None, noop]], title=f"{run_name}_self",
+    #                         log_folder=log_folder, trials=TRIALS)
+    #     for script in [wander, random]:
+    #         evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, script, noop]],
+    #                             title=f"{run_name}_green_{script.name}", log_folder=log_folder, trials=TRIALS)
+    #
+    #     # todo, add a nice mixture including some models from specific checkpoints...?
+    #     # wander, rush_general, model_a, model_b, rush_general_cheat
 
     # evaluate against each other over time (with green being 50/50)
     evaluate_in_parallel(
@@ -632,7 +632,7 @@ def main():
     Check agents performance over time
     :return:
     """
-    run_wolf_arena()
+    #run_wolf_arena()
     run_wolf2_arena()
     run_rescue_arena()
 

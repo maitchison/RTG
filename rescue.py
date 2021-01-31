@@ -285,6 +285,8 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         obs_height = (self.scenario.max_view_distance * 2 + 3) * CELL_SIZE
         obs_width = (self.scenario.max_view_distance * 2 + 3) * CELL_SIZE
 
+
+
         self.observation_space = gym.spaces.Box(
             low=0, high=255,
             shape=(3, obs_height, obs_width) if self.channels_first else (obs_height, obs_width, 3),

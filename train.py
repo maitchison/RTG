@@ -458,6 +458,8 @@ def main():
     parser.add_argument('--nan_check', type=str2bool, nargs='?', const=True, default=False,
                         help="Check for nans / extreme values in output (slower).")
 
+    parser.add_argument('--seed', type=int, default=-1)
+
     args = parser.parse_args()
     config.setup(vars(args))
 
@@ -465,6 +467,11 @@ def main():
     print(f"Starting {config.log_folder} on device {config.device}")
 
     os.makedirs(config.log_folder, exist_ok=True)
+
+    # set the seed
+    print(f"Using seed {config.seed}")
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
 
     if args.mode == "benchmark":
         run_benchmarks()

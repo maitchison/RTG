@@ -182,7 +182,7 @@ def load_results(path):
     return data
 
 def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "score_blue"), hold=False, label=None,
-               color=None, legend_location="best", smooth_factor="auto"):
+               color=None, alpha=1.0, legend_location="best", smooth_factor="auto"):
 
     marking_map = {
         "GvG": "--",
@@ -301,14 +301,15 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
         if label == '':
             plot_label = None
         else:
-            plot_label = label or label_map.get(y_name, y_name),
+            plot_label = label or label_map.get(y_name, y_name)
 
         plt.plot(
             _X,
             _Y,
             label=plot_label,
             linestyle=line_style,
-            c=color or col
+            c=color or col,
+            alpha=alpha,
         )
 
     if xlim is not None:
@@ -317,7 +318,7 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
     if label != '':
         plt.legend(loc=legend_location)
     plt.grid(True)
-    plt.xlabel("agent epoch (Million steps)")
+    plt.xlabel("Epoch (Million Interactions)")
     plt.ylabel(y_units_map.get(y_axis[0], ""))
     if not hold:
         plt.show()
