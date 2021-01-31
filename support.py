@@ -107,10 +107,10 @@ class Config():
         self.train_scenarios = ScenarioSetting.parse(args['train_scenarios'])
         self.eval_scenarios = ScenarioSetting.parse(args['eval_scenarios'])
 
-        if self.seed < -1:
-            self.seed = np.random.randint(0,99999999)
+        if self.seed < 0:
+            self.seed = np.random.randint(0, 99999999)
 
-def make_algo(vec_env: MultiAgentVecEnv, config:Config, model_name = None):
+def make_algo(vec_env: MultiAgentVecEnv, config:Config, model_name=None):
 
     algo_params = config.algo_params.copy()
 

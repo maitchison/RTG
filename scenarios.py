@@ -60,11 +60,6 @@ class RescueTheGeneralScenario():
             "starting_locations": "together",  # players start together
             "team_shoot_timeout": (10, 10, 10),
             "timeout_penalty": (5, 0, -5),      # blue must not fail to rescue the general.
-            "points_for_kill": np.asarray((  # red and blue both get / loose a point for killing other side.
-                (-1,  0, +1),
-                ( 0,  0,  0),
-                (+1,  0, -1),
-            ))
         },
 
         "r2g2": {

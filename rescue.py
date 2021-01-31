@@ -1328,15 +1328,24 @@ class RescueTheGeneralEnv(MultiAgentEnv):
         # randomly kill a few players
         players_to_kill = self.scenario.initial_random_kills
         while players_to_kill > np.random.rand():
-            living_player_ids = [player.index for player in self.living_players]
-            if len(living_player_ids) == 0:
+
+            # pick a random team, then pick a random player
+            team_counts = [0,0,0]
+            for player in self.living_players:
+                team_counts[player.team] += 1
+            teams_with_living_players = [i for i in range(3) if team_counts[i] > 0]
+            if len(teams_with_living_players) == 0:
                 print("Warning, removed all players during initialization!")
                 break
-            idx = np.random.choice(living_player_ids)
-            player_to_kill = self.players[idx]
-            player_to_kill.health = 0
-            player_to_kill.invisible = True
-            players_to_kill -= 1
+
+            # remove this player
+            team_to_remove_player_from = np.random.choice(teams_with_living_players)
+            for player in self.living_players:
+                if player.team == team_to_remove_player_from:
+                    player.health = 0
+                    player.invisible = True
+                    players_to_kill -= 1
+                    break
 
         # reset stats
         self.stats_player_hit *= 0
