@@ -1,20 +1,13 @@
 """
-Fight agents against eachother, and against scripted responses
+Fight agents against each-other, and against scripted responses
 """
 
-# on CPU we have 32.2s for 16 trials.
-# on CUDA:0 we have 16.0s for 16 trials. (was running 2 jobs)
-# on CUDA:1 we have 13.0s for 16 trials. (was running 1 job)
 
-# on CUDA:1 we have 61.7s for 100 trials. (was running 1 job)
+# on cpu we take 2 hours to process every checkpoint in rescue, this is fine as we generate a checkpoint every 3-hours
+# or so, and I think it'll be more like 30min on GPU. This does mean I'll need to keep the evaluation running as we go though
 
-# this means these results will take some time to generate (we run about 0.6s per trail, might get quicker when
-# games last for less time.
-
-# for analysis start at 12:28... ran for ?? epochs, and took ?? minutes. (this was for just 8 trials though...)
-
-DEVICE = "cpu" # "cuda:1"
-TRIALS = 100
+DEVICE = "cuda:0"
+TRIALS = 128
 
 from typing import List, Union
 import strategies
@@ -144,9 +137,6 @@ class ScriptedController(BaseController):
             actions.append(self.strategy(player))
         return np.asarray(actions)
 
-
-
-
 def run_evaluation(
         controllers: List[BaseController],  # controllers for each team
         scenario:str,
@@ -251,7 +241,7 @@ def evaluate_vs_mixture(model_path, scenario, controller_sets: List, log_folder,
     algo = load_algorithm(model_path, scenario)
 
     results = load_results(log_folder, title)
-    completed_epochs = set(epoch for epoch, result in results)
+    completed_epochs = set(epoch for epoch, result, paths in results)
 
     for epoch, checkpoint_path in get_checkpoints(model_path):
 
@@ -262,7 +252,6 @@ def evaluate_vs_mixture(model_path, scenario, controller_sets: List, log_folder,
         algo.load(checkpoint_path)
 
         # run against each set of controllers, but override red to use the checkpoint model.
-
         for controllers in controller_sets:
             start_time = time.time()
             # override controllers that are none
@@ -275,7 +264,7 @@ def evaluate_vs_mixture(model_path, scenario, controller_sets: List, log_folder,
             )
             results.append((epoch, result))
             time_taken = time.time() - start_time
-            print(f" -{get_mean_scores(result)} (in {time_taken:.1f}s)")
+            print(f" {get_mean_scores(result)} (in {time_taken:.1f}s)")
 
         # dump results as we go
         save_and_plot(results, log_folder, title)
@@ -290,7 +279,9 @@ def evaluate_in_parallel(
         scenario,
         log_folder,
         title="mixture",
-        trials=100):
+        trials=100,
+        replace_noop_with_team = None,
+        ):
     """
     Loads models for red, green, and blue from checkpoint folders and evaluates them against eachother.
     Evaluation use the cartesian product of the algorithms lists.
@@ -316,14 +307,8 @@ def evaluate_in_parallel(
     # load algorithms
     algorithm_paths = model_paths_red + model_paths_green + model_paths_blue
 
-    algorithms = []
-    for algorithm_path in algorithm_paths:
-        algo = load_algorithm(algorithm_path, scenario)
-        algo.name = os.path.split(algorithm_path)[-1]
-        algorithms.append(algo)
-
     results = load_results(log_folder, title)
-    completed_epochs = set(epoch for epoch, result in results)
+    completed_epochs = set(epoch for epoch, result, paths in results)
 
     # get checkpoints and filter down to only ones that exist in all paths
     checkpoints_lists = [get_checkpoints(algorithm_path) for algorithm_path in algorithm_paths]
@@ -338,10 +323,19 @@ def evaluate_in_parallel(
         for epoch, path in checkpoint_list:
             checkpoints[-1][epoch] = path
 
+    algorithms = []
+
     for epoch in sorted(good_epochs):
 
         if epoch in completed_epochs:
             continue
+
+        # lazy loading of algorithms
+        if len(algorithms) == 0:
+            for algorithm_path in algorithm_paths:
+                algo = load_algorithm(algorithm_path, scenario)
+                algo.name = os.path.split(algorithm_path)[-1]
+                algorithms.append(algo)
 
         print(f"[{epoch}]:")
 
@@ -364,19 +358,27 @@ def evaluate_in_parallel(
         epoch_results = []
         test_sets = list(itertools.product(red_controllers, green_controllers, blue_controllers))
         for controllers in test_sets:
+            controllers = list(controllers)
+
+            # this allows two teams to use the same checkpoint (e.g. green just uses the ai from blue)
+            if replace_noop_with_team is not None:
+                controllers = [controller if type(controller) is not NoopController else
+                               ModelController(controllers[replace_noop_with_team].algorithm)
+                               for controller in controllers]
+
             start_time = time.time()
             # override controllers that are none
             result = run_evaluation(
-                controllers=list(controllers),
+                controllers=controllers,
                 scenario=scenario,
                 log_path=log_folder,
                 trials=int(math.ceil(trials / len(test_sets)))
             )
             epoch_results += result
             time_taken = time.time() - start_time
-            print(f" -{get_mean_scores(result)} {controllers} (in {time_taken:.1f}s)")
+            print(f" {get_mean_scores(result)} {controllers} (in {time_taken:.1f}s)")
 
-        results.append((epoch, epoch_results))
+        results.append((epoch, epoch_results, str(controllers)))
 
         # dump results as we go
         save_and_plot(results, log_folder, title)
@@ -414,14 +416,14 @@ def save_and_plot(results, output_folder, title):
     y_g = []
     y_b = []
 
-    for epoch, result_set in results:
+    for epoch, result_set, paths in results:
         r,g,b = get_mean_scores(result_set)
         y_r.append(r)
         y_g.append(g)
         y_b.append(b)
 
 
-    xs = [epoch for epoch, result_set in results]
+    xs = [epoch for epoch, result_set, paths in results]
 
     plt.figure(figsize=(8, 6))
 
@@ -441,189 +443,67 @@ def save_and_plot(results, output_folder, title):
         pickle.dump(results, f)
 
 
+def get_all_runs(mask, exclude_mask="__"):
+    all_runs = []
+    for (root, dirs, files) in os.walk('./run'):
+        for path in dirs:
+            if mask in path and exclude_mask not in root:
+                run = os.path.join(root, path)
+                all_runs.append(run)
+    return all_runs
+
 def run_rescue_arena():
 
-    run_path_a = './run/rescue411_db00 [b8413538]'
-    run_path_b = './run/rescue411_db10 [cb3afd9c]'
+    control_runs = get_all_runs("413_db00")
+    effect_runs = get_all_runs("413_db05")
+    all_runs = control_runs + effect_runs
+    print(all_runs)
 
-    log_folder = './run/arena_rescue'
+    log_folder = '.\\run\\arena_rescue'
 
-    wander = ScriptedController(strategies.wander, "wander")
-    random = ScriptedController(strategies.random, "random")
-    rush_general = ScriptedController(strategies.rush_general, "rush")
-    rush_general_cheat = ScriptedController(strategies.rush_general_cheat, "rush_cheat")
+    for run in all_runs:
+        run_name = os.path.split(run)[-1]
+        evaluate_in_parallel(
+            run, [], all_runs,
+            scenario='rescue',
+            log_folder=log_folder,
+            title=f"red_{run_name}_vs_mixture",
+            trials=TRIALS,
+            replace_noop_with_team=2,
+        )
 
-    # evaluate against ourself over time
-    for run_name, run_path in zip(["db00", "db10"], [run_path_a, run_path_b]):
-        evaluate_vs_mixture(run_path, 'rescue', controller_sets=[[None, None, None]], title=f"{run_name}_self",
-                            log_folder=log_folder, trials=TRIALS)
-        for script in [wander, random, rush_general, rush_general_cheat]:
-            evaluate_vs_mixture(run_path, 'rescue', controller_sets=[[script, None, None]],
-                                title=f"{run_name}_red_{script.name}", log_folder=log_folder, trials=TRIALS)
+    for run in all_runs:
+        run_name = os.path.split(run)[-1]
+        evaluate_in_parallel(
+            all_runs, [], run,
+            scenario='rescue',
+            log_folder=log_folder,
+            title=f"blue_{run_name}_vs_mixture",
+            trials=TRIALS,
+            replace_noop_with_team=0,
+        )
 
-        # todo, add a nice mixture including some models from specific checkpoints...?
-        # wander, rush_general, model_a, model_b, rush_general_cheat
+    for run in all_runs:
+        run_name = os.path.split(run)[-1]
+        evaluate_in_parallel(
+            run, [], all_runs,
+            scenario='rescue_training',
+            log_folder=log_folder,
+            title=f"red_training_{run_name}_vs_mixture",
+            trials=TRIALS,
+            replace_noop_with_team=2,
+        )
 
-    # evaluate against each other over time (with green being 50/50)
-    evaluate_in_parallel(
-        run_path_a, [run_path_a, run_path_b], [run_path_a, run_path_b],
-        scenario='rescue',
-        log_folder=log_folder,
-        title="red_db00_vs_mixture",
-        trials=TRIALS
-    )
-
-    evaluate_in_parallel(
-        run_path_b, [run_path_a, run_path_b], [run_path_a, run_path_b],
-        scenario='rescue',
-        log_folder=log_folder,
-        title="red_db10_vs_mixture",
-        trials=TRIALS
-    )
-
-    evaluate_in_parallel(
-        [run_path_a, run_path_b], [run_path_a, run_path_b], run_path_a,
-        scenario='rescue',
-        log_folder=log_folder,
-        title="blue_db00_vs_mixture",
-        trials=TRIALS
-    )
-
-    evaluate_in_parallel(
-        [run_path_a, run_path_b], [run_path_a, run_path_b], run_path_b,
-        scenario='rescue',
-        log_folder=log_folder,
-        title="blue_db10_vs_mixture",
-        trials=TRIALS
-    )
-
-def run_wolf_arena():
-
-    run_path_a = './run/wolf411_db00 [105807a0]'
-    run_path_b = './run/wolf411_db10 [8c8166b0]'
-
-    log_folder = './run/arena_wolf'
-
-    noop = NoopController()
-    wander = ScriptedController(strategies.wander, "wander")
-    random = ScriptedController(strategies.random, "random")
-
-    # # evaluate against ourself over time
-    # for run_name, run_path in zip(["db00", "db10"], [run_path_a, run_path_b]):
-    #     evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, None, noop]], title=f"{run_name}_self",
-    #                         log_folder=log_folder, trials=TRIALS)
-    #     for script in [wander, random]:
-    #         evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, script, noop]],
-    #                             title=f"{run_name}_green_{script.name}", log_folder=log_folder, trials=TRIALS)
-    #
-    #     # todo, add a nice mixture including some models from specific checkpoints...?
-    #     # wander, rush_general, model_a, model_b, rush_general_cheat
-
-    # evaluate against each other over time (with green being 50/50)
-    evaluate_in_parallel(
-        run_path_a, [run_path_a, run_path_b], None,
-        scenario='wolf',
-        log_folder=log_folder,
-        title="red_db00_vs_mixture",
-        trials=TRIALS
-    )
-
-    evaluate_in_parallel(
-        run_path_b, [run_path_a, run_path_b], None,
-        scenario='wolf',
-        log_folder=log_folder,
-        title="red_db10_vs_mixture",
-        trials=TRIALS
-    )
-
-    evaluate_in_parallel(
-        [run_path_a, run_path_b], run_path_a, None,
-        scenario='wolf',
-        log_folder=log_folder,
-        title="green_db00_vs_mixture",
-        trials=TRIALS
-    )
-
-    evaluate_in_parallel(
-        [run_path_a, run_path_b], run_path_b, None,
-        scenario='wolf',
-        log_folder=log_folder,
-        title="green_db10_vs_mixture",
-        trials=TRIALS
-    )
-
-
-def run_wolf2_arena():
-
-    run_path_a = './run/wolf412_db00 [667a7fe9]'
-    run_path_b = './run/wolf412_db03 [869dd8d2]'
-    run_path_c = './run/wolf412_db10 [83b7526f]'
-
-    log_folder = './run/arena_wolf2'
-
-    noop = NoopController()
-    wander = ScriptedController(strategies.wander, "wander")
-    random = ScriptedController(strategies.random, "random")
-
-    # evaluate against ourself over time
-    # for run_name, run_path in zip(["db00", "db03", "db10"], [run_path_a, run_path_b, run_path_c]):
-    #     evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, None, noop]], title=f"{run_name}_self",
-    #                         log_folder=log_folder, trials=TRIALS)
-    #     for script in [wander, random]:
-    #         evaluate_vs_mixture(run_path, 'wolf', controller_sets=[[None, script, noop]],
-    #                             title=f"{run_name}_green_{script.name}", log_folder=log_folder, trials=TRIALS)
-    #
-    #     # todo, add a nice mixture including some models from specific checkpoints...?
-    #     # wander, rush_general, model_a, model_b, rush_general_cheat
-
-    # evaluate against each other over time (with green being 50/50)
-    evaluate_in_parallel(
-        run_path_a, [run_path_a, run_path_b, run_path_c], None,
-        scenario='wolf',
-        log_folder=log_folder,
-        title="red_db00_vs_mixture",
-        trials=TRIALS
-    )
-
-    evaluate_in_parallel(
-        run_path_b, [run_path_a, run_path_b, run_path_c], None,
-        scenario='wolf',
-        log_folder=log_folder,
-        title="red_db03_vs_mixture",
-        trials=TRIALS
-    )
-
-    evaluate_in_parallel(
-        run_path_c, [run_path_a, run_path_b, run_path_c], None,
-        scenario='wolf',
-        log_folder=log_folder,
-        title="red_db10_vs_mixture",
-        trials=TRIALS
-    )
-
-    evaluate_in_parallel(
-        [run_path_a, run_path_b, run_path_c], run_path_a, None,
-        scenario='wolf',
-        log_folder=log_folder,
-        title="green_db00_vs_mixture",
-        trials=TRIALS
-    )
-
-    evaluate_in_parallel(
-        [run_path_a, run_path_b, run_path_c], run_path_b, None,
-        scenario='wolf',
-        log_folder=log_folder,
-        title="green_db03_vs_mixture",
-        trials=TRIALS
-    )
-
-    evaluate_in_parallel(
-        [run_path_a, run_path_b, run_path_c], run_path_c, None,
-        scenario='wolf',
-        log_folder=log_folder,
-        title="green_db10_vs_mixture",
-        trials=TRIALS
-    )
+    for run in all_runs:
+        run_name = os.path.split(run)[-1]
+        evaluate_in_parallel(
+            all_runs, [], run,
+            scenario='rescue_training',
+            log_folder=log_folder,
+            title=f"blue_training_{run_name}_vs_mixture",
+            trials=TRIALS,
+            replace_noop_with_team=0,
+        )
 
 
 
@@ -632,8 +512,6 @@ def main():
     Check agents performance over time
     :return:
     """
-    #run_wolf_arena()
-    run_wolf2_arena()
     run_rescue_arena()
 
 if __name__ == "__main__":
