@@ -1,6 +1,6 @@
 # Rescue the General 
 
-A mixed competitive-cooperative multi-agent reinforcment learning environment for Gym.
+A mixed competitive-cooperative multi-agent reinforcement learning environment for Gym.
 
 To reproduce results of the ICML paper on a single GPU sequentially run
 
