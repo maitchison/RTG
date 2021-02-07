@@ -6,7 +6,7 @@ Fight agents against each-other, and against scripted responses
 # on cpu we take 2 hours to process every checkpoint in rescue, this is fine as we generate a checkpoint every 3-hours
 # or so, and I think it'll be more like 30min on GPU. This does mean I'll need to keep the evaluation running as we go though
 
-DEVICE = "cuda:0"
+DEVICE = "cuda:1"
 TRIALS = 128
 
 from typing import List, Union
@@ -281,6 +281,7 @@ def evaluate_in_parallel(
         title="mixture",
         trials=100,
         replace_noop_with_team = None,
+        start_epoch = None,
         ):
     """
     Loads models for red, green, and blue from checkpoint folders and evaluates them against eachother.
@@ -328,6 +329,9 @@ def evaluate_in_parallel(
     for epoch in sorted(good_epochs):
 
         if epoch in completed_epochs:
+            continue
+
+        if start_epoch is not None and epoch < start_epoch:
             continue
 
         # lazy loading of algorithms
@@ -483,28 +487,31 @@ def run_rescue_arena():
             replace_noop_with_team=0,
         )
 
-    for run in all_runs:
-        run_name = os.path.split(run)[-1]
-        evaluate_in_parallel(
-            run, [], all_runs,
-            scenario='rescue_training',
-            log_folder=log_folder,
-            title=f"red_training_{run_name}_vs_mixture",
-            trials=TRIALS,
-            replace_noop_with_team=2,
-        )
+    # do deception vs non_deception for blue
 
     for run in all_runs:
         run_name = os.path.split(run)[-1]
         evaluate_in_parallel(
-            all_runs, [], run,
-            scenario='rescue_training',
+            effect_runs, [], run,
+            scenario='rescue',
             log_folder=log_folder,
-            title=f"blue_training_{run_name}_vs_mixture",
+            title=f"blue_{run_name}_vs_deception",
             trials=TRIALS,
             replace_noop_with_team=0,
+            start_epoch=300,
         )
 
+    for run in all_runs:
+        run_name = os.path.split(run)[-1]
+        evaluate_in_parallel(
+            control_runs, [], run,
+            scenario='rescue',
+            log_folder=log_folder,
+            title=f"blue_{run_name}_vs_no_deception",
+            trials=TRIALS,
+            replace_noop_with_team=0,
+            start_epoch=300,
+        )
 
 
 def main():
