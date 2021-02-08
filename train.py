@@ -44,14 +44,26 @@ def train_model():
 
     print("="*60)
 
-    # copy source files for later
-    from shutil import copyfile
-    for filename in ["train.py", "rescue.py"]:
-        copyfile(filename, f"{config.log_folder}/{filename}")
+    start_epoch = 0
 
-    # make a copy of the environment parameters
-    with open(f"{config.log_folder}/config.txt", "w") as f:
-        f.write(str(config))
+    # copy source files for later
+    if config.restore:
+        # find path to restore from
+        root = os.path.split(config.log_folder)[0]
+        restore_points = [f for f in os.listdir(root) if os.path.isdir(os.path.join(root, f)) and config.run in f]
+        if len(restore_points) == 0:
+            raise Exception(f"No restore points matching {config.run} found.")
+        if len(restore_points) > 1:
+            raise Exception(f"Multiple restore points matching {config.run} found. {restore_points}")
+        config.log_folder = os.path.join(root, restore_points[0])
+    else:
+        from shutil import copyfile
+        for filename in ["train.py", "rescue.py"]:
+            copyfile(filename, f"{config.log_folder}/{filename}")
+
+        # make a copy of the environment parameters
+        with open(f"{config.log_folder}/config.txt", "w") as f:
+            f.write(str(config))
 
     vec_env = make_env(config.train_scenarios, config.parallel_envs, name="train", log_path=config.log_folder)
 
@@ -66,13 +78,22 @@ def train_model():
 
     algorithm = make_algo(vec_env, config)
 
+    if config.restore:
+        # load model
+        algorithm.load(os.path.join(config.log_folder, "model.pt"))
+        start_epoch = int(algorithm.t // 1e6)
+        print(f"Restored from checkpoint [{start_epoch}] ")
+
+        # get logs back up to date...
+
+
     print("="*60)
 
     start_time = time.time()
 
     step_counter = 0
 
-    for epoch in range(0, config.epochs):
+    for epoch in range(start_epoch, config.epochs):
 
         global CURRENT_EPOCH
         CURRENT_EPOCH = epoch
@@ -137,7 +158,7 @@ def train_model():
         print()
 
         # save logs
-        algorithm.save_logs(config.log_folder)
+        algorithm.save_logs()
 
         # flush the log buffer and print scores
         rescue.flush_logs()
@@ -291,7 +312,7 @@ def learn(agent: MarlAlgorithm, step_counter, max_steps, verbose=True):
 
         if time.time() - last_log_save > 5*60:
             # save logs every 5 minutes
-            agent.save_logs(config.log_folder)
+            agent.save_logs()
 
         # this is needed to stop a memory leak
         gc.collect()
@@ -458,6 +479,9 @@ def main():
     parser.add_argument('--nan_check', type=str2bool, nargs='?', const=True, default=False,
                         help="Check for nans / extreme values in output (slower).")
 
+    parser.add_argument('--restore', type=str2bool, nargs='?', const=True, default=False,
+                        help="Restore from previous run.")
+
     parser.add_argument('--seed', type=int, default=-1)
 
     args = parser.parse_args()
@@ -466,7 +490,8 @@ def main():
     print()
     print(f"Starting {config.log_folder} on device {config.device}")
 
-    os.makedirs(config.log_folder, exist_ok=True)
+    if not config.restore:
+        os.makedirs(config.log_folder, exist_ok=True)
 
     # set the seed
     print(f"Using seed {config.seed}")

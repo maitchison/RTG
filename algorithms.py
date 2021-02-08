@@ -70,7 +70,10 @@ class MarlAlgorithm():
     def learn(self, total_timesteps, reset_num_timesteps=True):
         raise NotImplemented()
 
-    def save_logs(self, base_path):
+    def save_logs(self):
+        raise NotImplemented()
+
+    def load_logs(self):
         raise NotImplemented()
 
     @staticmethod
@@ -420,11 +423,15 @@ class PMAlgorithm(MarlAlgorithm):
     def predicts_observations(self):
         return self.prediction_mode in [self.DM_OBSERVATION, self.DM_BOTH]
 
-    def save_logs(self, base_path):
-        with open(os.path.join(base_path, "checkpoint_log.dat"), "wb") as f:
+    def save_logs(self):
+        with open(os.path.join(self.log_folder, "checkpoint_log.dat"), "wb") as f:
             pickle.dump(self.log, f)
 
-        self.log.export_to_csv(os.path.join(base_path, "training_log.csv"))
+        self.log.export_to_csv(os.path.join(self.log_folder, "training_log.csv"))
+
+    def load_logs(self):
+        with open(os.path.join(self.log_folder, "checkpoint_log.dat"), "rb") as f:
+            self.log = pickle.load(f)
 
     def save(self, filename):
 
@@ -444,9 +451,11 @@ class PMAlgorithm(MarlAlgorithm):
 
         if self.normalize_intrinsic_rewards:
             data['ems_norm'] = self.ems_norm
-            data['intrinsic_returns_rms'] = self.intrinsic_returns_rms,
+            data['intrinsic_returns_rms'] = self.intrinsic_returns_rms
 
         torch.save(data, filename)
+
+        self.save_logs()
 
     def load(self, filename):
         """
@@ -469,7 +478,13 @@ class PMAlgorithm(MarlAlgorithm):
 
         if self.normalize_intrinsic_rewards:
             self.ems_norm = data['ems_norm']
+            # there was a bug with saving where return would be inside a tuple.
+            if type(data['intrinsic_returns_rms']) is tuple:
+                data['intrinsic_returns_rms'] = data['intrinsic_returns_rms'][0]
             self.intrinsic_returns_rms = data['intrinsic_returns_rms']
+
+        # load log files
+        self.load_logs()
 
     def _eval(self):
         self.policy_model.eval()

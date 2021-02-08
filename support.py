@@ -42,6 +42,7 @@ class Config():
         self.max_window_size = int()
         self.use_global_value = bool()
         self.seed = int()
+        self.restore = bool()
 
         self.verbose = int()
 
