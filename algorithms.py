@@ -430,8 +430,10 @@ class PMAlgorithm(MarlAlgorithm):
         self.log.export_to_csv(os.path.join(self.log_folder, "training_log.csv"))
 
     def load_logs(self):
-        with open(os.path.join(self.log_folder, "checkpoint_log.dat"), "rb") as f:
-            self.log = pickle.load(f)
+        log_file = os.path.join(self.log_folder, "checkpoint_log.dat")
+        if os.path.exists(log_file):
+            with open(log_file, "rb") as f:
+                self.log = pickle.load(f)
 
     def save(self, filename):
 

@@ -76,6 +76,10 @@ def axis_search(main_params, search_params, default_params=None):
                 # in residual mode out features must match memory units
                 params['dm_out_features'] = v
 
+            if params.get('lstm_mode', 'residual') == 'residual' and k == 'memory_units':
+                # in residual mode out features must match memory units
+                params['out_features'] = v
+
             key_name = k[2:] if k.startswith("a:") else k
             name = f"{key_name}-{v}-1"
 
@@ -101,7 +105,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--devices', type=str, default="['cuda']")
-    parser.add_argument('--run', type=str, default="search_dm4")
+    parser.add_argument('--run', type=str, default="search_pm")
     args = parser.parse_args()
 
     DEVICES = ast.literal_eval(args.devices)
@@ -127,7 +131,7 @@ if __name__ == "__main__":
         print("Using previous train.py")
 
     main_params = " ".join([
-        "--train_scenarios=wolf_sheep_nv",
+        "--train_scenarios=wolf",
         "--eval_scenarios=[]",
         "--micro_batch_size=1024",  # 1024 is slower, but can run two searches in parallel
         "--prediction_mode=action",
@@ -138,15 +142,24 @@ if __name__ == "__main__":
     ])
 
     search_params = {
-        #'a:dm_mini_batch_size': [128, 256, 512, 1024],
-        #'a:dm_lstm_mode': ['off', 'on', 'cat', 'residual'],
-        #'a:dm_loss_scale': [0.1, 1, 10],
-        #'a:dm_max_window_size': [8, 16],
+        # 'a:dm_mini_batch_size': [128, 256, 512, 1024],
+        # 'a:dm_lstm_mode': ['off', 'on', 'cat', 'residual'],
+        # 'a:dm_loss_scale': [0.1, 1, 10],
+        # 'a:dm_max_window_size': [8, 16],
         'parallel_envs': [128, 256, 512, 1024],
-        #'n_steps': [16, 32, 64, 128],
+        'n_steps': [16, 32, 64, 128],
+        'learning_rate': [1e-4, 2.5e-4, 1e-3],
+        'lstm_mode': ['off', 'on', 'cat', 'residual'],
+        'memory_units': [64, 128, 256, 512],
+        'out_features': [64, 128, 256, 512],
+        'gamma': [0.95, 0.99, 0.995],
+        'entropy_bonus': [0.003, 0.01, 0.03],
+        'mini_batch_size': [64, 128, 256, 512, 1024, 2048],
+        'adam_epsilon': [1e-5, 1e-8],
+        'max_grad_norm': [None, 0.5, 5.0],
     }
 
-    jobs = axis_search(main_params, search_params)
+    jobs = random_search(main_params, search_params)
     print()
     print("-"*60)
     print()

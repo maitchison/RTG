@@ -182,7 +182,7 @@ def load_results(path):
     return data
 
 def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "score_blue"), hold=False, label=None,
-               color=None, alpha=1.0, legend_location="best", smooth_factor="auto"):
+               color=None, alpha=1.0, legend_location="best", smooth_factor="auto", x_axis="epoch"):
 
     marking_map = {
         "GvG": "--",
@@ -218,7 +218,7 @@ def plot_graph(data, title, xlim=None, y_axis=("score_red", "score_green", "scor
 
     y_units_map.update({vs: "Hits" for vs in vs_order})
 
-    X = data["epoch"]
+    X = data[x_axis]
 
     plt.title(title)
 

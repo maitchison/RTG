@@ -84,14 +84,15 @@ def train_model():
         start_epoch = int(algorithm.t // 1e6)
         print(f"Restored from checkpoint [{start_epoch}] ")
 
-        # get logs back up to date...
+        # reset env
+        algorithm.reset()
 
 
     print("="*60)
 
     start_time = time.time()
 
-    step_counter = 0
+    step_counter = algorithm.t
 
     for epoch in range(start_epoch, config.epochs):
 

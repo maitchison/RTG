@@ -209,6 +209,7 @@ def get_checkpoints(path):
                 results.append((epoch, os.path.join(path, f)))
     return results
 
+
 def load_algorithm(model_path, scenario):
 
     # setup our algorithm
