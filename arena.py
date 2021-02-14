@@ -468,8 +468,8 @@ def get_all_runs(mask, exclude_mask="__"):
 
 def run_rescue_arena():
 
-    control_runs = get_all_runs("413_db00")
-    effect_runs = get_all_runs("413_db05")
+    control_runs = get_all_runs("rescue413_db00")
+    effect_runs = get_all_runs("rescue413_db05")
     all_runs = control_runs + effect_runs
     print(all_runs)
 

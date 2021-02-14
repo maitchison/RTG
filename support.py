@@ -2,6 +2,7 @@ import os
 import uuid
 import torch
 import numpy as np
+import sys
 
 from typing import Union, List
 from ast import literal_eval
@@ -42,6 +43,7 @@ class Config():
         self.use_global_value = bool()
         self.seed = int()
         self.restore = bool()
+        self.cmd_args = str()
 
         self.verbose = int()
 
@@ -64,6 +66,8 @@ class Config():
         # return json.dumps(d, indent=4)
 
     def setup(self, args:dict):
+
+        self.cmd_args = " ".join(sys.argv)
 
         config_vars = set(k for k,v in vars(self).items())
 

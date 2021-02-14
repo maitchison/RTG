@@ -591,7 +591,7 @@ class PMAlgorithm(MarlAlgorithm):
 
         # start each game at a different point. This makes sure that games do not to through in sync, which can
         # cause problems with training as the parallel environments are not IID.
-        if self.env_noop_count > 0:
+        if self.env_noop_count > 0 and self.t == 0:
             for game in self.vec_env.games:
                 start_timestep = np.random.randint(self.env_noop_count)
                 for _ in range(start_timestep):
