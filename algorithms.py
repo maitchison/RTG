@@ -1589,7 +1589,7 @@ class PMAlgorithm(MarlAlgorithm):
         N, B = batch_data["id"].shape[0:2]
         window_size = min(max_window_size or float('inf'), self.n_steps)
 
-        assert mini_batch_size % window_size == 0
+        assert mini_batch_size % window_size == 0, f'{mini_batch_size} must be a multiple of {window_size}.'
         mini_batch_segments = mini_batch_size // window_size
 
         mini_batches = B // mini_batch_segments

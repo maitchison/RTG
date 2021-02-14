@@ -24,8 +24,6 @@ def run_experiment(job):
         print(f"skipping {path} as it exists.")
         return
 
-    # todo: look for and ignore folders that are already done
-
     script = \
         f"python ./run/{run}/train.py train --run=\"{path}\" --device={device} " + params
 
@@ -41,7 +39,7 @@ def quote_if_str(x):
 def algo_dict_to_str(params):
     return "{" + (", ".join([f"'{k}':{quote_if_str(v)}" for k, v in params.items()])) + "}"
 
-def random_search(main_params, search_params, count=256):
+def random_search(main_params, search_params, count=128):
 
     jobs = []
     id = 0
@@ -50,11 +48,26 @@ def random_search(main_params, search_params, count=256):
         for k, v in search_params.items():
             params[k] = random.choice(v)
 
-        algo_params = algo_dict_to_str(params)
+        # build the string
+        algo_params = {}
+        normal_params = {}
+        for k, v in params.items():
+            if k.startswith("a:"):
+                algo_params[k[2:]] = v
+            else:
+                normal_params[k] = v
 
-        params = f"{main_params} --algo_params=\"{algo_params}\""
+        for model_code in ['dm', 'pm']:
+            if algo_params.get(f'{model_code}_lstm_mode', 'residual') == 'residual' and f"{model_code}_memory_units" in algo_params:
+                # in residual mode out features must match memory units
+                algo_params[f'{model_code}_out_features'] = algo_params[f"{model_code}_memory_units"]
 
-        jobs.append([id, params, str(id)])
+        normal_params = " ".join(f"--{k}={quote_if_str(v)}" for k, v in normal_params.items())
+        algo_params = algo_dict_to_str(algo_params)
+
+        params = f"{main_params} {normal_params} --algo_params=\"{algo_params}\""
+
+        jobs.append([id, params, f"{args.run}-{str(id)}", DEVICES, args.run])
         id += 1
 
     return jobs
@@ -105,7 +118,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--devices', type=str, default="['cuda']")
-    parser.add_argument('--run', type=str, default="search_pm")
+    parser.add_argument('--run', type=str, default="search_dm")
     args = parser.parse_args()
 
     DEVICES = ast.literal_eval(args.devices)
@@ -131,33 +144,49 @@ if __name__ == "__main__":
         print("Using previous train.py")
 
     main_params = " ".join([
-        "--train_scenarios=wolf",
+        "--train_scenarios=r2g2_hr",
         "--eval_scenarios=[]",
-        "--micro_batch_size=1024",  # 1024 is slower, but can run two searches in parallel
+        "--micro_batch_size=512",  # 1024 is slower, but can run two searches in parallel
         "--prediction_mode=action",
         "--verbose=2",
         "--deception_bonus=[0,0,0]",
-        "--save_model=recent",
-        "--epochs=10"
+        "--save_model=none",
+        "--epochs=25"
     ])
 
+    # search_params = {
+    #     'n_steps': [16, 32, 64, 128],
+    #     'parallel_envs': [128, 256, 512, 1024],
+    #     'a:learning_rate': [1e-4, 2.5e-4, 1e-3],
+    #     'a:pm_lstm_mode': ['off', 'on', 'cat', 'residual'],
+    #     'a:pm_memory_units': [64, 128, 256, 512, 1024],
+    #     'a:pm_out_features': [64, 128, 256, 512, 1024],
+    #     'a:gamma': [0.95, 0.99, 0.995],
+    #     'a:entropy_bonus': [0.003, 0.01, 0.03],
+    #     'a:mini_batch_size': [64, 128, 256, 512, 1024, 2048, 4096, 8192],
+    #     'a:adam_epsilon': [1e-5, 1e-8],
+    #     'a:max_grad_norm': [None, 0.5, 5.0]
+    # }
+
+
     search_params = {
-        # 'a:dm_mini_batch_size': [128, 256, 512, 1024],
-        # 'a:dm_lstm_mode': ['off', 'on', 'cat', 'residual'],
-        # 'a:dm_loss_scale': [0.1, 1, 10],
-        # 'a:dm_max_window_size': [8, 16],
-        'parallel_envs': [128, 256, 512, 1024],
-        'n_steps': [16, 32, 64, 128],
-        'learning_rate': [1e-4, 2.5e-4, 1e-3],
-        'lstm_mode': ['off', 'on', 'cat', 'residual'],
-        'memory_units': [64, 128, 256, 512],
-        'out_features': [64, 128, 256, 512],
-        'gamma': [0.95, 0.99, 0.995],
-        'entropy_bonus': [0.003, 0.01, 0.03],
-        'mini_batch_size': [64, 128, 256, 512, 1024, 2048],
-        'adam_epsilon': [1e-5, 1e-8],
-        'max_grad_norm': [None, 0.5, 5.0],
+        'a:dm_mini_batch_size': [64, 128, 256, 512, 1024],
+        'a:dm_memory_units': [256, 512, 1024, 2048, 4096],
+        'a:dm_lstm_mode': ['residual'],
+        'a:dm_loss_scale': [0.1, 1, 10],
+        'a:dm_max_window_size': [4, 8, None],
+        'n_steps': [16],
+        'parallel_envs': [512],
+        'a:learning_rate': [2.5e-4],
+        'a:pm_lstm_mode': ['residual'],
+        'a:pm_memory_units': [512],
+        'a:gamma': [0.99],
+        'a:entropy_bonus': [0.003, 0.01, 0.03],
+        'a:mini_batch_size': [2048],
+        'a:adam_epsilon': [1e-8],
+        'a:max_grad_norm': [0.5]
     }
+
 
     jobs = random_search(main_params, search_params)
     print()
@@ -171,4 +200,6 @@ if __name__ == "__main__":
 
     pool.map(run_experiment, jobs)
 
-    #4
+    # python search.py --device="['cuda:0', 'cuda:1', 'cuda:2', 'cuda:3']"
+    # python search.py - -device = "['cuda:0', 'cuda:1', 'cuda:2', 'cuda:3', 'cuda:0', 'cuda:1', 'cuda:2', 'cuda:3', 'cuda:0', 'cuda:1', 'cuda:2', 'cuda:3', 'cuda:0', 'cuda:1', 'cuda:2', 'cuda:3']"
+    # python search.py --device="['cuda:0', 'cuda:0', 'cuda:1', 'cuda:1']"

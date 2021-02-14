@@ -70,12 +70,28 @@ class RescueTheGeneralScenario():
             "n_trees": 10,
             "reward_per_tree": 1,
             "hidden_roles": "none",
-            "max_view_distance": 5,             # makes thins a bit faster
+            "max_view_distance": 5,             # makes things a bit faster
             "team_view_distance": (5, 5, 5),    # no bonus vision for red
             "team_shoot_damage": (5, 5, 5),     # 2 hits to kill
             "team_shoot_range": (4, 4, 4),
             "starting_locations": "random",     # random start locations
             "team_shoot_timeout": (5, 5, 5)      # green is much slower at shooting
+        },
+
+        "r2g2_hr": {
+            "description": "Two red players and two green players on a small map",
+            "map_width": 24,
+            "map_height": 24,
+            "team_counts": (2, 2, 0),
+            "n_trees": 10,
+            "reward_per_tree": 1,
+            "hidden_roles": "all",
+            "max_view_distance": 5,  # makes things a bit faster
+            "team_view_distance": (5, 5, 5),  # no bonus vision for red
+            "team_shoot_damage": (5, 5, 5),  # 2 hits to kill
+            "team_shoot_range": (4, 4, 4),
+            "starting_locations": "random",  # random start locations
+            "team_shoot_timeout": (5, 5, 5)  # green is much slower at shooting
         },
 
         "wolf": {

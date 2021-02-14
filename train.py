@@ -454,7 +454,6 @@ def main():
     parser.add_argument('--save_model', type=str, default="10", help="Enables model saving, [all|0..n|recent|none].")
 
     parser.add_argument('--n_steps', type=int, default=16)
-    parser.add_argument('--max_window_size', type=int, default=None)
 
     parser.add_argument('--use_global_value', type=str2bool, nargs='?', const=True, default=False,
                         help="Enable Global value function")

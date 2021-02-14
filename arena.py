@@ -6,7 +6,7 @@ Fight agents against each-other, and against scripted responses
 # on cpu we take 2 hours to process every checkpoint in rescue, this is fine as we generate a checkpoint every 3-hours
 # or so, and I think it'll be more like 30min on GPU. This does mean I'll need to keep the evaluation running as we go though
 
-DEVICE = "cuda:1"
+DEVICE = "cpu"
 TRIALS = 128
 
 from typing import List, Union
@@ -54,6 +54,9 @@ class BaseController():
         :param players:
         :return:
         """
+        if len(players) == 0:
+            self.players = []
+            return
         roles = [player.team for player in players]
         assert np.all(np.mean(roles) == roles), "Players in a controller group should all be on the same team."
         self.players = players
@@ -91,6 +94,9 @@ class ModelController(BaseController):
 
         assert self.players is not None, "Please call setup to assign players before forward."
 
+        if len(observations) == 0:
+            return []
+
         roles = torch.ones([self.n_agents], dtype=torch.long) * self.team
 
         model_output, new_rnn_states = self.algorithm.forward(
@@ -111,7 +117,10 @@ class ModelController(BaseController):
         super().setup(players)
         self.n_agents = len(players)
         self.rnn_states = self.algorithm.get_initial_rnn_state(self.n_agents)
-        self.team = players[0].team
+        if len(players) > 0:
+            self.team = players[0].team
+        else:
+            self.team = None
 
 class ScriptedController(BaseController):
     """
@@ -515,12 +524,70 @@ def run_rescue_arena():
         )
 
 
+def run_wolf_arena():
+
+    control_runs = get_all_runs("wolf413_db00")
+    effect_runs = get_all_runs("wolf413_db05")
+    all_runs = control_runs + effect_runs
+    print(all_runs)
+
+    log_folder = '.\\run\\wolf_rescue'
+
+    for run in all_runs:
+        run_name = os.path.split(run)[-1]
+        evaluate_in_parallel(
+            run, [], all_runs,
+            scenario='wolf',
+            log_folder=log_folder,
+            title=f"red_{run_name}_vs_mixture",
+            trials=TRIALS,
+            replace_noop_with_team=2,
+        )
+
+    for run in all_runs:
+        run_name = os.path.split(run)[-1]
+        evaluate_in_parallel(
+            all_runs, [], run,
+            scenario='wolf',
+            log_folder=log_folder,
+            title=f"blue_{run_name}_vs_mixture",
+            trials=TRIALS,
+            replace_noop_with_team=0,
+        )
+
+    # do deception vs non_deception for blue
+
+    for run in all_runs:
+        run_name = os.path.split(run)[-1]
+        evaluate_in_parallel(
+            effect_runs, [], run,
+            scenario='wolf',
+            log_folder=log_folder,
+            title=f"blue_{run_name}_vs_deception",
+            trials=TRIALS,
+            replace_noop_with_team=0,
+            start_epoch=300,
+        )
+
+    for run in all_runs:
+        run_name = os.path.split(run)[-1]
+        evaluate_in_parallel(
+            control_runs, [], run,
+            scenario='wolf',
+            log_folder=log_folder,
+            title=f"blue_{run_name}_vs_no_deception",
+            trials=TRIALS,
+            replace_noop_with_team=0,
+            start_epoch=300,
+        )
+
 def main():
     """
     Check agents performance over time
     :return:
     """
-    run_rescue_arena()
+    #run_rescue_arena()
+    run_wolf_arena()
 
 if __name__ == "__main__":
     main()

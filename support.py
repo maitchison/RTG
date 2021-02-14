@@ -39,7 +39,6 @@ class Config():
         self.deception_bonus = tuple()
         self.split_policy = bool()
         self.nan_check = bool()
-        self.max_window_size = int()
         self.use_global_value = bool()
         self.seed = int()
         self.restore = bool()
@@ -125,7 +124,6 @@ def make_algo(vec_env: MultiAgentVecEnv, config:Config, model_name=None):
         micro_batch_size=config.micro_batch_size,
         n_steps=config.n_steps,
         use_global_value_module=config.use_global_value,
-        max_window_size=config.max_window_size,
         prediction_mode=config.prediction_mode,
         deception_bonus=config.deception_bonus,
         split_policy=config.split_policy,
