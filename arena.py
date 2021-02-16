@@ -473,7 +473,7 @@ def run_rescue_arena():
     all_runs = control_runs + effect_runs
     print(all_runs)
 
-    log_folder = '.\\run\\arena_rescue'
+    log_folder = '/run/arena_rescue'
 
     for run in all_runs:
         run_name = os.path.split(run)[-1]
@@ -531,55 +531,30 @@ def run_wolf_arena():
     all_runs = control_runs + effect_runs
     print(all_runs)
 
-    log_folder = '.\\run\\wolf_rescue'
+    log_folder = 'run/wolf_rescue'
 
     for run in all_runs:
         run_name = os.path.split(run)[-1]
         evaluate_in_parallel(
-            run, [], all_runs,
+            run, all_runs, [],
             scenario='wolf',
             log_folder=log_folder,
             title=f"red_{run_name}_vs_mixture",
             trials=TRIALS,
-            replace_noop_with_team=2,
+            replace_noop_with_team=1,
         )
 
     for run in all_runs:
         run_name = os.path.split(run)[-1]
         evaluate_in_parallel(
-            all_runs, [], run,
+            all_runs, run, [],
             scenario='wolf',
             log_folder=log_folder,
-            title=f"blue_{run_name}_vs_mixture",
+            title=f"green_{run_name}_vs_mixture",
             trials=TRIALS,
-            replace_noop_with_team=0,
+            replace_noop_with_team=1,
         )
 
-    # do deception vs non_deception for blue
-
-    for run in all_runs:
-        run_name = os.path.split(run)[-1]
-        evaluate_in_parallel(
-            effect_runs, [], run,
-            scenario='wolf',
-            log_folder=log_folder,
-            title=f"blue_{run_name}_vs_deception",
-            trials=TRIALS,
-            replace_noop_with_team=0,
-            start_epoch=300,
-        )
-
-    for run in all_runs:
-        run_name = os.path.split(run)[-1]
-        evaluate_in_parallel(
-            control_runs, [], run,
-            scenario='wolf',
-            log_folder=log_folder,
-            title=f"blue_{run_name}_vs_no_deception",
-            trials=TRIALS,
-            replace_noop_with_team=0,
-            start_epoch=300,
-        )
 
 def main():
     """
