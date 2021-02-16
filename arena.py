@@ -292,6 +292,7 @@ def evaluate_in_parallel(
         trials=100,
         replace_noop_with_team = None,
         start_epoch = None,
+        max_epoch = None,
         ):
     """
     Loads models for red, green, and blue from checkpoint folders and evaluates them against eachother.
@@ -342,6 +343,9 @@ def evaluate_in_parallel(
             continue
 
         if start_epoch is not None and epoch < start_epoch:
+            continue
+
+        if max_epoch is not None and epoch > max_epoch:
             continue
 
         # lazy loading of algorithms
@@ -532,6 +536,7 @@ def run_wolf_arena():
     print(all_runs)
 
     log_folder = 'run/wolf_rescue'
+    max_epoch = 50 # stub
 
     for run in all_runs:
         run_name = os.path.split(run)[-1]
@@ -542,6 +547,7 @@ def run_wolf_arena():
             title=f"red_{run_name}_vs_mixture",
             trials=TRIALS,
             replace_noop_with_team=1,
+            max_epoch=max_epoch
         )
 
     for run in all_runs:
@@ -553,6 +559,32 @@ def run_wolf_arena():
             title=f"green_{run_name}_vs_mixture",
             trials=TRIALS,
             replace_noop_with_team=1,
+            max_epoch=max_epoch
+        )
+
+
+    for run in all_runs:
+        run_name = os.path.split(run)[-1]
+        evaluate_in_parallel(
+            run, all_runs, [],
+            scenario='wolf_training',
+            log_folder=log_folder,
+            title=f"red_training_{run_name}_vs_mixture",
+            trials=TRIALS,
+            replace_noop_with_team=1,
+            max_epoch=max_epoch
+        )
+
+    for run in all_runs:
+        run_name = os.path.split(run)[-1]
+        evaluate_in_parallel(
+            all_runs, run, [],
+            scenario='wolf',
+            log_folder=log_folder,
+            title=f"green_training_{run_name}_vs_mixture",
+            trials=TRIALS,
+            replace_noop_with_team=1,
+            max_epoch=max_epoch
         )
 
 
