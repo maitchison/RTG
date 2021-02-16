@@ -612,9 +612,9 @@ class RescueTheGeneralEnv(MultiAgentEnv):
 
         if red_seen_general and not self.red_has_seen_general and not self.scenario.battle_royale:
             # partial rewards for red seeing general
-            team_rewards[self.TEAM_RED] += 3
-            team_rewards[self.TEAM_BLUE] -= 3
-            self.red_rewards_for_winning -= 3
+            team_rewards[self.TEAM_RED] += self.scenario.reward_for_red_seeing_general
+            team_rewards[self.TEAM_BLUE] -= self.scenario.reward_for_red_seeing_genera
+            self.red_rewards_for_winning -= self.scenario.reward_for_red_seeing_general
             self.red_has_seen_general = True
 
         blue_players_standing_next_to_general = 0

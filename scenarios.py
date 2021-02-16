@@ -57,6 +57,7 @@ class RescueTheGeneralScenario():
             "general_initial_health": 1,
             "players_to_move_general": 2,
             "blue_general_indicator": "direction",
+            "reward_for_red_seeing_general": 3, # this probably should be 0, but is 3 for historic reasons.
             "starting_locations": "together",  # players start together
             "team_shoot_timeout": (10, 10, 10),
             "timeout_penalty": (5, 0, -5),      # blue must not fail to rescue the general.
@@ -172,7 +173,7 @@ class RescueTheGeneralScenario():
         self.max_view_distance = 7      # distance used for size of observational space, unused tiles are blanked out
         self.team_view_distance = (7, 5, 5)
         self.team_shoot_damage = (10, 10, 10)
-        self.team_general_view_distance = (3, 5, 5) # how close you need to be to the general to see him
+        self.team_general_view_distance = (5, 5, 5) # how close you need to be to the general to see them
         self.team_shoot_range = (4, 0, 0)
         self.team_counts = (4, 4, 4)
         self.team_shoot_timeout = (3, 3, 3)  # number of turns between shooting
@@ -212,6 +213,8 @@ class RescueTheGeneralScenario():
             (0, 0, 0),
             (0, 0, 0)
         ))
+
+        self.reward_for_red_seeing_general = 0
 
         # number of times to soft reset game before a hard reset
         # during a soft reset, player positions and health are reset, but not their teams, or id_colors
